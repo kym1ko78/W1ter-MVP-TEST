@@ -95,7 +95,7 @@ pnpm test:ui:e2e:auto
 - `apps/web` — фронтенд
 - `apps/api` — backend
 - `packages/shared` — общие типы и socket event constants
-- `docs` — архитектурные заметки, release checklist и deploy guide
+- `docs` — архитектурные заметки, release checklist, deploy guide и post-MVP design docs
 - `scripts` — вспомогательные локальные сценарии
 - `tests/playwright` — UI e2e тесты
 
@@ -103,6 +103,8 @@ pnpm test:ui:e2e:auto
 - [implementation-status.md](C:\Users\User\Desktop\Project\implementation-status.md) — текущий статус реализации
 - [.env.production.example](C:\Users\User\Desktop\Project\.env.production.example) — стартовый шаблон production-переменных
 - [osnova.md](C:\Users\User\Desktop\Project\osnova.md) — общий план следующих этапов
+- [post-mvp-roadmap.md](C:\Users\User\Desktop\Project\docs\post-mvp-roadmap.md) — рекомендуемая очередь после MVP
+- [attachments-batch-1.md](C:\Users\User\Desktop\Project\docs\attachments-batch-1.md) — дизайн первого post-MVP батча
 
 ## Локальная инфраструктура
 - Docker PostgreSQL опубликован на `localhost:5433`, потому что `5432` занят локальным Windows PostgreSQL

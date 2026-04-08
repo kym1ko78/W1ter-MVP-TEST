@@ -6,6 +6,7 @@
 - API smoke/e2e и UI e2e проходят
 - Локальный `pnpm dev` теперь имеет preflight-проверку портов
 - Production deploy-каркас добавлен и расширен до VPS + Caddy + domain runbook
+- Выбран рекомендуемый первый post-MVP батч: `file attachments`
 
 ## Что уже получилось
 
@@ -72,6 +73,7 @@
 - Добавлен production deploy guide в `docs/deploy-production.md`
 - Добавлен `Caddyfile.production` и production compose обновлен под схему `caddy + web + api + postgres`
 - `.env.production.example` расширен до реального VPS/domain шаблона
+- Добавлены [post-mvp-roadmap.md](C:\Users\User\Desktop\Project\docs\post-mvp-roadmap.md) и [attachments-batch-1.md](C:\Users\User\Desktop\Project\docs\attachments-batch-1.md) как опорные документы для следующей итерации
 
 ## Что проверено
 - Docker Postgres поднимается локально
@@ -110,10 +112,9 @@
 
 ## Что остается после MVP
 - Расширить API test coverage, а не держаться только за базовый smoke/e2e path
-- Добавить UI-регрессии для большего числа сценариев, а не только direct chat flow
-- Загрузка файлов и изображений
-- Групповые чаты
-- Поиск по сообщениям
+- Реализовать первый post-MVP батч `file attachments`
+- После вложений перейти к message search
+- Затем перейти к group chats
 - Push-уведомления
 - Redis adapter для нескольких backend-инстансов
 - Редактирование и удаление сообщений
