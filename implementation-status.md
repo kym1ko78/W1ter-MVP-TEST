@@ -4,9 +4,10 @@
 - MVP-план закрыт
 - Локальный запуск работает
 - API smoke/e2e и UI e2e проходят
-- Локальный `pnpm dev` теперь имеет preflight-проверку портов
+- Локальный `pnpm dev` имеет preflight-проверку портов
 - Production deploy-каркас добавлен и расширен до VPS + Caddy + domain runbook
-- Выбран рекомендуемый первый post-MVP батч: `file attachments`
+- Первый post-MVP батч `file attachments` реализован и проверен
+- Следующий рекомендуемый батч: `message search`
 
 ## Что уже получилось
 
@@ -22,10 +23,11 @@
 - Docker Desktop настроен и работает
 - PostgreSQL поднят в контейнере Docker
 - Docker Postgres переведен на порт `5433`, чтобы не конфликтовать с локальным Windows PostgreSQL
-- Prisma schema подготовлена для `users`, `refresh_tokens`, `chats`, `chat_members`, `messages`
-- Начальная миграция `0001_init` успешно применена
+- Prisma schema подготовлена для `users`, `refresh_tokens`, `chats`, `chat_members`, `messages`, `attachments`
+- Миграции `0001_init` и `0002_add_attachments` успешно применены
 - Seed успешно подготовил тестовые данные
 - `.env.example` синхронизирован с реальным локальным портом `5433`
+- Production compose получил отдельный volume для uploads
 
 ### Backend
 - Backend на `NestJS` запущен локально
@@ -33,9 +35,13 @@
 - Реализованы API-роуты для регистрации, входа, обновления сессии, выхода, получения текущего пользователя, поиска пользователей, создания direct chat, загрузки истории сообщений, отправки сообщений и отметки о прочтении
 - Реализованы `JWT access token`, `refresh token` в `HttpOnly cookie`, хэширование паролей через `bcrypt`, Socket.IO gateway и presence в памяти процесса
 - Добавлен in-memory rate limiting для чувствительных точек MVP
-- Ограничены по частоте регистрация, вход, refresh, logout, создание direct chat и отправка сообщений
+- Ограничены по частоте регистрация, вход, refresh, logout, создание direct chat, отправка сообщений и загрузка вложений
 - Добавлено базовое логирование backend-событий для auth, chat и websocket-соединений
 - Добавлен `GET /health` для быстрой локальной проверки готовности API и orchestration тестов
+- Добавлены upload/download endpoints для вложений:
+  - `POST /chats/:chatId/attachments`
+  - `GET /attachments/:attachmentId`
+- Доступ к вложению ограничен участниками чата, а URL поддерживает `access_token` query param для защищенного просмотра/скачивания
 
 ### Frontend
 - Web-клиент на `Next.js + React + TypeScript` запущен локально
@@ -44,9 +50,16 @@
 - Отображаются `unread badge` и `last seen`
 - В composer добавлены client-side ограничение длины сообщения, счетчик символов и inline-ошибка при неуспешной отправке
 - Поле ввода по умолчанию выровнено по высоте с кнопкой Отправить, растет автоматически по мере набора текста и больше не показывает ручной resize
-- Chat shell переведен на высоту viewport: страница чата не должна прокручиваться целиком, а скролл живет внутри списка чатов и истории сообщений
+- Chat shell переведен на высоту viewport: страница чата не прокручивается целиком, а скролл живет внутри списка чатов и истории сообщений
 - Добавлены `data-testid` для стабильных UI e2e тестов
 - Добавлена app-router страница `not-found`, а также минимальные fallback-файлы `pages/_app.tsx` и `pages/_document.tsx` для стабильной сборки Next.js на текущей Windows-конфигурации
+- Реализован UI первого post-MVP батча `file attachments`:
+  - выбор одного файла в composer
+  - attachment-only сообщение без текста
+  - preview выбранного файла до отправки
+  - inline preview для изображений
+  - карточки PDF/TXT и других поддержанных файлов с открытием в новой вкладке
+  - preview последнего сообщения в sidebar для attachment-only чатов
 
 ### Исправления после ручного тестирования
 - Исправлен баг с дублированием исходящих сообщений у отправителя
@@ -60,6 +73,7 @@
 - Добавлена инфраструктура API e2e-тестов на `Jest + Supertest`
 - Добавлены `apps/api/tsconfig.spec.json`, `apps/api/test/jest-e2e.json`, `apps/api/test/app.e2e-spec.ts`
 - Добавлен root-скрипт `pnpm test:api:e2e`
+- API e2e теперь покрывает upload/download flow для attachment message
 - Добавлена инфраструктура UI e2e-тестов на `Playwright`
 - Добавлены `playwright.config.cjs` и `tests/playwright/chat-flow.spec.ts`
 - Добавлены root-скрипты `pnpm test:ui:e2e` для manual-first режима и `pnpm test:ui:e2e:auto` для автоподъема серверов
@@ -77,7 +91,7 @@
 
 ## Что проверено
 - Docker Postgres поднимается локально
-- Миграция применяется успешно
+- Миграции применяются успешно
 - Seed выполняется без ошибок
 - `web` запускается на `http://localhost:3000`
 - `api` запускается на `http://localhost:4000`
@@ -85,23 +99,17 @@
 - Поиск пользователей работает
 - Создание direct chat работает
 - Обмен сообщениями работает
+- Attachment upload/download работает для PNG, JPEG, WEBP, PDF и TXT
+- Attachment-only сообщения работают
 - Дублирование сообщений у отправителя исправлено
 - Warning React про одинаковые ключи сообщений устранен на уровне рендера и кэша
 - `pnpm smoke:local` успешно прогнан вручную против живого локального API
 - `pnpm --filter @repo/api typecheck` проходит
 - `pnpm --filter @repo/api build` проходит
 - `pnpm --filter @repo/api test:e2e` проходит
+- `pnpm prisma:deploy` с миграцией вложений проходит
 - `pnpm --filter @repo/web typecheck` проходит
 - `pnpm --filter @repo/web build` проходит
-- `pnpm build` проходит
-- `pnpm typecheck` проходит
-- `node --check scripts/local-smoke-test.mjs` проходит
-- `node --check scripts/dev-port-utils.mjs` проходит
-- `node --check scripts/run-dev-check.mjs` проходит
-- `node --check scripts/run-dev-start.mjs` проходит
-- `node --check scripts/run-ui-e2e-manual.mjs` проходит
-- `node --check scripts/run-web-e2e-build.mjs` проходит
-- `node --check scripts/run-web-e2e-start.mjs` проходит
 - `pnpm test:ui:e2e:auto` проходит
 - `docker compose -f docker-compose.production.yml --env-file .env.production.example config` проходит
 
@@ -111,10 +119,8 @@
 - Production deploy-каркас подготовлен и проверен на уровне конфигурации, но полноценный запуск на удаленном сервере еще не выполнялся
 
 ## Что остается после MVP
-- Расширить API test coverage, а не держаться только за базовый smoke/e2e path
-- Реализовать первый post-MVP батч `file attachments`
-- После вложений перейти к message search
-- Затем перейти к group chats
+- Реализовать `message search` как следующий post-MVP батч
+- Затем перейти к `group chats`
 - Push-уведомления
 - Redis adapter для нескольких backend-инстансов
 - Редактирование и удаление сообщений
@@ -125,6 +131,7 @@
 - Это не ломает работу приложения: после refresh flow сокет подключается нормально
 - На Windows Playwright использует установленный `Microsoft Edge`
 - Для локальной web-разработки frontend сейчас смотрит на API через `127.0.0.1:4000`, чтобы снизить риск проблем с `localhost` и `::1` в Windows-браузерах и тестах
+- Вложения хранятся в `UPLOADS_DIR`; локально по умолчанию это `apps/api/uploads`, а в production — `/app/uploads` через отдельный volume
 
 ## Технические замечания
 - В `docker-compose.yml` используется порт `5433`, потому что `5432` занят локальным PostgreSQL в Windows

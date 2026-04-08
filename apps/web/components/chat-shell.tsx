@@ -20,7 +20,12 @@ import { io, type Socket } from "socket.io-client";
 import { readJson, useAuth } from "../lib/auth-context";
 import { appendMessageUnique } from "../lib/message-cache";
 import { SOCKET_URL } from "../lib/config";
-import { formatRelativeLastSeen, formatTime, getChatTitle } from "../lib/utils";
+import {
+  formatRelativeLastSeen,
+  formatTime,
+  getChatTitle,
+  getLastMessagePreviewText,
+} from "../lib/utils";
 import type { ChatListItem, ChatMessage, MessagePage, SafeUser } from "../types/api";
 
 export function ChatShell({ children }: { children: React.ReactNode }) {
@@ -289,7 +294,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                       </div>
 
                       <p className="mt-3 truncate text-sm text-stone-600">
-                        {chat.lastMessage?.body ?? "Сообщений пока нет"}
+                        {getLastMessagePreviewText(chat.lastMessage)}
                       </p>
                     </Link>
                   );

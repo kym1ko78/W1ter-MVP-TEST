@@ -2,26 +2,54 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { readJson, useAuth } from "../lib/auth-context";
 import {
   appendMessageUnique,
   dedupeMessages,
   normalizeMessagePage,
 } from "../lib/message-cache";
-import { formatRelativeLastSeen, formatTime, getChatTitle } from "../lib/utils";
-import type { ChatListItem, ChatMessage, MessagePage } from "../types/api";
+import { buildAttachmentUrl } from "../lib/config";
+import {
+  formatFileSize,
+  formatRelativeLastSeen,
+  formatTime,
+  getChatTitle,
+} from "../lib/utils";
+import type { ChatAttachment, ChatListItem, ChatMessage, MessagePage } from "../types/api";
 
 const MESSAGE_MAX_LENGTH = 4000;
 const COMPOSER_MIN_HEIGHT = 56;
 const COMPOSER_MAX_HEIGHT = 200;
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_ACCEPT = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+].join(",");
+const ATTACHMENT_ALLOWED_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+]);
+
+type ComposerPayload = {
+  body: string;
+  file: File | null;
+};
 
 export function ConversationView({ chatId }: { chatId: string }) {
   const queryClient = useQueryClient();
-  const { authorizedFetch, isAuthenticated, user } = useAuth();
+  const { accessToken, authorizedFetch, isAuthenticated, user } = useAuth();
   const [draft, setDraft] = useState("");
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const chatQuery = useQuery({
     queryKey: ["chat", chatId],
@@ -45,8 +73,23 @@ export function ConversationView({ chatId }: { chatId: string }) {
   );
 
   const sendMessageMutation = useMutation({
-    mutationFn: async (body: string) =>
-      readJson<ChatMessage>(
+    mutationFn: async ({ body, file }: ComposerPayload) => {
+      if (file) {
+        const formData = new FormData();
+        formData.append("file", file);
+        if (body) {
+          formData.append("body", body);
+        }
+
+        return readJson<ChatMessage>(
+          await authorizedFetch(`/chats/${chatId}/attachments`, {
+            method: "POST",
+            body: formData,
+          }),
+        );
+      }
+
+      return readJson<ChatMessage>(
         await authorizedFetch(`/chats/${chatId}/messages`, {
           method: "POST",
           headers: {
@@ -54,14 +97,20 @@ export function ConversationView({ chatId }: { chatId: string }) {
           },
           body: JSON.stringify({ body }),
         }),
-      ),
+      );
+    },
     onSuccess: (message) => {
       queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
         appendMessageUnique(old, message),
       );
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
       setComposerError(null);
       setDraft("");
+      setPendingFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     },
     onError: (error) => {
       setComposerError(
@@ -110,11 +159,42 @@ export function ConversationView({ chatId }: { chatId: string }) {
     [chatQuery.data?.members, user?.id],
   );
 
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0] ?? null;
+
+    if (!selectedFile) {
+      setPendingFile(null);
+      return;
+    }
+
+    if (!ATTACHMENT_ALLOWED_TYPES.has(selectedFile.type)) {
+      setComposerError("Поддерживаются только PNG, JPEG, WEBP, PDF и TXT файлы.");
+      event.target.value = "";
+      return;
+    }
+
+    if (selectedFile.size > ATTACHMENT_MAX_BYTES) {
+      setComposerError("Размер файла не должен превышать 10 MB.");
+      event.target.value = "";
+      return;
+    }
+
+    setComposerError(null);
+    setPendingFile(selectedFile);
+  };
+
+  const clearPendingFile = () => {
+    setPendingFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const body = draft.trim();
-    if (!body || sendMessageMutation.isPending) {
+    if ((!body && !pendingFile) || sendMessageMutation.isPending) {
       return;
     }
 
@@ -124,7 +204,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     setComposerError(null);
-    sendMessageMutation.mutate(body);
+    sendMessageMutation.mutate({ body, file: pendingFile });
   };
 
   if (chatQuery.isLoading || messagesQuery.isLoading) {
@@ -183,7 +263,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     {message.sender.displayName}
                   </p>
                 ) : null}
-                <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.body}</p>
+                {message.body ? (
+                  <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.body}</p>
+                ) : null}
+                {message.attachments.length > 0 ? (
+                  <MessageAttachments
+                    accessToken={accessToken}
+                    attachments={message.attachments}
+                    isMine={isMine}
+                  />
+                ) : null}
                 <p
                   className={clsx(
                     "mt-2 text-right text-[11px]",
@@ -199,6 +288,15 @@ export function ConversationView({ chatId }: { chatId: string }) {
       </div>
 
       <form onSubmit={handleSubmit} className="flex-none border-t border-stone-200/80 p-4 sm:p-5">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={ATTACHMENT_ACCEPT}
+          className="hidden"
+          onChange={handleFileChange}
+          data-testid="attachment-input"
+        />
+
         {composerError ? (
           <div
             className="mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
@@ -207,6 +305,26 @@ export function ConversationView({ chatId }: { chatId: string }) {
             {composerError}
           </div>
         ) : null}
+
+        {pendingFile ? (
+          <div
+            className="mb-3 flex items-center justify-between gap-3 rounded-[22px] border border-stone-200 bg-white/80 px-4 py-3"
+            data-testid="attachment-preview"
+          >
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-ink">{pendingFile.name}</p>
+              <p className="text-xs text-stone-500">{formatFileSize(pendingFile.size)}</p>
+            </div>
+            <button
+              type="button"
+              onClick={clearPendingFile}
+              className="rounded-full border border-stone-200 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-stone-600 transition hover:border-rose-300 hover:text-rose-700"
+            >
+              Убрать
+            </button>
+          </div>
+        ) : null}
+
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
           <textarea
             ref={textareaRef}
@@ -226,17 +344,99 @@ export function ConversationView({ chatId }: { chatId: string }) {
           <button
             data-testid="send-message-button"
             type="submit"
-            disabled={sendMessageMutation.isPending || !draft.trim()}
+            disabled={sendMessageMutation.isPending || (!draft.trim() && !pendingFile)}
             className="h-14 rounded-[24px] bg-[linear-gradient(135deg,#0f766e,#0b5c56)] px-5 text-sm font-semibold text-white transition hover:translate-y-[-1px] disabled:cursor-not-allowed disabled:opacity-55 sm:w-[180px]"
           >
-            {sendMessageMutation.isPending ? "Отправка..." : "Отправить"}
+            {sendMessageMutation.isPending ? (pendingFile ? "Загрузка..." : "Отправка...") : "Отправить"}
           </button>
         </div>
-        <p className="mt-2 text-right text-xs text-stone-500" data-testid="message-counter">
-          {draft.length}/{MESSAGE_MAX_LENGTH}
-        </p>
+
+        <div className="mt-2 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="rounded-full border border-stone-200 bg-white/75 px-4 py-2 text-xs font-medium uppercase tracking-[0.16em] text-stone-600 transition hover:border-clay hover:text-clay"
+            data-testid="attachment-picker-button"
+          >
+            Прикрепить файл
+          </button>
+          <p className="text-right text-xs text-stone-500" data-testid="message-counter">
+            {draft.length}/{MESSAGE_MAX_LENGTH}
+          </p>
+        </div>
       </form>
     </section>
+  );
+}
+
+function MessageAttachments({
+  accessToken,
+  attachments,
+  isMine,
+}: {
+  accessToken: string | null;
+  attachments: ChatAttachment[];
+  isMine: boolean;
+}) {
+  return (
+    <div className={clsx("space-y-2", attachments.length > 0 && "mt-3")}>
+      {attachments.map((attachment) => {
+        const downloadUrl = buildAttachmentUrl(attachment.downloadPath, accessToken);
+
+        if (attachment.isImage) {
+          return (
+            <a
+              key={attachment.id}
+              href={downloadUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="block overflow-hidden rounded-[20px] border border-black/10 bg-black/5"
+              data-testid="message-attachment"
+            >
+              <img
+                src={downloadUrl}
+                alt={attachment.originalName}
+                className="max-h-72 w-full object-cover"
+                loading="lazy"
+              />
+              <div
+                className={clsx(
+                  "flex items-center justify-between gap-3 px-3 py-2 text-xs",
+                  isMine ? "bg-black/10 text-white/85" : "bg-stone-50 text-stone-600",
+                )}
+              >
+                <span className="truncate">{attachment.originalName}</span>
+                <span className="shrink-0">{formatFileSize(attachment.sizeBytes)}</span>
+              </div>
+            </a>
+          );
+        }
+
+        return (
+          <a
+            key={attachment.id}
+            href={downloadUrl}
+            target="_blank"
+            rel="noreferrer"
+            className={clsx(
+              "flex items-center justify-between gap-3 rounded-[18px] border px-3 py-3 text-sm transition hover:translate-y-[-1px]",
+              isMine
+                ? "border-white/20 bg-black/10 text-white"
+                : "border-stone-200 bg-stone-50 text-ink",
+            )}
+            data-testid="message-attachment"
+          >
+            <div className="min-w-0">
+              <p className="truncate font-semibold">{attachment.originalName}</p>
+              <p className={clsx("text-xs", isMine ? "text-white/75" : "text-stone-500")}>
+                {attachment.mimeType} · {formatFileSize(attachment.sizeBytes)}
+              </p>
+            </div>
+            <span className="shrink-0 text-xs uppercase tracking-[0.16em]">Open</span>
+          </a>
+        );
+      })}
+    </div>
   );
 }
 
