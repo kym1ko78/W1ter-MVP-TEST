@@ -1,7 +1,7 @@
 export function ChatPlaceholder() {
   return (
     <div
-      className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-[28px] border border-dashed border-stone-300/80 bg-white/45 px-8 text-center"
+      className="flex h-full min-h-0 flex-col items-center justify-center rounded-[28px] border border-dashed border-stone-300/80 bg-white/45 px-8 text-center"
       data-testid="chat-placeholder"
     >
       <p className="text-xs uppercase tracking-[0.28em] text-stone-500">Ready</p>

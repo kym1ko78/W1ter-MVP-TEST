@@ -6,10 +6,12 @@ type TestUser = {
   displayName: string;
 };
 
+const PLAYWRIGHT_API_URL = process.env.PLAYWRIGHT_API_URL ?? "http://127.0.0.1:4000";
+
 async function waitForApiReady(request: APIRequestContext) {
   await expect
     .poll(async () => {
-      const response = await request.post("http://localhost:4000/auth/refresh");
+      const response = await request.post(`${PLAYWRIGHT_API_URL}/auth/refresh`);
       return response.status();
     }, {
       timeout: 30_000,
@@ -18,8 +20,25 @@ async function waitForApiReady(request: APIRequestContext) {
     .toBeLessThan(500);
 }
 
+async function gotoAndWaitForTestId(page: Page, url: string, testId: string) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded" });
+      await expect(page.getByTestId(testId)).toBeVisible({ timeout: 15_000 });
+      return;
+    } catch (error) {
+      lastError = error;
+      await page.waitForTimeout(1_000);
+    }
+  }
+
+  throw lastError;
+}
+
 async function registerUser(page: Page, user: TestUser) {
-  await page.goto("/register");
+  await gotoAndWaitForTestId(page, "/register", "auth-form");
   await page.getByTestId("auth-display-name-input").fill(user.displayName);
   await page.getByTestId("auth-email-input").fill(user.email);
   await page.getByTestId("auth-password-input").fill(user.password);
@@ -61,7 +80,7 @@ test("users can register, create a direct chat and receive a realtime message", 
   await expect(alicePage).toHaveURL(/\/chat\/.+/);
   await expect(alicePage.getByTestId("conversation-title")).toContainText(bob.displayName);
 
-  await bobPage.goto("/chat");
+  await gotoAndWaitForTestId(bobPage, "/chat", "chat-list");
   const bobChatListItem = bobPage
     .getByTestId("chat-list-item")
     .filter({ hasText: alice.displayName });

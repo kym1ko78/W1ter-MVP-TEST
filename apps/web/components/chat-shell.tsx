@@ -26,19 +26,20 @@ import type { ChatListItem, ChatMessage, MessagePage, SafeUser } from "../types/
 export function ChatShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const safePathname = pathname ?? "/";
   const queryClient = useQueryClient();
   const socketRef = useRef<Socket | null>(null);
   const { accessToken, authorizedFetch, isAuthenticated, isLoading, logout, user } = useAuth();
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
   const currentChatId = useMemo(() => {
-    const segments = pathname.split("/").filter(Boolean);
+    const segments = safePathname.split("/").filter(Boolean);
     if (segments[0] === "chat" && segments[1]) {
       return segments[1];
     }
 
     return null;
-  }, [pathname]);
+  }, [safePathname]);
 
   const chatsQuery = useQuery({
     queryKey: ["chats"],
@@ -140,18 +141,18 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (
-      pathname === "/chat" &&
+      safePathname === "/chat" &&
       chatsQuery.data &&
       chatsQuery.data.length > 0 &&
       !currentChatId
     ) {
       router.replace(`/chat/${chatsQuery.data[0].id}`);
     }
-  }, [chatsQuery.data, currentChatId, pathname, router]);
+  }, [chatsQuery.data, currentChatId, router, safePathname]);
 
   if (isLoading || !isAuthenticated) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex h-[100dvh] items-center justify-center px-3 py-3 sm:px-5 sm:py-5">
         <div className="rounded-full border border-white/70 bg-white/70 px-5 py-3 text-sm text-stone-600 shadow-panel">
           Подготавливаем рабочее пространство...
         </div>
@@ -160,10 +161,10 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <main className="grain min-h-screen px-3 py-3 sm:px-5 sm:py-5" data-testid="chat-shell">
-      <div className="grid min-h-[calc(100vh-24px)] gap-3 lg:grid-cols-[360px_minmax(0,1fr)]">
+    <main className="grain h-[100dvh] overflow-hidden px-3 py-3 sm:px-5 sm:py-5" data-testid="chat-shell">
+      <div className="grid h-full min-h-0 grid-rows-[320px_minmax(0,1fr)] gap-3 lg:grid-cols-[360px_minmax(0,1fr)] lg:grid-rows-1">
         <aside
-          className="rounded-[32px] border border-white/70 bg-[rgba(255,251,245,0.84)] p-4 shadow-panel backdrop-blur sm:p-5"
+          className="flex min-h-0 flex-col overflow-hidden rounded-[32px] border border-white/70 bg-[rgba(255,251,245,0.84)] p-4 shadow-panel backdrop-blur sm:p-5"
           data-testid="chat-sidebar"
         >
           <div className="mb-5 flex items-start justify-between gap-3">
@@ -198,7 +199,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
             {deferredSearch.trim().length > 1 ? (
               <div
-                className="rounded-[24px] border border-stone-200/80 bg-white/70 p-2"
+                className="max-h-52 overflow-y-auto rounded-[24px] border border-stone-200/80 bg-white/70 p-2"
                 data-testid="user-search-results"
               >
                 {searchUsersQuery.isLoading ? (
@@ -230,7 +231,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
             ) : null}
           </div>
 
-          <div className="mt-6">
+          <div className="mt-6 flex min-h-0 flex-1 flex-col">
             <div className="mb-3 flex items-center justify-between">
               <p className="text-xs uppercase tracking-[0.22em] text-stone-500">Ваши чаты</p>
               <span className="rounded-full bg-sand px-2.5 py-1 text-xs font-medium text-stone-600">
@@ -238,7 +239,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
               </span>
             </div>
 
-            <div className="space-y-2 overflow-y-auto pr-1 lg:max-h-[calc(100vh-270px)]" data-testid="chat-list">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" data-testid="chat-list">
               {chatsQuery.isLoading ? (
                 <>
                   <SidebarSkeleton />
@@ -305,7 +306,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
           </div>
         </aside>
 
-        <section className="min-w-0">{children}</section>
+        <section className="min-h-0 min-w-0">{children}</section>
       </div>
     </main>
   );

@@ -33,6 +33,7 @@
 - Добавлен in-memory rate limiting для чувствительных точек MVP
 - Ограничены по частоте регистрация, вход, refresh, logout, создание direct chat и отправка сообщений
 - Добавлено базовое логирование backend-событий для auth, chat и websocket-соединений
+- Добавлен `GET /health` для быстрой локальной проверки готовности API и orchestration тестов
 
 ### Frontend
 - Web-клиент на `Next.js + React + TypeScript` запущен локально
@@ -40,7 +41,10 @@
 - Адаптивный UI для базового использования готов
 - Отображаются `unread badge` и `last seen`
 - В composer добавлены client-side ограничение длины сообщения, счетчик символов и inline-ошибка при неуспешной отправке
+- Поле ввода по умолчанию выровнено по высоте с кнопкой Отправить, растет автоматически по мере набора текста и больше не показывает ручной resize
+- Chat shell переведен на высоту viewport: страница чата не должна прокручиваться целиком, а скролл живет внутри списка чатов и истории сообщений
 - Добавлены `data-testid` для стабильных UI e2e тестов
+- Добавлена app-router страница `not-found`, а также минимальные fallback-файлы `pages/_app.tsx` и `pages/_document.tsx` для стабильной сборки Next.js на текущей Windows-конфигурации
 
 ### Исправления после ручного тестирования
 - Исправлен баг с дублированием исходящих сообщений у отправителя
@@ -56,7 +60,11 @@
 - Добавлен root-скрипт `pnpm test:api:e2e`
 - Добавлена инфраструктура UI e2e-тестов на `Playwright`
 - Добавлены `playwright.config.cjs` и `tests/playwright/chat-flow.spec.ts`
-- Добавлен root-скрипт `pnpm test:ui:e2e`
+- Добавлены root-скрипты `pnpm test:ui:e2e` для manual-first режима и `pnpm test:ui:e2e:auto` для автоподъема серверов
+- Автоматический UI e2e разведен с `pnpm dev` по web-порту `3100`, API-порту `4100` и build-папке `.next-e2e`, поэтому не конфликтует с уже запущенными dev-серверами на `3000/4000` и с основной `.next`
+- В отдельную e2e web-сборку прокинуты `NEXT_PUBLIC_API_URL` и `NEXT_PUBLIC_SOCKET_URL`, поэтому регистрация и дальнейший realtime-сценарий корректно ходят в изолированный API на `4100`
+- `tests/playwright/chat-flow.spec.ts` переведен на `PLAYWRIGHT_API_URL`, поэтому manual и auto режимы используют один и тот же тест без хардкода `4000`
+- Добавлен ручной helper `scripts/run-ui-e2e-manual.mjs`, который быстро проверяет доступность `api` и `web` и выводит понятную подсказку вместо долгого зависания
 - Добавлен релизный чеклист в `docs/release-checklist.md`
 - Добавлен production deploy guide в `docs/deploy-production.md`
 - Добавлен шаблон production-переменных в `.env.production.example`
@@ -79,14 +87,18 @@
 - `pnpm --filter @repo/api test:e2e` проходит
 - `pnpm --filter @repo/web typecheck` проходит
 - `pnpm --filter @repo/web build` проходит
-- `pnpm test:ui:e2e` проходит
 - `pnpm build` проходит
 - `pnpm typecheck` проходит
 - `node --check scripts/local-smoke-test.mjs` проходит
+- `node --check scripts/run-ui-e2e-manual.mjs` проходит
+- `node --check scripts/run-web-e2e-build.mjs` проходит
+- `node --check scripts/run-web-e2e-start.mjs` проходит
+- `pnpm test:ui:e2e:auto` проходит
 - `docker compose -f docker-compose.production.yml config` проходит
 
 ## Что сейчас не получилось
-- На текущем этапе нерешенных технических проблем в уже реализованной части нет
+- Нерешенных критических проблем в реализованной части нет
+- В моей sandbox-среде изолированный `next build` может упираться в `spawn EPERM`, но вне sandbox тот же `pnpm test:ui:e2e:auto` проходит успешно
 - Production deploy-каркас подготовлен и проверен на уровне конфигурации, но полноценный запуск на удаленном сервере еще не выполнялся
 
 ## Что остается после MVP
@@ -104,6 +116,7 @@
 - В логах API при старте может один раз появляться `Rejected socket connection with invalid token`, если страница открывается до восстановления access token
 - Это не ломает работу приложения: после refresh flow сокет подключается нормально
 - На Windows Playwright использует установленный `Microsoft Edge`
+- Для локальной web-разработки frontend сейчас смотрит на API через `127.0.0.1:4000`, чтобы снизить риск проблем с `localhost` и `::1` в Windows-браузерах и тестах
 
 ## Технические замечания
 - В `docker-compose.yml` используется порт `5433`, потому что `5432` занят локальным PostgreSQL в Windows
@@ -123,6 +136,7 @@ cd C:\Users\User\Desktop\Project
 pnpm smoke:local
 pnpm test:api:e2e
 pnpm test:ui:e2e
+pnpm test:ui:e2e:auto
 ```
 
 ## Демо-аккаунты

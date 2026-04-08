@@ -55,10 +55,16 @@ pnpm smoke:local
 pnpm test:api:e2e
 ```
 
-Автоматизированный UI e2e-тест:
+Ручной Windows-friendly UI e2e-тест против уже поднятых `api + web`:
 
 ```powershell
 pnpm test:ui:e2e
+```
+
+Полный автоматический прогон с отдельными портами и отдельной build-папкой для UI e2e:
+
+```powershell
+pnpm test:ui:e2e:auto
 ```
 
 ## Локальная и production инфраструктура
@@ -83,8 +89,9 @@ pnpm test:ui:e2e
 
 ## Локальная инфраструктура
 - Docker PostgreSQL опубликован на `localhost:5433`, потому что `5432` занят локальным Windows PostgreSQL
-- API работает на `http://localhost:4000`
-- Web работает на `http://localhost:3000`
+- API работает на `http://localhost:4000` и локально доступен как `http://127.0.0.1:4000`
+- Web работает на `http://localhost:3000` и для manual UI e2e ожидается на `http://127.0.0.1:3000`
+- Автоматический UI e2e использует отдельный web `http://127.0.0.1:3100`, отдельный API `http://127.0.0.1:4100` и отдельный `NEXT_DIST_DIR=.next-e2e`, чтобы не конфликтовать с `pnpm dev`
 - На Windows Playwright использует установленный `Microsoft Edge`
 
 ## Демо-аккаунты после seed
