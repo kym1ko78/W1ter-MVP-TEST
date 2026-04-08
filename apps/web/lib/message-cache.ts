@@ -1,0 +1,55 @@
+import type { ChatMessage, MessagePage } from "../types/api";
+
+export function dedupeMessages(messages: ChatMessage[]): ChatMessage[] {
+  const uniqueMessages = new Map<string, ChatMessage>();
+
+  for (const message of messages) {
+    if (!uniqueMessages.has(message.id)) {
+      uniqueMessages.set(message.id, message);
+    }
+  }
+
+  return Array.from(uniqueMessages.values());
+}
+
+export function normalizeMessagePage(
+  page: MessagePage | undefined,
+): MessagePage | undefined {
+  if (!page) {
+    return page;
+  }
+
+  const items = dedupeMessages(page.items);
+
+  if (items.length === page.items.length) {
+    return page;
+  }
+
+  return {
+    ...page,
+    items,
+  };
+}
+
+export function appendMessageUnique(
+  page: MessagePage | undefined,
+  message: ChatMessage,
+): MessagePage {
+  const normalizedPage = normalizeMessagePage(page);
+
+  if (!normalizedPage) {
+    return {
+      items: [message],
+      nextCursor: null,
+    };
+  }
+
+  if (normalizedPage.items.some((item) => item.id === message.id)) {
+    return normalizedPage;
+  }
+
+  return {
+    ...normalizedPage,
+    items: [...normalizedPage.items, message],
+  };
+}

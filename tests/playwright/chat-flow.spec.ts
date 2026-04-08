@@ -1,0 +1,86 @@
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+
+type TestUser = {
+  email: string;
+  password: string;
+  displayName: string;
+};
+
+async function waitForApiReady(request: APIRequestContext) {
+  await expect
+    .poll(async () => {
+      const response = await request.post("http://localhost:4000/auth/refresh");
+      return response.status();
+    }, {
+      timeout: 30_000,
+      intervals: [500, 1_000, 2_000],
+    })
+    .toBeLessThan(500);
+}
+
+async function registerUser(page: Page, user: TestUser) {
+  await page.goto("/register");
+  await page.getByTestId("auth-display-name-input").fill(user.displayName);
+  await page.getByTestId("auth-email-input").fill(user.email);
+  await page.getByTestId("auth-password-input").fill(user.password);
+  await page.getByTestId("auth-submit-button").click();
+  await page.waitForURL(/\/chat(\/.*)?$/);
+  await expect(page.getByTestId("chat-sidebar")).toBeVisible();
+}
+
+test("users can register, create a direct chat and receive a realtime message", async ({ browser, request }) => {
+  await waitForApiReady(request);
+
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const alice: TestUser = {
+    email: `playwright.alice.${suffix}@example.com`,
+    displayName: "Playwright Alice",
+    password: "password123",
+  };
+  const bob: TestUser = {
+    email: `playwright.bob.${suffix}@example.com`,
+    displayName: "Playwright Bob",
+    password: "password123",
+  };
+
+  const aliceContext = await browser.newContext();
+  const bobContext = await browser.newContext();
+  const alicePage = await aliceContext.newPage();
+  const bobPage = await bobContext.newPage();
+
+  await registerUser(alicePage, alice);
+  await registerUser(bobPage, bob);
+
+  await alicePage.getByTestId("user-search-input").fill(bob.email);
+  const searchResult = alicePage
+    .getByTestId("user-search-result")
+    .filter({ hasText: bob.displayName });
+
+  await expect(searchResult).toBeVisible();
+  await searchResult.click();
+  await expect(alicePage).toHaveURL(/\/chat\/.+/);
+  await expect(alicePage.getByTestId("conversation-title")).toContainText(bob.displayName);
+
+  await bobPage.goto("/chat");
+  const bobChatListItem = bobPage
+    .getByTestId("chat-list-item")
+    .filter({ hasText: alice.displayName });
+
+  await expect(bobChatListItem).toBeVisible();
+  await bobChatListItem.click();
+  await expect(bobPage.getByTestId("conversation-title")).toContainText(alice.displayName);
+
+  const messageText = `Playwright message ${suffix}`;
+  await alicePage.getByTestId("message-input").fill(messageText);
+  await alicePage.getByTestId("send-message-button").click();
+
+  await expect(
+    bobPage.getByTestId("message-item").filter({ hasText: messageText }),
+  ).toHaveCount(1);
+  await expect(
+    alicePage.getByTestId("message-item").filter({ hasText: messageText }),
+  ).toHaveCount(1);
+
+  await aliceContext.close();
+  await bobContext.close();
+});

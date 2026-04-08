@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+allowBuilds:
+  '@nestjs/core': false
+  '@prisma/client': false
+  '@prisma/engines': false
+  bcrypt: false
+  prisma: false
+  sharp: false

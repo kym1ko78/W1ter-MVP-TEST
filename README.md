@@ -1,0 +1,92 @@
+# Web Messenger MVP
+
+MVP веб-мессенджера на стеке `Next.js + NestJS + Socket.IO + PostgreSQL + Prisma`.
+
+## Что уже есть
+- монорепозиторий на `pnpm workspaces`
+- web-клиент на Next.js App Router
+- backend на NestJS
+- Prisma schema для `users`, `refresh_tokens`, `chats`, `chat_members`, `messages`
+- Socket.IO gateway для realtime-событий
+- docker compose для локального PostgreSQL
+- локальный smoke test для сценария `register -> create chat -> send message -> read`
+- API e2e-тест на `Jest + Supertest`
+- UI e2e-тест на `Playwright`
+- production Dockerfiles и `docker-compose.production.yml`
+
+## Быстрый старт
+1. Скопируйте `.env.example` в `.env` и при необходимости поправьте значения.
+2. Поднимите PostgreSQL:
+
+```powershell
+docker compose up -d
+```
+
+3. Установите зависимости:
+
+```powershell
+pnpm install
+```
+
+4. Сгенерируйте Prisma Client и примените миграцию:
+
+```powershell
+pnpm prisma:generate
+pnpm prisma:deploy
+pnpm prisma:seed
+```
+
+5. Запустите проект:
+
+```powershell
+pnpm dev
+```
+
+## Проверки
+Локальный smoke test против уже поднятого API:
+
+```powershell
+pnpm smoke:local
+```
+
+Автоматизированный API e2e-тест:
+
+```powershell
+pnpm test:api:e2e
+```
+
+Автоматизированный UI e2e-тест:
+
+```powershell
+pnpm test:ui:e2e
+```
+
+## Локальная и production инфраструктура
+- локальный PostgreSQL: [docker-compose.yml](C:\Users\User\Desktop\Project\docker-compose.yml)
+- production compose template: [docker-compose.production.yml](C:\Users\User\Desktop\Project\docker-compose.production.yml)
+- web image: [Dockerfile.web](C:\Users\User\Desktop\Project\Dockerfile.web)
+- api image: [Dockerfile.api](C:\Users\User\Desktop\Project\Dockerfile.api)
+- production guide: [deploy-production.md](C:\Users\User\Desktop\Project\docs\deploy-production.md)
+- release checklist: [release-checklist.md](C:\Users\User\Desktop\Project\docs\release-checklist.md)
+
+## Workspace
+- `apps/web` — фронтенд
+- `apps/api` — backend
+- `packages/shared` — общие типы и socket event constants
+- `docs` — архитектурные заметки, release checklist и deploy guide
+- `scripts` — вспомогательные локальные сценарии
+- `tests/playwright` — UI e2e тесты
+
+## Полезные файлы
+- [implementation-status.md](C:\Users\User\Desktop\Project\implementation-status.md) — текущий статус реализации
+- [.env.production.example](C:\Users\User\Desktop\Project\.env.production.example) — стартовый шаблон production-переменных
+
+## Локальная инфраструктура
+- Docker PostgreSQL опубликован на `localhost:5433`, потому что `5432` занят локальным Windows PostgreSQL
+- API работает на `http://localhost:4000`
+- Web работает на `http://localhost:3000`
+- На Windows Playwright использует установленный `Microsoft Edge`
+
+## Демо-аккаунты после seed
+- `anna@example.com` / `password123`
+- `max@example.com` / `password123`
