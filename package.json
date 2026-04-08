@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "dev": "concurrently -n web,api -c cyan,green \"pnpm --filter @repo/web dev\" \"pnpm --filter @repo/api dev\"",
+    "dev": "node ./scripts/run-dev-start.mjs",
+    "dev:raw": "concurrently -n web,api -c cyan,green \"pnpm --filter @repo/web dev\" \"pnpm --filter @repo/api dev\"",
+    "dev:check": "node ./scripts/run-dev-check.mjs",
     "dev:web": "pnpm --filter @repo/web dev",
     "dev:api": "pnpm --filter @repo/api dev",
     "build": "pnpm -r build",

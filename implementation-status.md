@@ -4,6 +4,7 @@
 - MVP-план закрыт
 - Локальный запуск работает
 - API smoke/e2e и UI e2e проходят
+- Локальный `pnpm dev` теперь имеет preflight-проверку портов
 - Production deploy-каркас добавлен
 
 ## Что уже получилось
@@ -61,6 +62,8 @@
 - Добавлена инфраструктура UI e2e-тестов на `Playwright`
 - Добавлены `playwright.config.cjs` и `tests/playwright/chat-flow.spec.ts`
 - Добавлены root-скрипты `pnpm test:ui:e2e` для manual-first режима и `pnpm test:ui:e2e:auto` для автоподъема серверов
+- Добавлены `scripts/dev-port-utils.mjs`, `scripts/run-dev-check.mjs`, `scripts/run-dev-start.mjs` и root-скрипт `pnpm dev:check`
+- `pnpm dev` теперь идет через preflight и заранее сообщает о занятых `3000/4000`, а не падает без контекста
 - Автоматический UI e2e разведен с `pnpm dev` по web-порту `3100`, API-порту `4100` и build-папке `.next-e2e`, поэтому не конфликтует с уже запущенными dev-серверами на `3000/4000` и с основной `.next`
 - В отдельную e2e web-сборку прокинуты `NEXT_PUBLIC_API_URL` и `NEXT_PUBLIC_SOCKET_URL`, поэтому регистрация и дальнейший realtime-сценарий корректно ходят в изолированный API на `4100`
 - `tests/playwright/chat-flow.spec.ts` переведен на `PLAYWRIGHT_API_URL`, поэтому manual и auto режимы используют один и тот же тест без хардкода `4000`
@@ -90,6 +93,9 @@
 - `pnpm build` проходит
 - `pnpm typecheck` проходит
 - `node --check scripts/local-smoke-test.mjs` проходит
+- `node --check scripts/dev-port-utils.mjs` проходит
+- `node --check scripts/run-dev-check.mjs` проходит
+- `node --check scripts/run-dev-start.mjs` проходит
 - `node --check scripts/run-ui-e2e-manual.mjs` проходит
 - `node --check scripts/run-web-e2e-build.mjs` проходит
 - `node --check scripts/run-web-e2e-start.mjs` проходит
@@ -127,12 +133,14 @@
 ```powershell
 cd C:\Users\User\Desktop\Project
 docker compose up -d
+pnpm dev:check
 pnpm dev
 ```
 
 ## Что запускать для проверок
 ```powershell
 cd C:\Users\User\Desktop\Project
+pnpm dev:check
 pnpm smoke:local
 pnpm test:api:e2e
 pnpm test:ui:e2e
