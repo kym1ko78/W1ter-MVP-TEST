@@ -12,7 +12,7 @@ MVP веб-мессенджера на стеке `Next.js + NestJS + Socket.IO 
 - локальный smoke test для сценария `register -> create chat -> send message -> read`
 - API e2e-тест на `Jest + Supertest`
 - UI e2e-тест на `Playwright`
-- production Dockerfiles и `docker-compose.production.yml`
+- production Dockerfiles, `docker-compose.production.yml` и `Caddyfile.production`
 
 ## Быстрый старт
 1. Скопируйте `.env.example` в `.env` и при необходимости поправьте значения.
@@ -85,6 +85,7 @@ pnpm test:ui:e2e:auto
 ## Локальная и production инфраструктура
 - локальный PostgreSQL: [docker-compose.yml](C:\Users\User\Desktop\Project\docker-compose.yml)
 - production compose template: [docker-compose.production.yml](C:\Users\User\Desktop\Project\docker-compose.production.yml)
+- reverse proxy template: [Caddyfile.production](C:\Users\User\Desktop\Project\Caddyfile.production)
 - web image: [Dockerfile.web](C:\Users\User\Desktop\Project\Dockerfile.web)
 - api image: [Dockerfile.api](C:\Users\User\Desktop\Project\Dockerfile.api)
 - production guide: [deploy-production.md](C:\Users\User\Desktop\Project\docs\deploy-production.md)
@@ -101,6 +102,7 @@ pnpm test:ui:e2e:auto
 ## Полезные файлы
 - [implementation-status.md](C:\Users\User\Desktop\Project\implementation-status.md) — текущий статус реализации
 - [.env.production.example](C:\Users\User\Desktop\Project\.env.production.example) — стартовый шаблон production-переменных
+- [osnova.md](C:\Users\User\Desktop\Project\osnova.md) — общий план следующих этапов
 
 ## Локальная инфраструктура
 - Docker PostgreSQL опубликован на `localhost:5433`, потому что `5432` занят локальным Windows PostgreSQL

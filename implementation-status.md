@@ -5,7 +5,7 @@
 - Локальный запуск работает
 - API smoke/e2e и UI e2e проходят
 - Локальный `pnpm dev` теперь имеет preflight-проверку портов
-- Production deploy-каркас добавлен
+- Production deploy-каркас добавлен и расширен до VPS + Caddy + domain runbook
 
 ## Что уже получилось
 
@@ -14,7 +14,7 @@
 - Созданы `apps/web`, `apps/api`, `packages/shared`, `docs`, `scripts`, `apps/api/test`, `tests/playwright`
 - Инициализирован `git`-репозиторий
 - Настроены root-конфиги проекта, `.env`, `.env.example`, `.env.production.example`, `README.md`
-- Добавлены production-файлы: `Dockerfile.web`, `Dockerfile.api`, `docker-compose.production.yml`
+- Добавлены production-файлы: `Dockerfile.web`, `Dockerfile.api`, `docker-compose.production.yml`, `Caddyfile.production`
 - Проект перенесен в ASCII-путь `C:\Users\User\Desktop\Project`
 
 ### База данных и инфраструктура
@@ -70,7 +70,8 @@
 - Добавлен ручной helper `scripts/run-ui-e2e-manual.mjs`, который быстро проверяет доступность `api` и `web` и выводит понятную подсказку вместо долгого зависания
 - Добавлен релизный чеклист в `docs/release-checklist.md`
 - Добавлен production deploy guide в `docs/deploy-production.md`
-- Добавлен шаблон production-переменных в `.env.production.example`
+- Добавлен `Caddyfile.production` и production compose обновлен под схему `caddy + web + api + postgres`
+- `.env.production.example` расширен до реального VPS/domain шаблона
 
 ## Что проверено
 - Docker Postgres поднимается локально
@@ -100,7 +101,7 @@
 - `node --check scripts/run-web-e2e-build.mjs` проходит
 - `node --check scripts/run-web-e2e-start.mjs` проходит
 - `pnpm test:ui:e2e:auto` проходит
-- `docker compose -f docker-compose.production.yml config` проходит
+- `docker compose -f docker-compose.production.yml --env-file .env.production.example config` проходит
 
 ## Что сейчас не получилось
 - Нерешенных критических проблем в реализованной части нет
