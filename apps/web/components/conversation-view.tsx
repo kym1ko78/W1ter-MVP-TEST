@@ -238,9 +238,15 @@ export function ConversationView({ chatId }: { chatId: string }) {
         </div>
       </header>
 
-      <div className="flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6" data-testid="message-list">
+      <div className="scroll-region-y flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6" data-testid="message-list">
         {messageItems.map((message) => {
           const isMine = message.senderId === user?.id;
+          const normalizedBody = message.body?.trim() ?? "";
+          const hasText = Boolean(normalizedBody);
+          const hasAttachments = message.attachments.length > 0;
+          const compactBubble = hasText && !hasAttachments;
+          const shortTextOnlyBubble =
+            compactBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
 
           return (
             <div
@@ -252,19 +258,24 @@ export function ConversationView({ chatId }: { chatId: string }) {
             >
               <div
                 className={clsx(
-                  "max-w-[85%] rounded-[24px] px-4 py-3 shadow-sm sm:max-w-[70%]",
+                  "max-w-[85%] shadow-sm sm:max-w-[70%]",
+                  shortTextOnlyBubble
+                    ? "rounded-[19px] px-3 py-1.5"
+                    : compactBubble
+                      ? "rounded-[21px] px-3.5 py-1.5"
+                      : "rounded-[24px] px-4 py-2.5",
                   isMine
                     ? "bg-[linear-gradient(135deg,#d17c43,#af5f2d)] text-white"
                     : "border border-stone-200 bg-white text-ink",
                 )}
               >
                 {!isMine ? (
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
+                  <p className="mb-0.5 text-[11px] font-semibold uppercase tracking-[0.16em] leading-none text-stone-500">
                     {message.sender.displayName}
                   </p>
                 ) : null}
                 {message.body ? (
-                  <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.body}</p>
+                  <p className="whitespace-pre-wrap break-words text-sm leading-5">{message.body}</p>
                 ) : null}
                 {message.attachments.length > 0 ? (
                   <MessageAttachments
@@ -275,7 +286,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 ) : null}
                 <p
                   className={clsx(
-                    "mt-2 text-right text-[11px]",
+                    shortTextOnlyBubble ? "mt-0.5 text-right text-[11px] leading-none" : "mt-1 text-right text-[11px] leading-none",
                     isMine ? "text-white/75" : "text-stone-400",
                   )}
                 >

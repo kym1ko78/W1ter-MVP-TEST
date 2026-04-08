@@ -12,6 +12,7 @@
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
+    "verify:web": "pnpm --filter @repo/web build && pnpm --filter @repo/web typecheck:next",
     "prisma:generate": "pnpm --filter @repo/api prisma generate",
     "prisma:dev": "pnpm --filter @repo/api exec prisma migrate dev",
     "prisma:deploy": "pnpm --filter @repo/api exec prisma migrate deploy",

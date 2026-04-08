@@ -131,3 +131,8 @@ pnpm test:ui:e2e:auto
 ## Демо-аккаунты после seed
 - `anna@example.com` / `password123`
 - `max@example.com` / `password123`
+
+## TypeScript-проверка web
+- `pnpm --filter @repo/web typecheck` теперь проверяет только исходники и не требует предварительного `next build`
+- `pnpm --filter @repo/web typecheck:next` проверяет generated Next types после сборки
+- `pnpm verify:web` запускает полный web-прогон: `next build` + Next-aware typecheck

@@ -28,6 +28,8 @@ import {
 } from "../lib/utils";
 import type { ChatListItem, ChatMessage, MessagePage, SafeUser } from "../types/api";
 
+const CHAT_PAGE_LOCK_CLASS = "chat-page-locked";
+
 export function ChatShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -90,6 +92,18 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       router.replace("/login");
     }
   }, [isAuthenticated, isLoading, router]);
+  useEffect(() => {
+    const rootElement = document.documentElement;
+    const bodyElement = document.body;
+
+    rootElement.classList.add(CHAT_PAGE_LOCK_CLASS);
+    bodyElement.classList.add(CHAT_PAGE_LOCK_CLASS);
+
+    return () => {
+      rootElement.classList.remove(CHAT_PAGE_LOCK_CLASS);
+      bodyElement.classList.remove(CHAT_PAGE_LOCK_CLASS);
+    };
+  }, []);
 
   useEffect(() => {
     if (!accessToken || socketRef.current) {
@@ -204,7 +218,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
             {deferredSearch.trim().length > 1 ? (
               <div
-                className="max-h-52 overflow-y-auto rounded-[24px] border border-stone-200/80 bg-white/70 p-2"
+                className="scroll-region-y max-h-52 overflow-y-auto rounded-[24px] border border-stone-200/80 bg-white/70 p-2"
                 data-testid="user-search-results"
               >
                 {searchUsersQuery.isLoading ? (
@@ -244,7 +258,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
               </span>
             </div>
 
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" data-testid="chat-list">
+            <div className="scroll-region-y min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" data-testid="chat-list">
               {chatsQuery.isLoading ? (
                 <>
                   <SidebarSkeleton />

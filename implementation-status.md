@@ -5,6 +5,7 @@
 - Локальный запуск работает
 - API smoke/e2e и UI e2e проходят
 - Локальный `pnpm dev` имеет preflight-проверку портов
+- Web typecheck разведен на source-only и Next-generated режимы и больше не зависит от предварительного `.next/types`; основной `tsconfig.json` синхронизирован и с `.next`, и с `.next-e2e`
 - Production deploy-каркас добавлен и расширен до VPS + Caddy + domain runbook
 - Первый post-MVP батч `file attachments` реализован и проверен
 - Следующий рекомендуемый батч: `message search`
@@ -50,7 +51,7 @@
 - Отображаются `unread badge` и `last seen`
 - В composer добавлены client-side ограничение длины сообщения, счетчик символов и inline-ошибка при неуспешной отправке
 - Поле ввода по умолчанию выровнено по высоте с кнопкой Отправить, растет автоматически по мере набора текста и больше не показывает ручной resize
-- Chat shell переведен на высоту viewport: страница чата не прокручивается целиком, а скролл живет внутри списка чатов и истории сообщений
+- Chat shell переведен на высоту viewport: страница чата не прокручивается целиком, а скролл живет внутри списка чатов и истории сообщений`r`n- Свайп/scroll всей страницы на chat-экране заблокирован route-scoped lock-режимом; скролл сохранен только внутри списка чатов, результатов поиска и истории сообщений`r`n- Пузырьки сообщений уплотнены в два прохода: уменьшены лишние нижние отступы, расстояние до времени, radius и padding у коротких text-only сообщений
 - Добавлены `data-testid` для стабильных UI e2e тестов
 - Добавлена app-router страница `not-found`, а также минимальные fallback-файлы `pages/_app.tsx` и `pages/_document.tsx` для стабильной сборки Next.js на текущей Windows-конфигурации
 - Реализован UI первого post-MVP батча `file attachments`:
@@ -109,6 +110,8 @@
 - `pnpm --filter @repo/api test:e2e` проходит
 - `pnpm prisma:deploy` с миграцией вложений проходит
 - `pnpm --filter @repo/web typecheck` проходит
+- `pnpm verify:web` проходит
+- `pnpm typecheck` проходит
 - `pnpm --filter @repo/web build` проходит
 - `pnpm test:ui:e2e:auto` проходит
 - `docker compose -f docker-compose.production.yml --env-file .env.production.example config` проходит

@@ -58,3 +58,19 @@ textarea {
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23101827' fill-opacity='.03'%3E%3Ccircle cx='15' cy='20' r='1'/%3E%3Ccircle cx='42' cy='65' r='1'/%3E%3Ccircle cx='83' cy='18' r='1'/%3E%3Ccircle cx='119' cy='92' r='1'/%3E%3Ccircle cx='75' cy='118' r='1'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
   mix-blend-mode: multiply;
 }
+html.chat-page-locked,
+body.chat-page-locked {
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body.chat-page-locked {
+  max-height: 100dvh;
+}
+
+.scroll-region-y {
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
