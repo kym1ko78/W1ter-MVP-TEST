@@ -12,6 +12,10 @@
   --accent: #d17c43;
   --accent-strong: #af5f2d;
   --panel: rgba(255, 251, 245, 0.82);
+  --scrollbar-size: 10px;
+  --scrollbar-track: rgba(120, 92, 62, 0.08);
+  --scrollbar-thumb: rgba(175, 95, 45, 0.42);
+  --scrollbar-thumb-hover: rgba(175, 95, 45, 0.62);
 }
 
 * {
@@ -73,4 +77,29 @@ body.chat-page-locked {
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.scroll-region-y::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+.scroll-region-y::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: var(--scrollbar-track);
+}
+
+.scroll-region-y::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--scrollbar-thumb-hover), var(--scrollbar-thumb));
+  background-clip: padding-box;
+}
+
+.scroll-region-y::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(209, 124, 67, 1), rgba(175, 95, 45, 1));
+  background-clip: padding-box;
 }
