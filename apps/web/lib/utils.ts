@@ -1,3 +1,11 @@
+function getLocalDateParts(date: Date) {
+  return {
+    year: date.getFullYear(),
+    month: date.getMonth() + 1,
+    day: date.getDate(),
+  };
+}
+
 export function formatTime(isoString: string | null) {
   if (!isoString) {
     return "recently";
@@ -7,6 +15,48 @@ export function formatTime(isoString: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(isoString));
+}
+
+export function getConversationDayKey(isoString: string | null) {
+  if (!isoString) {
+    return "unknown-day";
+  }
+
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown-day";
+  }
+
+  const { year, month, day } = getLocalDateParts(date);
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+export function formatConversationDateLabel(isoString: string | null) {
+  if (!isoString) {
+    return "";
+  }
+
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  const now = new Date();
+  const isCurrentYear = date.getFullYear() === now.getFullYear();
+
+  return new Intl.DateTimeFormat(
+    "ru-RU",
+    isCurrentYear
+      ? {
+          day: "numeric",
+          month: "long",
+        }
+      : {
+          day: "numeric",
+          month: "long",
+          year: "numeric",
+        },
+  ).format(date);
 }
 
 export function formatRelativeLastSeen(isoString: string | null) {
@@ -59,6 +109,8 @@ export function getLastMessagePreviewText(
   message:
     | {
         body: string | null;
+        deletedAt?: string | null;
+        isDeleted?: boolean;
         attachments?: Array<{ originalName: string }>;
       }
     | null
@@ -66,6 +118,10 @@ export function getLastMessagePreviewText(
 ) {
   if (!message) {
     return "Сообщений пока нет";
+  }
+
+  if (message.isDeleted || message.deletedAt) {
+    return "Сообщение удалено";
   }
 
   if (message.body?.trim()) {

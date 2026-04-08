@@ -33,8 +33,8 @@
 ### Backend
 - Backend на `NestJS` запущен локально
 - Реализованы модули `auth`, `users`, `chat`, `realtime`, `prisma`
-- Реализованы API-роуты для регистрации, входа, обновления сессии, выхода, получения текущего пользователя, поиска пользователей, создания direct chat, загрузки истории сообщений, отправки сообщений и отметки о прочтении
-- Реализованы `JWT access token`, `refresh token` в `HttpOnly cookie`, хэширование паролей через `bcrypt`, Socket.IO gateway и presence в памяти процесса
+- Реализованы API-роуты для регистрации, входа, обновления сессии, выхода, получения текущего пользователя, поиска пользователей, создания direct chat, загрузки истории сообщений, отправки сообщений, soft delete сообщений, удаления direct chat и отметки о прочтении
+- Реализованы `JWT access token`, `refresh token` в `HttpOnly cookie`, хэширование паролей через `bcrypt`, Socket.IO gateway и presence в памяти процесса; TTL refresh-cookie теперь синхронизирован с `JWT_REFRESH_TTL_DAYS`, чтобы пользователь дольше оставался в сессии без повторного входа
 - Добавлен in-memory rate limiting для чувствительных точек MVP
 - Ограничены по частоте регистрация, вход, refresh, logout, создание direct chat, отправка сообщений и загрузка вложений
 - Добавлено базовое логирование backend-событий для auth, chat и websocket-соединений
@@ -51,8 +51,13 @@
 - Отображаются `unread badge` и `last seen`
 - В composer добавлены client-side ограничение длины сообщения, счетчик символов и inline-ошибка при неуспешной отправке
 - Поле ввода по умолчанию выровнено по высоте с кнопкой Отправить, растет автоматически по мере набора текста и больше не показывает ручной resize
-- Chat shell переведен на высоту viewport: страница чата не прокручивается целиком, а скролл живет внутри списка чатов и истории сообщений`r`n- Свайп/scroll всей страницы на chat-экране заблокирован route-scoped lock-режимом; скролл сохранен только внутри списка чатов, результатов поиска и истории сообщений
-- Scrollbar внутри chat-зон стилизован под интерфейс мессенджера: добавлены тонкий thumb, мягкий track и кроссбраузерная поддержка для WebKit/Firefox`r`n- Пузырьки сообщений уплотнены в три прохода: уменьшены лишние нижние отступы, расстояние до времени, radius и padding у коротких text-only сообщений, а timestamp у text-only bubble перенесен к правому краю карточки
+- Chat shell переведен на высоту viewport: страница чата не прокручивается целиком, а скролл живет внутри списка чатов и истории сообщений
+- Свайп/scroll всей страницы на chat-экране заблокирован route-scoped lock-режимом; скролл сохранен только внутри списка чатов, результатов поиска и истории сообщений
+- Scrollbar внутри chat-зон переведен в более точный референсный стиль: узкий темный rail, inset thumb, кроссбраузерная поддержка для WebKit/Firefox и усиленно скрытые стрелочные кнопки по краям
+- Пузырьки сообщений уплотнены в три прохода: уменьшены лишние нижние отступы, расстояние до времени, radius и padding у коротких text-only сообщений, а timestamp у text-only bubble перенесен к правому краю карточки
+- В истории сообщений добавлены date separators: при смене календарного дня в чате появляется отдельная плашка с датой
+- В direct chat убрано имя над каждым bubble, composer отправляет сообщение по `Enter`, а `Ctrl+Enter` вставляет новую строку`r`n- Исправлено выравнивание длинных исходящих сообщений: outgoing bubble снова остается прижатым к правой стороне и растет влево даже рядом с delete action
+- Добавлены удаление своего сообщения с soft delete-state bubble `Сообщение удалено`; действие удаления whole direct chat перенесено из header диалога в карточку чата внутри списка `Ваши чаты`
 - Добавлены `data-testid` для стабильных UI e2e тестов
 - Добавлена app-router страница `not-found`, а также минимальные fallback-файлы `pages/_app.tsx` и `pages/_document.tsx` для стабильной сборки Next.js на текущей Windows-конфигурации
 - Реализован UI первого post-MVP батча `file attachments`:
@@ -75,7 +80,7 @@
 - Добавлена инфраструктура API e2e-тестов на `Jest + Supertest`
 - Добавлены `apps/api/tsconfig.spec.json`, `apps/api/test/jest-e2e.json`, `apps/api/test/app.e2e-spec.ts`
 - Добавлен root-скрипт `pnpm test:api:e2e`
-- API e2e теперь покрывает upload/download flow для attachment message
+- API e2e теперь покрывает upload/download flow для attachment message, soft delete сообщения и удаление direct chat
 - Добавлена инфраструктура UI e2e-тестов на `Playwright`
 - Добавлены `playwright.config.cjs` и `tests/playwright/chat-flow.spec.ts`
 - Добавлены root-скрипты `pnpm test:ui:e2e` для manual-first режима и `pnpm test:ui:e2e:auto` для автоподъема серверов
@@ -84,6 +89,7 @@
 - Автоматический UI e2e разведен с `pnpm dev` по web-порту `3100`, API-порту `4100` и build-папке `.next-e2e`, поэтому не конфликтует с уже запущенными dev-серверами на `3000/4000` и с основной `.next`
 - В отдельную e2e web-сборку прокинуты `NEXT_PUBLIC_API_URL` и `NEXT_PUBLIC_SOCKET_URL`, поэтому регистрация и дальнейший realtime-сценарий корректно ходят в изолированный API на `4100`
 - `tests/playwright/chat-flow.spec.ts` переведен на `PLAYWRIGHT_API_URL`, поэтому manual и auto режимы используют один и тот же тест без хардкода `4000`
+- UI e2e теперь дополнительно проверяет session restore после reload, отправку по `Enter`, перенос строки по `Ctrl+Enter`, delete message и delete chat
 - Добавлен ручной helper `scripts/run-ui-e2e-manual.mjs`, который быстро проверяет доступность `api` и `web` и выводит понятную подсказку вместо долгого зависания
 - Добавлен релизный чеклист в `docs/release-checklist.md`
 - Добавлен production deploy guide в `docs/deploy-production.md`
@@ -115,6 +121,7 @@
 - `pnpm typecheck` проходит
 - `pnpm --filter @repo/web build` проходит
 - `pnpm test:ui:e2e:auto` проходит
+- Delete message / delete chat работают и синхронизируются через realtime между участниками
 - `docker compose -f docker-compose.production.yml --env-file .env.production.example config` проходит
 
 ## Что сейчас не получилось
@@ -127,7 +134,7 @@
 - Затем перейти к `group chats`
 - Push-уведомления
 - Redis adapter для нескольких backend-инстансов
-- Редактирование и удаление сообщений
+- Редактирование сообщений
 - WebRTC-звонки
 
 ## Что важно знать по текущему поведению

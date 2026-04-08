@@ -2,19 +2,22 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { readJson, useAuth } from "../lib/auth-context";
 import {
   appendMessageUnique,
   dedupeMessages,
   normalizeMessagePage,
+  upsertMessage,
 } from "../lib/message-cache";
 import { buildAttachmentUrl } from "../lib/config";
 import {
+  formatConversationDateLabel,
   formatFileSize,
   formatRelativeLastSeen,
   formatTime,
   getChatTitle,
+  getConversationDayKey,
 } from "../lib/utils";
 import type { ChatAttachment, ChatListItem, ChatMessage, MessagePage } from "../types/api";
 
@@ -41,6 +44,18 @@ type ComposerPayload = {
   body: string;
   file: File | null;
 };
+
+type ConversationRenderItem =
+  | {
+      type: "date";
+      key: string;
+      label: string;
+    }
+  | {
+      type: "message";
+      key: string;
+      message: ChatMessage;
+    };
 
 export function ConversationView({ chatId }: { chatId: string }) {
   const queryClient = useQueryClient();
@@ -71,6 +86,32 @@ export function ConversationView({ chatId }: { chatId: string }) {
     () => dedupeMessages(messagesQuery.data?.items ?? []),
     [messagesQuery.data?.items],
   );
+
+  const renderItems = useMemo<ConversationRenderItem[]>(() => {
+    const items: ConversationRenderItem[] = [];
+    let previousDayKey: string | null = null;
+
+    for (const message of messageItems) {
+      const dayKey = getConversationDayKey(message.createdAt);
+
+      if (dayKey !== previousDayKey) {
+        items.push({
+          type: "date",
+          key: `date-${dayKey}-${message.id}`,
+          label: formatConversationDateLabel(message.createdAt),
+        });
+        previousDayKey = dayKey;
+      }
+
+      items.push({
+        type: "message",
+        key: message.id,
+        message,
+      });
+    }
+
+    return items;
+  }, [messageItems]);
 
   const sendMessageMutation = useMutation({
     mutationFn: async ({ body, file }: ComposerPayload) => {
@@ -121,6 +162,22 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
   });
 
+  const deleteMessageMutation = useMutation({
+    mutationFn: async (messageId: string) =>
+      readJson<ChatMessage>(
+        await authorizedFetch(`/chats/${chatId}/messages/${messageId}`, {
+          method: "DELETE",
+        }),
+      ),
+    onSuccess: (message) => {
+      queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
+        upsertMessage(old, message),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+    },
+  });
+
   useEffect(() => {
     const element = textareaRef.current;
 
@@ -141,7 +198,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   useEffect(() => {
     const lastMessage = messageItems[messageItems.length - 1];
 
-    if (!lastMessage || lastMessage.senderId === user?.id) {
+    if (!lastMessage || lastMessage.senderId === user?.id || lastMessage.isDeleted) {
       return;
     }
 
@@ -190,9 +247,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
   };
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
+  const submitComposer = () => {
     const body = draft.trim();
     if ((!body && !pendingFile) || sendMessageMutation.isPending) {
       return;
@@ -205,6 +260,61 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
     setComposerError(null);
     sendMessageMutation.mutate({ body, file: pendingFile });
+  };
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    submitComposer();
+  };
+
+  const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+
+    if (event.ctrlKey) {
+      event.preventDefault();
+      const target = event.currentTarget;
+      const selectionStart = target.selectionStart ?? draft.length;
+      const selectionEnd = target.selectionEnd ?? draft.length;
+      const nextValue = `${draft.slice(0, selectionStart)}\n${draft.slice(selectionEnd)}`;
+
+      setDraft(nextValue);
+      if (composerError) {
+        setComposerError(null);
+      }
+
+      queueMicrotask(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) {
+          return;
+        }
+
+        const cursorPosition = selectionStart + 1;
+        textarea.selectionStart = cursorPosition;
+        textarea.selectionEnd = cursorPosition;
+      });
+      return;
+    }
+
+    if (event.shiftKey || event.metaKey || event.altKey) {
+      return;
+    }
+
+    event.preventDefault();
+    submitComposer();
+  };
+
+  const handleDeleteMessage = (message: ChatMessage) => {
+    if (deleteMessageMutation.isPending || message.isDeleted) {
+      return;
+    }
+
+    if (!window.confirm("Удалить это сообщение?")) {
+      return;
+    }
+
+    deleteMessageMutation.mutate(message.id);
   };
 
   if (chatQuery.isLoading || messagesQuery.isLoading) {
@@ -239,82 +349,122 @@ export function ConversationView({ chatId }: { chatId: string }) {
       </header>
 
       <div className="scroll-region-y flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6" data-testid="message-list">
-        {messageItems.map((message) => {
+        {renderItems.map((item) => {
+          if (item.type === "date") {
+            return (
+              <div
+                key={item.key}
+                className="flex justify-center py-1"
+                data-testid="message-date-separator"
+              >
+                <div className="rounded-full bg-stone-900/80 px-4 py-1 text-xs font-medium tracking-[0.02em] text-white/90 shadow-sm">
+                  {item.label}
+                </div>
+              </div>
+            );
+          }
+
+          const { message } = item;
           const isMine = message.senderId === user?.id;
+          const isDeleted = message.isDeleted;
           const normalizedBody = message.body?.trim() ?? "";
           const hasText = Boolean(normalizedBody);
           const hasAttachments = message.attachments.length > 0;
-          const inlineMetaBubble = hasText && !hasAttachments;
+          const inlineMetaBubble = hasText && !hasAttachments && !isDeleted;
           const compactBubble = inlineMetaBubble;
           const shortTextOnlyBubble =
             inlineMetaBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
 
           return (
             <div
-              key={message.id}
+              key={item.key}
               data-testid="message-item"
               data-message-id={message.id}
               data-message-owner={isMine ? "self" : "other"}
-              className={clsx("flex", isMine ? "justify-end" : "justify-start")}
+              className={clsx("group flex w-full", isMine ? "justify-end" : "justify-start")}
             >
               <div
                 className={clsx(
-                  "max-w-[85%] shadow-sm sm:max-w-[70%]",
-                  shortTextOnlyBubble
-                    ? "rounded-[17px] px-3 py-1"
-                    : compactBubble
-                      ? "rounded-[19px] px-3 py-1.5"
-                      : "rounded-[24px] px-4 py-2.5",
-                  isMine
-                    ? "bg-[linear-gradient(135deg,#d17c43,#af5f2d)] text-white"
-                    : "border border-stone-200 bg-white text-ink",
+                  "flex items-start gap-2",
+                  isMine ? "ml-auto max-w-[85%] sm:max-w-[70%]" : "max-w-[85%] sm:max-w-[70%]",
                 )}
               >
-                {!isMine ? (
-                  <p className="mb-0.5 text-[11px] font-semibold uppercase tracking-[0.16em] leading-none text-stone-500">
-                    {message.sender.displayName}
-                  </p>
-                ) : null}
-                {inlineMetaBubble && message.body ? (
-                  <div
-                    className={clsx(
-                      "grid grid-cols-[minmax(0,1fr)_auto] items-end",
-                      shortTextOnlyBubble ? "gap-x-1.5" : "gap-x-2",
-                    )}
+                {isMine && !isDeleted ? (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteMessage(message)}
+                    data-testid="delete-message-button"
+                    className="mt-1 rounded-full border border-stone-200 bg-white/85 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 opacity-0 transition hover:border-rose-300 hover:text-rose-700 group-hover:opacity-100"
                   >
-                    <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
-                      {message.body}
-                    </p>
+                    {deleteMessageMutation.isPending ? "..." : "Удалить"}
+                  </button>
+                ) : null}
+                <div
+                  className={clsx(
+                    "w-fit max-w-full shadow-sm",
+                    isDeleted
+                      ? "rounded-[20px] border border-dashed border-stone-300 bg-stone-100/80 px-3 py-2"
+                      : shortTextOnlyBubble
+                        ? "rounded-[17px] px-3 py-1"
+                        : compactBubble
+                          ? "rounded-[19px] px-3 py-1.5"
+                          : "rounded-[24px] px-4 py-2.5",
+                    isDeleted
+                      ? "text-stone-500"
+                      : isMine
+                        ? "bg-[linear-gradient(135deg,#d17c43,#af5f2d)] text-white"
+                        : "border border-stone-200 bg-white text-ink",
+                  )}
+                >
+                  {isDeleted ? (
+                    <div className="space-y-1">
+                      <p className="text-sm italic leading-5">Сообщение удалено</p>
+                      <p className="text-right text-[11px] leading-none text-stone-400">
+                        {formatTime(message.createdAt)}
+                      </p>
+                    </div>
+                  ) : null}
+                  {inlineMetaBubble && message.body ? (
+                    <div
+                      className={clsx(
+                        "grid grid-cols-[minmax(0,1fr)_auto] items-end",
+                        shortTextOnlyBubble ? "gap-x-1.5" : "gap-x-2",
+                      )}
+                    >
+                      <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
+                        {message.body}
+                      </p>
+                      <p
+                        className={clsx(
+                          "shrink-0 self-end pb-0.5 text-[11px] leading-none",
+                          isMine ? "text-white/75" : "text-stone-400",
+                        )}
+                      >
+                        {formatTime(message.createdAt)}
+                      </p>
+                    </div>
+                  ) : null}
+                  {message.body && !inlineMetaBubble && !isDeleted ? (
+                    <p className="whitespace-pre-wrap break-words text-sm leading-5">{message.body}</p>
+                  ) : null}
+                  {message.attachments.length > 0 && !isDeleted ? (
+                    <MessageAttachments
+                      accessToken={accessToken}
+                      attachments={message.attachments}
+                      isMine={isMine}
+                    />
+                  ) : null}
+                  {!inlineMetaBubble && !isDeleted ? (
                     <p
                       className={clsx(
-                        "shrink-0 self-end pb-0.5 text-[11px] leading-none",
+                        hasText ? "mt-1 text-right text-[11px] leading-none" : "mt-1.5 text-right text-[11px] leading-none",
                         isMine ? "text-white/75" : "text-stone-400",
                       )}
                     >
                       {formatTime(message.createdAt)}
                     </p>
-                  </div>
-                ) : null}
-                {message.body && !inlineMetaBubble ? (
-                  <p className="whitespace-pre-wrap break-words text-sm leading-5">{message.body}</p>
-                ) : null}
-                {message.attachments.length > 0 ? (
-                  <MessageAttachments
-                    accessToken={accessToken}
-                    attachments={message.attachments}
-                    isMine={isMine}
-                  />
-                ) : null}
-                {!inlineMetaBubble ? (
-                  <p
-                    className={clsx(
-                      hasText ? "mt-1 text-right text-[11px] leading-none" : "mt-1.5 text-right text-[11px] leading-none",
-                      isMine ? "text-white/75" : "text-stone-400",
-                    )}
-                  >
-                    {formatTime(message.createdAt)}
-                  </p>
-                ) : null}
+                  ) : null}
+                </div>
               </div>
             </div>
           );
@@ -370,6 +520,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 setComposerError(null);
               }
             }}
+            onKeyDown={handleComposerKeyDown}
             rows={1}
             maxLength={MESSAGE_MAX_LENGTH}
             placeholder="Напишите сообщение..."
@@ -394,9 +545,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
           >
             Прикрепить файл
           </button>
-          <p className="text-right text-xs text-stone-500" data-testid="message-counter">
-            {draft.length}/{MESSAGE_MAX_LENGTH}
-          </p>
+          <div className="text-right text-xs text-stone-500">
+            <p data-testid="message-counter">{draft.length}/{MESSAGE_MAX_LENGTH}</p>
+            <p className="mt-1">Enter: отправить · Ctrl+Enter: новая строка</p>
+          </div>
         </div>
       </form>
     </section>

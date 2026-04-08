@@ -129,6 +129,9 @@ export class ChatService {
           },
         },
         messages: {
+          where: {
+            deletedAt: null,
+          },
           orderBy: { createdAt: "desc" },
           take: 1,
           include: {
@@ -161,6 +164,9 @@ export class ChatService {
           },
         },
         messages: {
+          where: {
+            deletedAt: null,
+          },
           orderBy: { createdAt: "desc" },
           take: 1,
           include: {
@@ -175,6 +181,45 @@ export class ChatService {
     }
 
     return this.toChatListItem(chat, currentUserId);
+  }
+
+  async deleteChat(chatId: string, currentUserId: string) {
+    await this.ensureMembership(chatId, currentUserId);
+
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      include: {
+        members: true,
+        messages: {
+          include: {
+            attachments: true,
+          },
+        },
+      },
+    });
+
+    if (!chat) {
+      throw new NotFoundException("Chat not found");
+    }
+
+    const attachmentStorageKeys = chat.messages.flatMap((message) =>
+      message.attachments.map((attachment) => attachment.storageKey),
+    );
+    const memberIds = chat.members.map((member) => member.userId);
+
+    await this.prisma.chat.delete({
+      where: { id: chatId },
+    });
+
+    await this.cleanupStoredFiles(attachmentStorageKeys);
+
+    this.realtimeGateway.emitChatDeleted(memberIds, { chatId });
+    this.logger.log(`Deleted chat ${chatId} by user ${currentUserId}`);
+
+    return {
+      success: true,
+      chatId,
+    };
   }
 
   async getMessages(chatId: string, currentUserId: string, cursor?: string) {
@@ -243,6 +288,78 @@ export class ChatService {
     this.realtimeGateway.emitMessageNew(chatId, payload);
     this.realtimeGateway.emitChatUpdated(chatId);
     this.logger.log(`Stored message ${message.id} in chat ${chatId} from user ${currentUserId}`);
+
+    return payload;
+  }
+
+  async deleteMessage(chatId: string, messageId: string, currentUserId: string) {
+    await this.ensureMembership(chatId, currentUserId);
+
+    const [message, chat] = await Promise.all([
+      this.prisma.message.findFirst({
+        where: {
+          id: messageId,
+          chatId,
+        },
+        include: {
+          sender: true,
+          attachments: true,
+        },
+      }),
+      this.prisma.chat.findUnique({
+        where: { id: chatId },
+        select: { lastMessageId: true },
+      }),
+    ]);
+
+    if (!message) {
+      throw new NotFoundException("Message not found");
+    }
+
+    if (message.senderId !== currentUserId) {
+      throw new ForbiddenException("Вы можете удалить только свое сообщение.");
+    }
+
+    if (message.deletedAt) {
+      return this.toMessagePayload(message);
+    }
+
+    const attachmentStorageKeys = message.attachments.map((attachment) => attachment.storageKey);
+    const shouldRefreshLastMessage = chat?.lastMessageId === message.id;
+
+    const deletedMessage = await this.prisma.$transaction(async (transaction) => {
+      await transaction.attachment.deleteMany({
+        where: {
+          messageId: message.id,
+        },
+      });
+
+      const updatedMessage = await transaction.message.update({
+        where: { id: message.id },
+        data: {
+          body: null,
+          deletedAt: new Date(),
+        },
+        include: {
+          sender: true,
+          attachments: true,
+        },
+      });
+
+      if (shouldRefreshLastMessage) {
+        await this.refreshChatLastMessageReference(transaction, chatId);
+      }
+
+      return updatedMessage;
+    });
+
+    await this.cleanupStoredFiles(attachmentStorageKeys);
+
+    const payload = this.toMessagePayload(deletedMessage);
+
+    this.realtimeGateway.emitMessageUpdated(chatId, payload);
+    this.realtimeGateway.emitChatUpdated(chatId);
+    this.logger.log(`Deleted message ${message.id} in chat ${chatId} by user ${currentUserId}`);
 
     return payload;
   }
@@ -403,6 +520,39 @@ export class ChatService {
     return membership;
   }
 
+  private async refreshChatLastMessageReference(
+    transaction: Prisma.TransactionClient,
+    chatId: string,
+  ) {
+    const lastVisibleMessage = await transaction.message.findFirst({
+      where: {
+        chatId,
+        deletedAt: null,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    await transaction.chat.update({
+      where: { id: chatId },
+      data: {
+        lastMessageId: lastVisibleMessage?.id ?? null,
+      },
+    });
+  }
+
+  private async cleanupStoredFiles(storageKeys: string[]) {
+    await Promise.all(
+      storageKeys.map((storageKey) =>
+        unlink(join(this.getUploadsDirectory(), storageKey)).catch(() => undefined),
+      ),
+    );
+  }
+
   private findDirectChatId(
     memberships: Array<{ chatId: string; userId: string }>,
     currentUserId: string,
@@ -458,39 +608,52 @@ export class ChatService {
   }
 
   private toMessagePayload(message: MessageWithRelations) {
+    const isDeleted = Boolean(message.deletedAt);
+
     return {
       id: message.id,
       chatId: message.chatId,
       senderId: message.senderId,
-      body: message.body,
+      body: isDeleted ? null : message.body,
       createdAt: message.createdAt.toISOString(),
       updatedAt: message.updatedAt.toISOString(),
+      deletedAt: message.deletedAt?.toISOString() ?? null,
+      isDeleted,
       sender: this.toSafeUser(message.sender),
-      attachments: message.attachments.map((attachment) => this.toAttachmentPayload(attachment)),
+      attachments: isDeleted
+        ? []
+        : message.attachments.map((attachment) => this.toAttachmentPayload(attachment)),
     };
   }
 
   private toMessagePreview(
     message: Prisma.MessageGetPayload<{ include: { attachments: true } }>,
   ) {
+    const isDeleted = Boolean(message.deletedAt);
+
     return {
       id: message.id,
       chatId: message.chatId,
       senderId: message.senderId,
-      body: message.body,
+      body: isDeleted ? null : message.body,
       createdAt: message.createdAt.toISOString(),
       updatedAt: message.updatedAt.toISOString(),
-      attachments: message.attachments.map((attachment) => this.toAttachmentPayload(attachment)),
+      deletedAt: message.deletedAt?.toISOString() ?? null,
+      isDeleted,
+      attachments: isDeleted
+        ? []
+        : message.attachments.map((attachment) => this.toAttachmentPayload(attachment)),
     };
   }
 
   private toChatListItem(chat: ChatWithMembersAndMessages, currentUserId: string) {
     const currentMembership = chat.members.find((member) => member.userId === currentUserId);
+    const latestVisibleMessage = chat.messages[0] ?? null;
 
     const unreadCount =
-      chat.messages[0] &&
-      chat.messages[0].id !== currentMembership?.lastReadMessageId &&
-      chat.messages[0].senderId !== currentUserId
+      latestVisibleMessage &&
+      latestVisibleMessage.id !== currentMembership?.lastReadMessageId &&
+      latestVisibleMessage.senderId !== currentUserId
         ? 1
         : 0;
 
@@ -500,7 +663,7 @@ export class ChatService {
       updatedAt: chat.updatedAt.toISOString(),
       unreadCount,
       members: chat.members.map((member) => this.toSafeUser(member.user)),
-      lastMessage: chat.messages[0] ? this.toMessagePreview(chat.messages[0]) : null,
+      lastMessage: latestVisibleMessage ? this.toMessagePreview(latestVisibleMessage) : null,
     };
   }
 }

@@ -18,7 +18,7 @@ import {
 import { usePathname, useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
 import { readJson, useAuth } from "../lib/auth-context";
-import { appendMessageUnique } from "../lib/message-cache";
+import { appendMessageUnique, upsertMessage } from "../lib/message-cache";
 import { SOCKET_URL } from "../lib/config";
 import {
   formatRelativeLastSeen,
@@ -30,6 +30,15 @@ import type { ChatListItem, ChatMessage, MessagePage, SafeUser } from "../types/
 
 const CHAT_PAGE_LOCK_CLASS = "chat-page-locked";
 
+type ChatDeletedPayload = {
+  chatId: string;
+};
+
+type DeleteChatResponse = {
+  success: boolean;
+  chatId: string;
+};
+
 export function ChatShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -38,6 +47,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const socketRef = useRef<Socket | null>(null);
   const { accessToken, authorizedFetch, isAuthenticated, isLoading, logout, user } = useAuth();
   const [search, setSearch] = useState("");
+  const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
   const deferredSearch = useDeferredValue(search);
   const currentChatId = useMemo(() => {
     const segments = safePathname.split("/").filter(Boolean);
@@ -83,6 +93,33 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     },
   });
 
+  const deleteChatMutation = useMutation({
+    mutationFn: async (chatId: string) =>
+      readJson<DeleteChatResponse>(
+        await authorizedFetch(`/chats/${chatId}`, {
+          method: "DELETE",
+        }),
+      ),
+    onMutate: (chatId) => {
+      setDeletingChatId(chatId);
+    },
+    onSuccess: ({ chatId }) => {
+      queryClient.removeQueries({ queryKey: ["chat", chatId] });
+      queryClient.removeQueries({ queryKey: ["messages", chatId] });
+      queryClient.setQueryData<ChatListItem[] | undefined>(["chats"], (old) =>
+        old?.filter((chat) => chat.id !== chatId),
+      );
+      if (currentChatId === chatId) {
+        startTransition(() => {
+          router.replace("/chat");
+        });
+      }
+    },
+    onSettled: () => {
+      setDeletingChatId(null);
+    },
+  });
+
   useEffect(() => {
     if (isLoading) {
       return;
@@ -92,6 +129,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       router.replace("/login");
     }
   }, [isAuthenticated, isLoading, router]);
+
   useEffect(() => {
     const rootElement = document.documentElement;
     const bodyElement = document.body;
@@ -127,8 +165,30 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       void queryClient.invalidateQueries({ queryKey: ["chat", message.chatId] });
     });
 
+    socket.on("message:updated", (message: ChatMessage) => {
+      queryClient.setQueryData<MessagePage>(["messages", message.chatId], (old) =>
+        upsertMessage(old, message),
+      );
+
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", message.chatId] });
+    });
+
     socket.on("chat:updated", () => {
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
+    });
+
+    socket.on("chat:deleted", (payload: ChatDeletedPayload) => {
+      queryClient.setQueryData<ChatListItem[] | undefined>(["chats"], (old) =>
+        old?.filter((chat) => chat.id !== payload.chatId),
+      );
+      queryClient.removeQueries({ queryKey: ["chat", payload.chatId] });
+      queryClient.removeQueries({ queryKey: ["messages", payload.chatId] });
+      if (currentChatId === payload.chatId) {
+        startTransition(() => {
+          router.replace("/chat");
+        });
+      }
     });
 
     socket.on("chat:read", () => {
@@ -148,7 +208,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [accessToken, currentChatId, queryClient]);
+  }, [accessToken, currentChatId, queryClient, router]);
 
   useEffect(() => {
     if (!currentChatId || !socketRef.current) {
@@ -168,6 +228,18 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       router.replace(`/chat/${chatsQuery.data[0].id}`);
     }
   }, [chatsQuery.data, currentChatId, router, safePathname]);
+
+  const handleDeleteChat = (chatId: string) => {
+    if (deleteChatMutation.isPending) {
+      return;
+    }
+
+    if (!window.confirm("Удалить этот чат целиком?")) {
+      return;
+    }
+
+    deleteChatMutation.mutate(chatId);
+  };
 
   if (isLoading || !isAuthenticated) {
     return (
@@ -270,29 +342,33 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                   const title = getChatTitle(chat.members, user?.id);
                   const partner = chat.members.find((member) => member.id !== user?.id);
                   const isActive = currentChatId === chat.id;
+                  const isDeleting = deletingChatId === chat.id;
 
                   return (
-                    <Link
+                    <div
                       key={chat.id}
-                      data-testid="chat-list-item"
-                      href={`/chat/${chat.id}`}
+                      data-testid="chat-list-entry"
                       className={clsx(
-                        "block rounded-[24px] border px-4 py-4 transition",
+                        "rounded-[24px] border px-4 py-4 transition",
                         isActive
                           ? "border-clay bg-[linear-gradient(135deg,rgba(209,124,67,0.15),rgba(175,95,45,0.08))]"
                           : "border-transparent bg-white/70 hover:border-stone-200 hover:bg-white",
                       )}
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
+                        <Link
+                          data-testid="chat-list-item"
+                          href={`/chat/${chat.id}`}
+                          className="min-w-0 flex-1"
+                        >
                           <p className="truncate text-sm font-semibold text-ink">{title}</p>
                           <p className="mt-1 truncate text-xs text-stone-500">
                             {partner?.lastSeenAt
                               ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
                               : "Личный чат"}
                           </p>
-                        </div>
-                        <div className="text-right">
+                        </Link>
+                        <div className="shrink-0 text-right">
                           <p className="text-[11px] uppercase tracking-[0.16em] text-stone-400">
                             {chat.lastMessage ? formatTime(chat.lastMessage.createdAt) : "New"}
                           </p>
@@ -304,13 +380,25 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                               {chat.unreadCount}
                             </span>
                           ) : null}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteChat(chat.id)}
+                            disabled={deleteChatMutation.isPending}
+                            data-testid="chat-list-delete-button"
+                            className="mt-2 block rounded-full border border-rose-200 bg-white/85 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-rose-700 transition hover:border-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isDeleting ? "Удаление..." : "Удалить"}
+                          </button>
                         </div>
                       </div>
 
-                      <p className="mt-3 truncate text-sm text-stone-600">
+                      <Link
+                        href={`/chat/${chat.id}`}
+                        className="mt-3 block truncate text-sm text-stone-600"
+                      >
                         {getLastMessagePreviewText(chat.lastMessage)}
-                      </p>
-                    </Link>
+                      </Link>
+                    </div>
                   );
                 })
               ) : (

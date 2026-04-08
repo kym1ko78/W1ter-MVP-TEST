@@ -54,7 +54,7 @@ describe("API e2e", () => {
     await rm(uploadsDir, { recursive: true, force: true });
   });
 
-  it("registers, refreshes, creates a direct chat, sends text and attachments, then marks them as read", async () => {
+  it("registers, restores a session, deletes messages and removes chats", async () => {
     const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const alice = {
       email: `api.e2e.alice.${suffix}@example.com`,
@@ -154,6 +154,7 @@ describe("API e2e", () => {
         expect.objectContaining({
           id: sentMessageId,
           body: messageText,
+          isDeleted: false,
         }),
         expect.objectContaining({
           id: attachmentMessageId,
@@ -193,5 +194,58 @@ describe("API e2e", () => {
 
     expect(bobChatAfterRead).toBeDefined();
     expect(bobChatAfterRead?.unreadCount).toBe(0);
+
+    await bobAgent
+      .delete(`/chats/${chatId}/messages/${sentMessageId}`)
+      .set("Authorization", `Bearer ${bobBody.accessToken}`)
+      .expect(403);
+
+    const deleteMessageResponse = await aliceAgent
+      .delete(`/chats/${chatId}/messages/${sentMessageId}`)
+      .set("Authorization", `Bearer ${refreshBody.accessToken}`)
+      .expect(200);
+
+    expect(deleteMessageResponse.body.id).toBe(sentMessageId);
+    expect(deleteMessageResponse.body.body).toBeNull();
+    expect(deleteMessageResponse.body.deletedAt).toBeTruthy();
+    expect(deleteMessageResponse.body.isDeleted).toBe(true);
+    expect(deleteMessageResponse.body.attachments).toEqual([]);
+
+    const messagesAfterDelete = await aliceAgent
+      .get(`/chats/${chatId}/messages`)
+      .set("Authorization", `Bearer ${refreshBody.accessToken}`)
+      .expect(200);
+
+    expect(messagesAfterDelete.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: sentMessageId,
+          body: null,
+          isDeleted: true,
+        }),
+      ]),
+    );
+
+    await aliceAgent
+      .delete(`/chats/${chatId}`)
+      .set("Authorization", `Bearer ${refreshBody.accessToken}`)
+      .expect(200, {
+        success: true,
+        chatId,
+      });
+
+    const bobChatsAfterDelete = await bobAgent
+      .get("/chats")
+      .set("Authorization", `Bearer ${bobBody.accessToken}`)
+      .expect(200);
+
+    expect(
+      (bobChatsAfterDelete.body as Array<{ id: string }>).some((chat) => chat.id === chatId),
+    ).toBe(false);
+
+    await aliceAgent
+      .get(`/chats/${chatId}`)
+      .set("Authorization", `Bearer ${refreshBody.accessToken}`)
+      .expect(404);
   });
 });
