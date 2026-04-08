@@ -244,9 +244,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
           const normalizedBody = message.body?.trim() ?? "";
           const hasText = Boolean(normalizedBody);
           const hasAttachments = message.attachments.length > 0;
-          const compactBubble = hasText && !hasAttachments;
+          const inlineMetaBubble = hasText && !hasAttachments;
+          const compactBubble = inlineMetaBubble;
           const shortTextOnlyBubble =
-            compactBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
+            inlineMetaBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
 
           return (
             <div
@@ -260,9 +261,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 className={clsx(
                   "max-w-[85%] shadow-sm sm:max-w-[70%]",
                   shortTextOnlyBubble
-                    ? "rounded-[19px] px-3 py-1.5"
+                    ? "rounded-[17px] px-3 py-1"
                     : compactBubble
-                      ? "rounded-[21px] px-3.5 py-1.5"
+                      ? "rounded-[19px] px-3 py-1.5"
                       : "rounded-[24px] px-4 py-2.5",
                   isMine
                     ? "bg-[linear-gradient(135deg,#d17c43,#af5f2d)] text-white"
@@ -274,7 +275,27 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     {message.sender.displayName}
                   </p>
                 ) : null}
-                {message.body ? (
+                {inlineMetaBubble && message.body ? (
+                  <div
+                    className={clsx(
+                      "grid grid-cols-[minmax(0,1fr)_auto] items-end",
+                      shortTextOnlyBubble ? "gap-x-1.5" : "gap-x-2",
+                    )}
+                  >
+                    <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
+                      {message.body}
+                    </p>
+                    <p
+                      className={clsx(
+                        "shrink-0 self-end pb-0.5 text-[11px] leading-none",
+                        isMine ? "text-white/75" : "text-stone-400",
+                      )}
+                    >
+                      {formatTime(message.createdAt)}
+                    </p>
+                  </div>
+                ) : null}
+                {message.body && !inlineMetaBubble ? (
                   <p className="whitespace-pre-wrap break-words text-sm leading-5">{message.body}</p>
                 ) : null}
                 {message.attachments.length > 0 ? (
@@ -284,14 +305,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     isMine={isMine}
                   />
                 ) : null}
-                <p
-                  className={clsx(
-                    shortTextOnlyBubble ? "mt-0.5 text-right text-[11px] leading-none" : "mt-1 text-right text-[11px] leading-none",
-                    isMine ? "text-white/75" : "text-stone-400",
-                  )}
-                >
-                  {formatTime(message.createdAt)}
-                </p>
+                {!inlineMetaBubble ? (
+                  <p
+                    className={clsx(
+                      hasText ? "mt-1 text-right text-[11px] leading-none" : "mt-1.5 text-right text-[11px] leading-none",
+                      isMine ? "text-white/75" : "text-stone-400",
+                    )}
+                  >
+                    {formatTime(message.createdAt)}
+                  </p>
+                ) : null}
               </div>
             </div>
           );

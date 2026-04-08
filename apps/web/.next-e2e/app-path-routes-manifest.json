@@ -3,6 +3,6 @@
   "/(auth)/login/page": "/login",
   "/(auth)/register/page": "/register",
   "/page": "/",
-  "/chat/[chatId]/page": "/chat/[chatId]",
-  "/chat/page": "/chat"
+  "/chat/page": "/chat",
+  "/chat/[chatId]/page": "/chat/[chatId]"
 }
