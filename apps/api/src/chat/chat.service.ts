@@ -1,14 +1,50 @@
-﻿import {
+import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from "@nestjs/common";
-import { ChatType, Prisma } from "@prisma/client";
+import { ConfigService } from "@nestjs/config";
+import { Attachment, ChatType, Prisma, User } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
 import { CreateDirectChatDto } from "./dto/create-direct-chat.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
+
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_ALLOWED_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+]);
+
+type UploadedAttachmentFile = {
+  buffer: Buffer;
+  originalname: string;
+  mimetype: string;
+  size: number;
+};
+
+type ChatWithMembersAndMessages = Prisma.ChatGetPayload<{
+  include: {
+    members: { include: { user: true } };
+    messages: { include: { attachments: true } };
+  };
+}>;
+
+type MessageWithRelations = Prisma.MessageGetPayload<{
+  include: {
+    sender: true;
+    attachments: true;
+  };
+}>;
 
 @Injectable()
 export class ChatService {
@@ -17,6 +53,7 @@ export class ChatService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly realtimeGateway: RealtimeGateway,
+    private readonly configService: ConfigService,
   ) {}
 
   async createDirectChat(currentUserId: string, dto: CreateDirectChatDto) {
@@ -47,7 +84,11 @@ export class ChatService {
       },
     });
 
-    const sharedChatId = this.findDirectChatId(memberships, currentUserId, dto.targetUserId);
+    const sharedChatId = this.findDirectChatId(
+      memberships,
+      currentUserId,
+      dto.targetUserId,
+    );
 
     if (sharedChatId) {
       this.logger.log(
@@ -60,10 +101,7 @@ export class ChatService {
       data: {
         type: ChatType.DIRECT,
         members: {
-          create: [
-            { userId: currentUserId },
-            { userId: dto.targetUserId },
-          ],
+          create: [{ userId: currentUserId }, { userId: dto.targetUserId }],
         },
       },
     });
@@ -93,6 +131,9 @@ export class ChatService {
         messages: {
           orderBy: { createdAt: "desc" },
           take: 1,
+          include: {
+            attachments: true,
+          },
         },
       },
       orderBy: {
@@ -122,6 +163,9 @@ export class ChatService {
         messages: {
           orderBy: { createdAt: "desc" },
           take: 1,
+          include: {
+            attachments: true,
+          },
         },
       },
     });
@@ -142,6 +186,7 @@ export class ChatService {
       },
       include: {
         sender: true,
+        attachments: true,
       },
       orderBy: {
         createdAt: "desc",
@@ -156,21 +201,7 @@ export class ChatService {
     });
 
     return {
-      items: messages.reverse().map((message) => ({
-        id: message.id,
-        chatId: message.chatId,
-        senderId: message.senderId,
-        body: message.body,
-        createdAt: message.createdAt.toISOString(),
-        updatedAt: message.updatedAt.toISOString(),
-        sender: {
-          id: message.sender.id,
-          email: message.sender.email,
-          displayName: message.sender.displayName,
-          avatarUrl: message.sender.avatarUrl,
-          lastSeenAt: message.sender.lastSeenAt?.toISOString() ?? null,
-        },
-      })),
+      items: messages.reverse().map((message) => this.toMessagePayload(message)),
       nextCursor: messages.length === 30 ? messages[messages.length - 1]?.id ?? null : null,
     };
   }
@@ -178,15 +209,21 @@ export class ChatService {
   async sendMessage(chatId: string, currentUserId: string, dto: SendMessageDto) {
     await this.ensureMembership(chatId, currentUserId);
 
+    const body = dto.body.trim();
+    if (!body) {
+      throw new BadRequestException("Сообщение не должно быть пустым.");
+    }
+
     const message = await this.prisma.$transaction(async (transaction) => {
       const createdMessage = await transaction.message.create({
         data: {
           chatId,
           senderId: currentUserId,
-          body: dto.body.trim(),
+          body,
         },
         include: {
           sender: true,
+          attachments: true,
         },
       });
 
@@ -201,27 +238,124 @@ export class ChatService {
       return createdMessage;
     });
 
-    const payload = {
-      id: message.id,
-      chatId: message.chatId,
-      senderId: message.senderId,
-      body: message.body,
-      createdAt: message.createdAt.toISOString(),
-      updatedAt: message.updatedAt.toISOString(),
-      sender: {
-        id: message.sender.id,
-        email: message.sender.email,
-        displayName: message.sender.displayName,
-        avatarUrl: message.sender.avatarUrl,
-        lastSeenAt: message.sender.lastSeenAt?.toISOString() ?? null,
-      },
-    };
+    const payload = this.toMessagePayload(message);
 
     this.realtimeGateway.emitMessageNew(chatId, payload);
     this.realtimeGateway.emitChatUpdated(chatId);
     this.logger.log(`Stored message ${message.id} in chat ${chatId} from user ${currentUserId}`);
 
     return payload;
+  }
+
+  async sendAttachment(
+    chatId: string,
+    currentUserId: string,
+    uploadedFile: UploadedAttachmentFile | undefined,
+    body?: string,
+  ) {
+    await this.ensureMembership(chatId, currentUserId);
+
+    if (!uploadedFile || !Buffer.isBuffer(uploadedFile.buffer) || uploadedFile.size <= 0) {
+      throw new BadRequestException("Файл не был загружен.");
+    }
+
+    const trimmedBody = body?.trim() ?? "";
+    const mimeType = uploadedFile.mimetype || "application/octet-stream";
+
+    if (!ATTACHMENT_ALLOWED_MIME_TYPES.has(mimeType)) {
+      throw new BadRequestException(
+        "Поддерживаются только PNG, JPEG, WEBP, PDF и TXT файлы.",
+      );
+    }
+
+    if (uploadedFile.size > ATTACHMENT_MAX_BYTES) {
+      throw new BadRequestException("Размер файла не должен превышать 10 MB.");
+    }
+
+    const originalName = this.sanitizeOriginalName(uploadedFile.originalname);
+    const storageKey = `${randomUUID()}${extname(originalName).slice(0, 24)}`;
+    const uploadsDir = this.getUploadsDirectory();
+    const absolutePath = join(uploadsDir, storageKey);
+
+    await mkdir(uploadsDir, { recursive: true });
+    await writeFile(absolutePath, uploadedFile.buffer);
+
+    try {
+      const message = await this.prisma.$transaction(async (transaction) => {
+        const createdMessage = await transaction.message.create({
+          data: {
+            chatId,
+            senderId: currentUserId,
+            body: trimmedBody || null,
+            attachments: {
+              create: {
+                uploaderId: currentUserId,
+                storageKey,
+                originalName,
+                mimeType,
+                sizeBytes: uploadedFile.size,
+              },
+            },
+          },
+          include: {
+            sender: true,
+            attachments: true,
+          },
+        });
+
+        await transaction.chat.update({
+          where: { id: chatId },
+          data: {
+            lastMessageId: createdMessage.id,
+            updatedAt: new Date(),
+          },
+        });
+
+        return createdMessage;
+      });
+
+      const payload = this.toMessagePayload(message);
+
+      this.realtimeGateway.emitMessageNew(chatId, payload);
+      this.realtimeGateway.emitChatUpdated(chatId);
+      this.logger.log(
+        `Stored attachment message ${message.id} in chat ${chatId} from user ${currentUserId}`,
+      );
+
+      return payload;
+    } catch (error) {
+      await unlink(absolutePath).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async getAttachmentDownload(attachmentId: string, currentUserId: string) {
+    const attachment = await this.prisma.attachment.findFirst({
+      where: {
+        id: attachmentId,
+        message: {
+          chat: {
+            members: {
+              some: {
+                userId: currentUserId,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!attachment) {
+      throw new NotFoundException("Вложение не найдено.");
+    }
+
+    const absolutePath = join(this.getUploadsDirectory(), attachment.storageKey);
+
+    if (!existsSync(absolutePath)) {
+      throw new NotFoundException("Файл вложения недоступен.");
+    }
+
+    return { attachment, absolutePath };
   }
 
   async markRead(chatId: string, currentUserId: string, lastReadMessageId: string) {
@@ -293,18 +427,65 @@ export class ChatService {
     return null;
   }
 
-  private toChatListItem(
-    chat: Prisma.ChatGetPayload<{
-      include: {
-        members: { include: { user: true } };
-        messages: true;
-      };
-    }>,
-    currentUserId: string,
+  private getUploadsDirectory() {
+    return this.configService.get<string>("UPLOADS_DIR") || join(process.cwd(), "uploads");
+  }
+
+  private sanitizeOriginalName(originalName: string) {
+    const normalized = basename(originalName || "attachment").replace(/[\r\n]/g, "_");
+    return normalized || "attachment";
+  }
+
+  private toSafeUser(user: User) {
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      lastSeenAt: user.lastSeenAt?.toISOString() ?? null,
+    };
+  }
+
+  private toAttachmentPayload(attachment: Attachment) {
+    return {
+      id: attachment.id,
+      originalName: attachment.originalName,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      isImage: attachment.mimeType.startsWith("image/"),
+      downloadPath: `/attachments/${attachment.id}`,
+    };
+  }
+
+  private toMessagePayload(message: MessageWithRelations) {
+    return {
+      id: message.id,
+      chatId: message.chatId,
+      senderId: message.senderId,
+      body: message.body,
+      createdAt: message.createdAt.toISOString(),
+      updatedAt: message.updatedAt.toISOString(),
+      sender: this.toSafeUser(message.sender),
+      attachments: message.attachments.map((attachment) => this.toAttachmentPayload(attachment)),
+    };
+  }
+
+  private toMessagePreview(
+    message: Prisma.MessageGetPayload<{ include: { attachments: true } }>,
   ) {
-    const currentMembership = chat.members.find(
-      (member) => member.userId === currentUserId,
-    );
+    return {
+      id: message.id,
+      chatId: message.chatId,
+      senderId: message.senderId,
+      body: message.body,
+      createdAt: message.createdAt.toISOString(),
+      updatedAt: message.updatedAt.toISOString(),
+      attachments: message.attachments.map((attachment) => this.toAttachmentPayload(attachment)),
+    };
+  }
+
+  private toChatListItem(chat: ChatWithMembersAndMessages, currentUserId: string) {
+    const currentMembership = chat.members.find((member) => member.userId === currentUserId);
 
     const unreadCount =
       chat.messages[0] &&
@@ -318,23 +499,8 @@ export class ChatService {
       type: "direct" as const,
       updatedAt: chat.updatedAt.toISOString(),
       unreadCount,
-      members: chat.members.map((member) => ({
-        id: member.user.id,
-        email: member.user.email,
-        displayName: member.user.displayName,
-        avatarUrl: member.user.avatarUrl,
-        lastSeenAt: member.user.lastSeenAt?.toISOString() ?? null,
-      })),
-      lastMessage: chat.messages[0]
-        ? {
-            id: chat.messages[0].id,
-            chatId: chat.messages[0].chatId,
-            senderId: chat.messages[0].senderId,
-            body: chat.messages[0].body,
-            createdAt: chat.messages[0].createdAt.toISOString(),
-            updatedAt: chat.messages[0].updatedAt.toISOString(),
-          }
-        : null,
+      members: chat.members.map((member) => this.toSafeUser(member.user)),
+      lastMessage: chat.messages[0] ? this.toMessagePreview(chat.messages[0]) : null,
     };
   }
 }

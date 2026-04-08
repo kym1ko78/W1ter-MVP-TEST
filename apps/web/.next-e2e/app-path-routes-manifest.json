@@ -1,0 +1,8 @@
+{
+  "/_not-found/page": "/_not-found",
+  "/(auth)/login/page": "/login",
+  "/(auth)/register/page": "/register",
+  "/page": "/",
+  "/chat/[chatId]/page": "/chat/[chatId]",
+  "/chat/page": "/chat"
+}

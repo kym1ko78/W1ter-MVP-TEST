@@ -1,6 +1,10 @@
 const { defineConfig, devices } = require("@playwright/test");
 
-const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
+const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:3000";
+const apiURL = process.env.PLAYWRIGHT_API_URL ?? "http://127.0.0.1:4000";
+const webPort = process.env.PLAYWRIGHT_WEB_PORT ?? new URL(baseURL).port ?? "3000";
+const apiPort = process.env.PLAYWRIGHT_API_PORT ?? new URL(apiURL).port ?? "4000";
+const apiCorsOrigin = process.env.PLAYWRIGHT_API_CORS_ORIGIN ?? baseURL;
 const isWindows = process.platform === "win32";
 
 module.exports = defineConfig({
@@ -21,13 +25,30 @@ module.exports = defineConfig({
   },
   webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER
     ? undefined
-    : {
-        command: "pnpm dev",
-        url: `${baseURL}/login`,
-        cwd: __dirname,
-        reuseExistingServer: !process.env.CI,
-        timeout: 180_000,
-      },
+    : [
+        {
+          command: "node ./scripts/run-api-e2e-start.mjs",
+          url: `${apiURL}/health`,
+          cwd: __dirname,
+          reuseExistingServer: !process.env.CI,
+          timeout: 120_000,
+          env: {
+            PLAYWRIGHT_API_PORT: apiPort,
+            PLAYWRIGHT_API_CORS_ORIGIN: apiCorsOrigin,
+          },
+        },
+        {
+          command: "node ./scripts/run-web-e2e-start.mjs",
+          url: `${baseURL}/login`,
+          cwd: __dirname,
+          reuseExistingServer: !process.env.CI,
+          timeout: 120_000,
+          env: {
+            PLAYWRIGHT_WEB_PORT: webPort,
+            PLAYWRIGHT_WEB_DIST_DIR: process.env.PLAYWRIGHT_WEB_DIST_DIR ?? ".next-e2e",
+          },
+        },
+      ],
   projects: [
     isWindows
       ? {

@@ -6,14 +6,24 @@ export interface SafeUser {
   lastSeenAt: string | null;
 }
 
+export interface ChatAttachment {
+  id: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  isImage: boolean;
+  downloadPath: string;
+}
+
 export interface ChatMessage {
   id: string;
   chatId: string;
   senderId: string;
-  body: string;
+  body: string | null;
   createdAt: string;
   updatedAt: string;
   sender: SafeUser;
+  attachments: ChatAttachment[];
 }
 
 export interface ChatListItem {
@@ -25,9 +35,10 @@ export interface ChatListItem {
     id: string;
     chatId: string;
     senderId: string;
-    body: string;
+    body: string | null;
     createdAt: string;
     updatedAt: string;
+    attachments: ChatAttachment[];
   } | null;
   members: SafeUser[];
 }
@@ -36,4 +47,3 @@ export interface MessagePage {
   items: ChatMessage[];
   nextCursor: string | null;
 }
-

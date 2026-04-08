@@ -18,12 +18,18 @@ export class AccessTokenGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers.authorization as string | undefined;
+    const queryToken =
+      typeof request.query?.access_token === "string"
+        ? request.query.access_token
+        : undefined;
 
-    if (!authHeader?.startsWith("Bearer ")) {
+    const token = authHeader?.startsWith("Bearer ")
+      ? authHeader.replace("Bearer ", "")
+      : queryToken;
+
+    if (!token) {
       throw new UnauthorizedException("Missing access token");
     }
-
-    const token = authHeader.replace("Bearer ", "");
 
     try {
       const payload = await this.jwtService.verifyAsync<JwtPayload>(token, {
@@ -39,4 +45,3 @@ export class AccessTokenGuard implements CanActivate {
     }
   }
 }
-

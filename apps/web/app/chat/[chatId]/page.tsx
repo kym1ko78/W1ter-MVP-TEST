@@ -5,5 +5,11 @@ import { ConversationView } from "../../../components/conversation-view";
 
 export default function ChatDetailsPage() {
   const params = useParams<{ chatId: string }>();
-  return <ConversationView chatId={params.chatId} />;
+  const chatId = params?.chatId;
+
+  if (!chatId) {
+    return null;
+  }
+
+  return <ConversationView chatId={chatId} />;
 }

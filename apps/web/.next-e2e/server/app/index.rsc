@@ -1,0 +1,18 @@
+1:"$Sreact.fragment"
+2:I[2611,["886","static/chunks/886-14c9481188bed504.js","177","static/chunks/app/layout-a7cf8b8bfaa57420.js"],"Providers"]
+3:I[2712,[],""]
+4:I[3566,[],""]
+5:I[5577,["577","static/chunks/577-0d4aa266a8de3102.js","345","static/chunks/app/not-found-e955e108732dfebe.js"],""]
+7:I[4373,[],"OutletBoundary"]
+9:I[656,[],"AsyncMetadataOutlet"]
+b:I[4373,[],"ViewportBoundary"]
+d:I[4373,[],"MetadataBoundary"]
+e:"$Sreact.suspense"
+10:I[2388,[],""]
+:HL["/_next/static/css/1bca2bbe32846984.css","style"]
+0:{"P":null,"b":"U19izGEJRzp1IyvWZZFBe","p":"","c":["",""],"i":false,"f":[[["",{"children":["__PAGE__",{}]},"$undefined","$undefined",true],["",["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/css/1bca2bbe32846984.css","precedence":"next","crossOrigin":"$undefined","nonce":"$undefined"}]],["$","html",null,{"lang":"ru","children":["$","body",null,{"children":["$","$L2",null,{"children":["$","$L3",null,{"parallelRouterKey":"children","error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L4",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":[["$","main",null,{"className":"grain flex min-h-screen items-center justify-center px-4 py-10","children":["$","div",null,{"className":"w-full max-w-xl rounded-[32px] border border-white/60 bg-[rgba(255,251,245,0.78)] p-8 text-center shadow-panel backdrop-blur sm:p-10","children":[["$","p",null,{"className":"text-xs uppercase tracking-[0.28em] text-stone-500","children":"404"}],["$","h1",null,{"className":"mt-4 text-3xl font-semibold text-ink sm:text-4xl","children":"Такой страницы нет"}],["$","p",null,{"className":"mt-3 text-sm leading-6 text-stone-600 sm:text-base","children":"Вернитесь в рабочее пространство мессенджера и продолжайте диалог из списка чатов."}],["$","div",null,{"className":"mt-8 flex justify-center","children":["$","$L5",null,{"href":"/chat","className":"rounded-full bg-[linear-gradient(135deg,#d17c43,#af5f2d)] px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-clay/20 transition hover:translate-y-[-1px]","children":"Открыть чат"}]}]]}]}],[]],"forbidden":"$undefined","unauthorized":"$undefined"}]}]}]}]]}],{"children":["__PAGE__",["$","$1","c",{"children":["$L6",null,["$","$L7",null,{"children":["$L8",["$","$L9",null,{"promise":"$@a"}]]}]]}],{},null,false]},null,false],["$","$1","h",{"children":[null,[["$","$Lb",null,{"children":"$Lc"}],null],["$","$Ld",null,{"children":["$","div",null,{"hidden":true,"children":["$","$e",null,{"fallback":null,"children":"$Lf"}]}]}]]}],false]],"m":"$undefined","G":["$10",[]],"s":false,"S":true}
+6:E{"digest":"NEXT_REDIRECT;replace;/chat;307;"}
+c:[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]
+8:null
+a:{"metadata":[["$","title","0",{"children":"Web Messenger MVP"}],["$","meta","1",{"name":"description","content":"MVP веб-мессенджера на Next.js и NestJS"}]],"error":null,"digest":"$undefined"}
+f:"$a:metadata"

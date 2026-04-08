@@ -8,13 +8,23 @@ export interface SafeUser {
   lastSeenAt: string | null;
 }
 
+export interface AttachmentDto {
+  id: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  isImage: boolean;
+  downloadPath: string;
+}
+
 export interface MessageDto {
   id: string;
   chatId: string;
   senderId: string;
-  body: string;
+  body: string | null;
   createdAt: string;
   updatedAt: string;
+  attachments: AttachmentDto[];
 }
 
 export interface ChatListItemDto {

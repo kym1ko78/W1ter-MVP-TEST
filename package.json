@@ -4,19 +4,24 @@
   "version": "0.1.0",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "dev": "concurrently -n web,api -c cyan,green \"pnpm --filter @repo/web dev\" \"pnpm --filter @repo/api dev\"",
+    "dev": "node ./scripts/run-dev-start.mjs",
+    "dev:raw": "concurrently -n web,api -c cyan,green \"pnpm --filter @repo/web dev\" \"pnpm --filter @repo/api dev\"",
+    "dev:check": "node ./scripts/run-dev-check.mjs",
     "dev:web": "pnpm --filter @repo/web dev",
     "dev:api": "pnpm --filter @repo/api dev",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
+    "verify:web": "pnpm --filter @repo/web build && pnpm --filter @repo/web typecheck:next",
     "prisma:generate": "pnpm --filter @repo/api prisma generate",
     "prisma:dev": "pnpm --filter @repo/api exec prisma migrate dev",
     "prisma:deploy": "pnpm --filter @repo/api exec prisma migrate deploy",
     "prisma:seed": "pnpm --filter @repo/api seed",
     "smoke:local": "node ./scripts/local-smoke-test.mjs",
     "test:api:e2e": "pnpm --filter @repo/api test:e2e",
-    "test:ui:e2e": "playwright test --config=playwright.config.cjs"
+    "test:ui:e2e:prepare": "pnpm --filter @repo/api build && node ./scripts/run-web-e2e-build.mjs",
+    "test:ui:e2e:auto": "node ./scripts/run-ui-e2e-auto.mjs",
+    "test:ui:e2e": "node ./scripts/run-ui-e2e-manual.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

@@ -6,6 +6,8 @@ node_modules
 .next
 dist
 coverage
+*.tsbuildinfo
+apps/web/.next-e2e/
 
 # env files
 .env
@@ -13,6 +15,11 @@ coverage
 .env.development.local
 .env.test.local
 .env.production.local
+
+# uploads
+uploads/
+apps/api/uploads/
+apps/api/test-uploads/
 
 # logs
 *.log
@@ -29,4 +36,3 @@ Thumbs.db
 .idea
 .vscode/*
 !.vscode/extensions.json
-

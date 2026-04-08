@@ -35,6 +35,18 @@ export function formatRelativeLastSeen(isoString: string | null) {
   }).format(date);
 }
 
+export function formatFileSize(sizeBytes: number) {
+  if (sizeBytes < 1024) {
+    return `${sizeBytes} B`;
+  }
+
+  if (sizeBytes < 1024 * 1024) {
+    return `${Math.round(sizeBytes / 1024)} KB`;
+  }
+
+  return `${(sizeBytes / (1024 * 1024)).toFixed(sizeBytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+
 export function getChatTitle(
   members: Array<{ id: string; displayName: string }>,
   currentUserId: string | undefined,
@@ -43,3 +55,27 @@ export function getChatTitle(
   return otherMember?.displayName ?? "Новый чат";
 }
 
+export function getLastMessagePreviewText(
+  message:
+    | {
+        body: string | null;
+        attachments?: Array<{ originalName: string }>;
+      }
+    | null
+    | undefined,
+) {
+  if (!message) {
+    return "Сообщений пока нет";
+  }
+
+  if (message.body?.trim()) {
+    return message.body;
+  }
+
+  const firstAttachment = message.attachments?.[0];
+  if (firstAttachment) {
+    return `Вложение: ${firstAttachment.originalName}`;
+  }
+
+  return "Сообщений пока нет";
+}

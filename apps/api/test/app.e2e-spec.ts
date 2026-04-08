@@ -3,6 +3,8 @@ import { ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Test, type TestingModule } from "@nestjs/testing";
 import cookieParser from "cookie-parser";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import request from "supertest";
 import { AppModule } from "../src/app.module";
 
@@ -17,8 +19,12 @@ type AuthResponse = {
 
 describe("API e2e", () => {
   let app: INestApplication;
+  const uploadsDir = join(process.cwd(), "test-uploads");
 
   beforeAll(async () => {
+    process.env.UPLOADS_DIR = uploadsDir;
+    await rm(uploadsDir, { recursive: true, force: true });
+
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
@@ -45,9 +51,10 @@ describe("API e2e", () => {
 
   afterAll(async () => {
     await app.close();
+    await rm(uploadsDir, { recursive: true, force: true });
   });
 
-  it("registers, refreshes, creates a direct chat, sends a message and marks it as read", async () => {
+  it("registers, refreshes, creates a direct chat, sends text and attachments, then marks them as read", async () => {
     const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const alice = {
       email: `api.e2e.alice.${suffix}@example.com`,
@@ -108,14 +115,31 @@ describe("API e2e", () => {
 
     const sentMessageId = sendMessageResponse.body.id as string;
 
+    const attachmentPayload = `Attachment payload ${suffix}`;
+    const uploadResponse = await aliceAgent
+      .post(`/chats/${chatId}/attachments`)
+      .set("Authorization", `Bearer ${refreshBody.accessToken}`)
+      .attach("file", Buffer.from(attachmentPayload, "utf-8"), {
+        filename: `note-${suffix}.txt`,
+        contentType: "text/plain",
+      })
+      .expect(201);
+
+    expect(uploadResponse.body.body).toBeNull();
+    expect(uploadResponse.body.attachments).toHaveLength(1);
+    expect(uploadResponse.body.attachments[0].mimeType).toBe("text/plain");
+
+    const attachmentMessageId = uploadResponse.body.id as string;
+    const attachmentId = uploadResponse.body.attachments[0].id as string;
+
     const bobChatsBeforeRead = await bobAgent
       .get("/chats")
       .set("Authorization", `Bearer ${bobBody.accessToken}`)
       .expect(200);
 
-    const bobChatBeforeRead = (bobChatsBeforeRead.body as Array<{ id: string; unreadCount: number }>).find(
-      (chat) => chat.id === chatId,
-    );
+    const bobChatBeforeRead = (
+      bobChatsBeforeRead.body as Array<{ id: string; unreadCount: number }>
+    ).find((chat) => chat.id === chatId);
 
     expect(bobChatBeforeRead).toBeDefined();
     expect(bobChatBeforeRead?.unreadCount).toBeGreaterThanOrEqual(1);
@@ -131,13 +155,31 @@ describe("API e2e", () => {
           id: sentMessageId,
           body: messageText,
         }),
+        expect.objectContaining({
+          id: attachmentMessageId,
+          body: null,
+          attachments: [
+            expect.objectContaining({
+              id: attachmentId,
+              mimeType: "text/plain",
+            }),
+          ],
+        }),
       ]),
     );
+
+    const downloadResponse = await bobAgent
+      .get(`/attachments/${attachmentId}`)
+      .set("Authorization", `Bearer ${bobBody.accessToken}`)
+      .expect(200);
+
+    expect(downloadResponse.text).toBe(attachmentPayload);
+    expect(downloadResponse.headers["content-type"]).toContain("text/plain");
 
     await bobAgent
       .post(`/chats/${chatId}/read`)
       .set("Authorization", `Bearer ${bobBody.accessToken}`)
-      .send({ lastReadMessageId: sentMessageId })
+      .send({ lastReadMessageId: attachmentMessageId })
       .expect(201);
 
     const bobChatsAfterRead = await bobAgent
@@ -145,9 +187,9 @@ describe("API e2e", () => {
       .set("Authorization", `Bearer ${bobBody.accessToken}`)
       .expect(200);
 
-    const bobChatAfterRead = (bobChatsAfterRead.body as Array<{ id: string; unreadCount: number }>).find(
-      (chat) => chat.id === chatId,
-    );
+    const bobChatAfterRead = (
+      bobChatsAfterRead.body as Array<{ id: string; unreadCount: number }>
+    ).find((chat) => chat.id === chatId);
 
     expect(bobChatAfterRead).toBeDefined();
     expect(bobChatAfterRead?.unreadCount).toBe(0);

@@ -5,8 +5,11 @@ import {
   Param,
   Post,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { RateLimit } from "../common/decorators/rate-limit.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
@@ -16,6 +19,14 @@ import { ChatService } from "./chat.service";
 import { CreateDirectChatDto } from "./dto/create-direct-chat.dto";
 import { MarkReadDto } from "./dto/mark-read.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
+import { UploadAttachmentDto } from "./dto/upload-attachment.dto";
+
+type UploadedAttachmentFile = {
+  buffer: Buffer;
+  originalname: string;
+  mimetype: string;
+  size: number;
+};
 
 @UseGuards(AccessTokenGuard)
 @Controller("chats")
@@ -73,6 +84,24 @@ export class ChatController {
     @Body() dto: SendMessageDto,
   ) {
     return this.chatService.sendMessage(chatId, user.sub, dto);
+  }
+
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-send-attachment",
+    limit: 10,
+    windowMs: 60 * 1000,
+    scope: "user",
+  })
+  @Post(":chatId/attachments")
+  @UseInterceptors(FileInterceptor("file"))
+  async uploadAttachment(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+    @UploadedFile() file: UploadedAttachmentFile | undefined,
+    @Body() dto: UploadAttachmentDto,
+  ) {
+    return this.chatService.sendAttachment(chatId, user.sub, file, dto.body);
   }
 
   @Post(":chatId/read")
