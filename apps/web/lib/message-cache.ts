@@ -53,3 +53,34 @@ export function appendMessageUnique(
     items: [...normalizedPage.items, message],
   };
 }
+
+export function upsertMessage(
+  page: MessagePage | undefined,
+  message: ChatMessage,
+): MessagePage {
+  const normalizedPage = normalizeMessagePage(page);
+
+  if (!normalizedPage) {
+    return {
+      items: [message],
+      nextCursor: null,
+    };
+  }
+
+  const existingIndex = normalizedPage.items.findIndex((item) => item.id === message.id);
+
+  if (existingIndex === -1) {
+    return {
+      ...normalizedPage,
+      items: [...normalizedPage.items, message],
+    };
+  }
+
+  const nextItems = [...normalizedPage.items];
+  nextItems[existingIndex] = message;
+
+  return {
+    ...normalizedPage,
+    items: nextItems,
+  };
+}

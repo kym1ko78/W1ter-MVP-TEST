@@ -47,7 +47,7 @@ async function registerUser(page: Page, user: TestUser) {
   await expect(page.getByTestId("chat-sidebar")).toBeVisible();
 }
 
-test("users can register, create a direct chat and receive a realtime message", async ({ browser, request }) => {
+test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messages and delete chats", async ({ browser, request }) => {
   await waitForApiReady(request);
 
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -70,6 +70,10 @@ test("users can register, create a direct chat and receive a realtime message", 
   await registerUser(alicePage, alice);
   await registerUser(bobPage, bob);
 
+  await alicePage.reload({ waitUntil: "domcontentloaded" });
+  await expect(alicePage.getByTestId("chat-sidebar")).toBeVisible();
+  await expect(alicePage).toHaveURL(/\/chat(\/.*)?$/);
+
   await alicePage.getByTestId("user-search-input").fill(bob.email);
   const searchResult = alicePage
     .getByTestId("user-search-result")
@@ -89,16 +93,60 @@ test("users can register, create a direct chat and receive a realtime message", 
   await bobChatListItem.click();
   await expect(bobPage.getByTestId("conversation-title")).toContainText(alice.displayName);
 
-  const messageText = `Playwright message ${suffix}`;
-  await alicePage.getByTestId("message-input").fill(messageText);
-  await alicePage.getByTestId("send-message-button").click();
+  const singleLineMessage = `Playwright message ${suffix}`;
+  const aliceInput = alicePage.getByTestId("message-input");
+  await aliceInput.fill(singleLineMessage);
+  await aliceInput.press("Enter");
 
   await expect(
-    bobPage.getByTestId("message-item").filter({ hasText: messageText }),
+    bobPage.getByTestId("message-item").filter({ hasText: singleLineMessage }),
   ).toHaveCount(1);
   await expect(
-    alicePage.getByTestId("message-item").filter({ hasText: messageText }),
+    alicePage.getByTestId("message-item").filter({ hasText: singleLineMessage }),
   ).toHaveCount(1);
+  await expect(
+    bobPage.getByTestId("message-item").filter({ hasText: alice.displayName }),
+  ).toHaveCount(0);
+
+  await aliceInput.fill("Первая строка");
+  await aliceInput.press("Control+Enter");
+  await aliceInput.type("Вторая строка");
+  await expect(aliceInput).toHaveValue("Первая строка\nВторая строка");
+  await aliceInput.press("Enter");
+
+  await expect(
+    bobPage.getByTestId("message-item").filter({ hasText: "Первая строка" }),
+  ).toHaveCount(1);
+  await expect(
+    bobPage.getByTestId("message-item").filter({ hasText: "Вторая строка" }),
+  ).toHaveCount(1);
+
+  alicePage.once("dialog", (dialog) => void dialog.accept());
+  await alicePage
+    .getByTestId("message-item")
+    .filter({ hasText: singleLineMessage })
+    .getByTestId("delete-message-button")
+    .click();
+
+  await expect(
+    alicePage.getByTestId("message-item").filter({ hasText: "Сообщение удалено" }),
+  ).toHaveCount(1);
+  await expect(
+    bobPage.getByTestId("message-item").filter({ hasText: "Сообщение удалено" }),
+  ).toHaveCount(1);
+
+  alicePage.once("dialog", (dialog) => void dialog.accept());
+  await alicePage
+    .getByTestId("chat-list-entry")
+    .filter({ hasText: bob.displayName })
+    .getByTestId("chat-list-delete-button")
+    .click();
+
+  await expect(alicePage).toHaveURL(/\/chat$/);
+  await expect(bobPage).toHaveURL(/\/chat$/);
+  await expect(
+    bobPage.getByTestId("chat-list-item").filter({ hasText: alice.displayName }),
+  ).toHaveCount(0);
 
   await aliceContext.close();
   await bobContext.close();

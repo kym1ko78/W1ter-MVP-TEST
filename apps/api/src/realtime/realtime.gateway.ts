@@ -1,4 +1,4 @@
-﻿import {
+import {
   ConnectedSocket,
   MessageBody,
   OnGatewayConnection,
@@ -124,8 +124,18 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.to(this.getChatRoom(chatId)).emit("message:new", payload);
   }
 
+  emitMessageUpdated(chatId: string, payload: unknown) {
+    this.server.to(this.getChatRoom(chatId)).emit("message:updated", payload);
+  }
+
   emitChatUpdated(chatId: string) {
     this.server.to(this.getChatRoom(chatId)).emit("chat:updated", { chatId });
+  }
+
+  emitChatDeleted(userIds: string[], payload: unknown) {
+    for (const userId of userIds) {
+      this.server.to(this.getUserRoom(userId)).emit("chat:deleted", payload);
+    }
   }
 
   emitChatRead(chatId: string, payload: unknown) {

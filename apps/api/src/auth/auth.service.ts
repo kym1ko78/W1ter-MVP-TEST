@@ -1,4 +1,4 @@
-﻿import {
+import {
   ConflictException,
   Injectable,
   Logger,
@@ -242,7 +242,7 @@ export class AuthService {
   }
 
   private getRefreshTtlDays() {
-    return Number(this.configService.get<string>("JWT_REFRESH_TTL_DAYS") ?? 7);
+    return Number(this.configService.get<string>("JWT_REFRESH_TTL_DAYS") ?? 30);
   }
 
   private getAccessTtlSeconds() {

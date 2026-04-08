@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -61,6 +62,14 @@ export class ChatController {
     return this.chatService.getChatById(chatId, user.sub);
   }
 
+  @Delete(":chatId")
+  async deleteChat(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+  ) {
+    return this.chatService.deleteChat(chatId, user.sub);
+  }
+
   @Get(":chatId/messages")
   async getMessages(
     @CurrentUser() user: JwtPayload,
@@ -84,6 +93,15 @@ export class ChatController {
     @Body() dto: SendMessageDto,
   ) {
     return this.chatService.sendMessage(chatId, user.sub, dto);
+  }
+
+  @Delete(":chatId/messages/:messageId")
+  async deleteMessage(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+    @Param("messageId") messageId: string,
+  ) {
+    return this.chatService.deleteMessage(chatId, messageId, user.sub);
   }
 
   @UseGuards(RateLimitGuard)

@@ -9,6 +9,7 @@ import {
   UnauthorizedException,
   UseGuards,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import type { Request, Response } from "express";
 import { RateLimit } from "../common/decorators/rate-limit.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
@@ -23,7 +24,10 @@ const REFRESH_COOKIE = "refresh_token";
 
 @Controller("auth")
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @UseGuards(RateLimitGuard)
   @RateLimit({
@@ -112,7 +116,12 @@ export class AuthController {
   ) {
     const refreshToken = request.cookies?.[REFRESH_COOKIE] as string | undefined;
     await this.authService.logout(refreshToken);
-    response.clearCookie(REFRESH_COOKIE);
+    response.clearCookie(REFRESH_COOKIE, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: false,
+      path: "/",
+    });
     return { success: true };
   }
 
@@ -134,8 +143,13 @@ export class AuthController {
       sameSite: "lax",
       secure: false,
       path: "/",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: this.getRefreshMaxAgeMs(),
     });
+  }
+
+  private getRefreshMaxAgeMs() {
+    const ttlDays = Number(this.configService.get<string>("JWT_REFRESH_TTL_DAYS") ?? 30);
+    return ttlDays * 24 * 60 * 60 * 1000;
   }
 
   private getRequestMetadata(request: Request) {

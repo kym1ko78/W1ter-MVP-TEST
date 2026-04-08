@@ -12,6 +12,10 @@
   --accent: #d17c43;
   --accent-strong: #af5f2d;
   --panel: rgba(255, 251, 245, 0.82);
+  --scrollbar-size: 8px;
+  --scrollbar-track: rgba(33, 38, 48, 0.88);
+  --scrollbar-thumb: rgba(125, 131, 142, 0.82);
+  --scrollbar-thumb-hover: rgba(151, 157, 168, 0.95);
 }
 
 * {
@@ -73,4 +77,52 @@ body.chat-page-locked {
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.scroll-region-y::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+.scroll-region-y::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background-color: var(--scrollbar-track);
+}
+
+.scroll-region-y::-webkit-scrollbar-thumb {
+  border: 2px solid var(--scrollbar-track);
+  border-radius: 999px;
+  background-color: var(--scrollbar-thumb);
+  background-clip: padding-box;
+  min-height: 36px;
+}
+
+.scroll-region-y::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
+.scroll-region-y::-webkit-scrollbar-button,
+.scroll-region-y::-webkit-scrollbar-button:single-button,
+.scroll-region-y::-webkit-scrollbar-button:vertical:decrement,
+.scroll-region-y::-webkit-scrollbar-button:vertical:increment,
+.scroll-region-y::-webkit-scrollbar-button:horizontal:decrement,
+.scroll-region-y::-webkit-scrollbar-button:horizontal:increment {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.scroll-region-y::-webkit-scrollbar-corner,
+.scroll-region-y::-webkit-resizer {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
 }

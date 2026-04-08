@@ -22,6 +22,8 @@ export interface ChatMessage {
   body: string | null;
   createdAt: string;
   updatedAt: string;
+  deletedAt: string | null;
+  isDeleted: boolean;
   sender: SafeUser;
   attachments: ChatAttachment[];
 }
@@ -38,6 +40,8 @@ export interface ChatListItem {
     body: string | null;
     createdAt: string;
     updatedAt: string;
+    deletedAt: string | null;
+    isDeleted: boolean;
     attachments: ChatAttachment[];
   } | null;
   members: SafeUser[];
