@@ -243,8 +243,8 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
   if (isLoading || !isAuthenticated) {
     return (
-      <div className="flex h-[100dvh] items-center justify-center px-3 py-3 sm:px-5 sm:py-5">
-        <div className="rounded-full border border-white/70 bg-white/70 px-5 py-3 text-sm text-stone-600 shadow-panel">
+      <div className="chat-scene flex h-[100dvh] items-center justify-center px-3 py-3 sm:px-5 sm:py-5">
+        <div className="rounded-full border border-black/8 bg-white/90 px-5 py-3 text-sm text-stone-600 shadow-panel">
           Подготавливаем рабочее пространство...
         </div>
       </div>
@@ -252,31 +252,41 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <main className="grain h-[100dvh] overflow-hidden px-3 py-3 sm:px-5 sm:py-5" data-testid="chat-shell">
-      <div className="grid h-full min-h-0 grid-rows-[320px_minmax(0,1fr)] gap-3 lg:grid-cols-[360px_minmax(0,1fr)] lg:grid-rows-1">
+    <main
+      className="chat-scene grain h-[100dvh] overflow-hidden px-3 py-3 sm:px-5 sm:py-5"
+      data-testid="chat-shell"
+    >
+      <div className="grid h-full min-h-0 grid-rows-[360px_minmax(0,1fr)] gap-3 lg:grid-cols-[380px_minmax(0,1fr)] lg:grid-rows-1">
         <aside
-          className="flex min-h-0 flex-col overflow-hidden rounded-[32px] border border-white/70 bg-[rgba(255,251,245,0.84)] p-4 shadow-panel backdrop-blur sm:p-5"
+          className="chat-shell-panel flex min-h-0 flex-col overflow-hidden rounded-[34px] p-4 sm:p-5"
           data-testid="chat-sidebar"
         >
-          <div className="mb-5 flex items-start justify-between gap-3">
-            <div>
-              <p className="text-xs uppercase tracking-[0.25em] text-stone-500">Messenger</p>
-              <h1 className="mt-2 text-2xl font-semibold text-ink">{user?.displayName}</h1>
-              <p className="mt-1 text-sm text-stone-500">{user?.email}</p>
+          <div className="relative z-10 mb-5 flex items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[18px] bg-[#111111] text-base font-semibold text-white">
+                {getInitials(user?.displayName ?? user?.email ?? "User")}
+              </div>
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.28em] text-stone-400">Messenger</p>
+                <h1 className="mt-2 truncate text-[1.75rem] font-semibold leading-none tracking-tight text-[#171717]">
+                  {user?.displayName}
+                </h1>
+                <p className="mt-2 truncate text-sm text-stone-500">{user?.email}</p>
+              </div>
             </div>
             <button
               data-testid="logout-button"
               type="button"
               onClick={() => void logout()}
-              className="rounded-full border border-stone-200 bg-white/75 px-3 py-2 text-xs font-medium uppercase tracking-[0.18em] text-stone-600 transition hover:border-clay hover:text-clay"
+              className="shrink-0 rounded-full border border-black/10 bg-white px-4 py-2 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-600 transition hover:border-black hover:bg-black hover:text-white"
             >
               Exit
             </button>
           </div>
 
-          <div className="space-y-3">
+          <div className="relative z-10 space-y-3">
             <label className="block">
-              <span className="mb-2 block text-xs uppercase tracking-[0.22em] text-stone-500">
+              <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-stone-400">
                 Найти пользователя
               </span>
               <input
@@ -284,13 +294,13 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Имя или email"
-                className="w-full rounded-[22px] border border-stone-200 bg-white/80 px-4 py-3 text-sm outline-none transition focus:border-clay focus:ring-4 focus:ring-clay/10"
+                className="w-full rounded-[20px] border border-black/8 bg-[#f7f7f5] px-4 py-3 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
               />
             </label>
 
             {deferredSearch.trim().length > 1 ? (
               <div
-                className="scroll-region-y max-h-52 overflow-y-auto rounded-[24px] border border-stone-200/80 bg-white/70 p-2"
+                className="scroll-region-y max-h-52 overflow-y-auto rounded-[24px] border border-black/8 bg-white p-2 shadow-[0_18px_30px_rgba(17,24,39,0.06)]"
                 data-testid="user-search-results"
               >
                 {searchUsersQuery.isLoading ? (
@@ -303,14 +313,21 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                         data-testid="user-search-result"
                         type="button"
                         onClick={() => createDirectChatMutation.mutate(foundUser.id)}
-                        className="flex w-full items-center justify-between rounded-[18px] px-3 py-3 text-left transition hover:bg-sand"
+                        className="flex w-full items-center justify-between gap-3 rounded-[18px] border border-transparent px-3 py-3 text-left transition hover:border-black/8 hover:bg-[#f7f7f5]"
                       >
-                        <div>
-                          <p className="text-sm font-semibold text-ink">{foundUser.displayName}</p>
-                          <p className="text-xs text-stone-500">{foundUser.email}</p>
+                        <div className="flex min-w-0 items-center gap-3">
+                          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] bg-[#111111] text-sm font-semibold text-white">
+                            {getInitials(foundUser.displayName)}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-[#171717]">
+                              {foundUser.displayName}
+                            </p>
+                            <p className="truncate text-xs text-stone-500">{foundUser.email}</p>
+                          </div>
                         </div>
-                        <span className="text-xs uppercase tracking-[0.18em] text-clay">
-                          {createDirectChatMutation.isPending ? "..." : "Chat"}
+                        <span className="rounded-full border border-black/10 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-stone-500">
+                          {createDirectChatMutation.isPending ? "..." : "Direct"}
                         </span>
                       </button>
                     ))}
@@ -322,15 +339,18 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
             ) : null}
           </div>
 
-          <div className="mt-6 flex min-h-0 flex-1 flex-col">
+          <div className="relative z-10 mt-6 flex min-h-0 flex-1 flex-col">
             <div className="mb-3 flex items-center justify-between">
-              <p className="text-xs uppercase tracking-[0.22em] text-stone-500">Ваши чаты</p>
-              <span className="rounded-full bg-sand px-2.5 py-1 text-xs font-medium text-stone-600">
+              <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Ваши чаты</p>
+              <span className="rounded-full border border-black/8 bg-[#111111] px-2.5 py-1 text-xs font-semibold text-white">
                 {chatsQuery.data?.length ?? 0}
               </span>
             </div>
 
-            <div className="scroll-region-y min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" data-testid="chat-list">
+            <div
+              className="scroll-region-y min-h-0 flex-1 space-y-2 overflow-y-auto pr-1"
+              data-testid="chat-list"
+            >
               {chatsQuery.isLoading ? (
                 <>
                   <SidebarSkeleton />
@@ -349,61 +369,103 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                       key={chat.id}
                       data-testid="chat-list-entry"
                       className={clsx(
-                        "rounded-[24px] border px-4 py-4 transition",
+                        "group rounded-[26px] border px-4 py-3 transition",
                         isActive
-                          ? "border-clay bg-[linear-gradient(135deg,rgba(209,124,67,0.15),rgba(175,95,45,0.08))]"
-                          : "border-transparent bg-white/70 hover:border-stone-200 hover:bg-white",
+                          ? "border-black bg-[#151515] text-white shadow-[0_22px_34px_rgba(17,24,39,0.14)]"
+                          : "border-black/6 bg-white/92 hover:border-black/14 hover:bg-white",
                       )}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <Link
-                          data-testid="chat-list-item"
-                          href={`/chat/${chat.id}`}
-                          className="min-w-0 flex-1"
+                      <div className="flex items-start gap-3">
+                        <div
+                          className={clsx(
+                            "flex h-12 w-12 shrink-0 items-center justify-center rounded-[16px] text-sm font-semibold",
+                            isActive ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
+                          )}
                         >
-                          <p className="truncate text-sm font-semibold text-ink">{title}</p>
-                          <p className="mt-1 truncate text-xs text-stone-500">
-                            {partner?.lastSeenAt
-                              ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
-                              : "Личный чат"}
-                          </p>
-                        </Link>
-                        <div className="shrink-0 text-right">
-                          <p className="text-[11px] uppercase tracking-[0.16em] text-stone-400">
-                            {chat.lastMessage ? formatTime(chat.lastMessage.createdAt) : "New"}
-                          </p>
-                          {chat.unreadCount > 0 ? (
-                            <span
-                              data-testid="chat-unread-badge"
-                              className="mt-2 inline-flex min-w-6 items-center justify-center rounded-full bg-clay px-2 py-1 text-[11px] font-semibold text-white"
+                          {getInitials(title)}
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start justify-between gap-3">
+                            <Link
+                              data-testid="chat-list-item"
+                              href={`/chat/${chat.id}`}
+                              className="min-w-0 flex-1"
                             >
-                              {chat.unreadCount}
-                            </span>
-                          ) : null}
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteChat(chat.id)}
-                            disabled={deleteChatMutation.isPending}
-                            data-testid="chat-list-delete-button"
-                            className="mt-2 block rounded-full border border-rose-200 bg-white/85 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-rose-700 transition hover:border-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                              <p
+                                className={clsx(
+                                  "truncate text-sm font-semibold",
+                                  isActive ? "text-white" : "text-[#171717]",
+                                )}
+                              >
+                                {title}
+                              </p>
+                              <p
+                                className={clsx(
+                                  "mt-1 truncate text-xs",
+                                  isActive ? "text-white/60" : "text-stone-500",
+                                )}
+                              >
+                                {partner?.lastSeenAt
+                                  ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
+                                  : "Личный чат"}
+                              </p>
+                            </Link>
+
+                            <div className="shrink-0 text-right">
+                              <p
+                                className={clsx(
+                                  "text-[10px] uppercase tracking-[0.16em]",
+                                  isActive ? "text-white/45" : "text-stone-400",
+                                )}
+                              >
+                                {chat.lastMessage ? formatTime(chat.lastMessage.createdAt) : "New"}
+                              </p>
+                              {chat.unreadCount > 0 ? (
+                                <span
+                                  data-testid="chat-unread-badge"
+                                  className={clsx(
+                                    "mt-2 inline-flex min-w-6 items-center justify-center rounded-full px-2 py-1 text-[11px] font-semibold",
+                                    isActive ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
+                                  )}
+                                >
+                                  {chat.unreadCount}
+                                </span>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteChat(chat.id)}
+                                disabled={deleteChatMutation.isPending}
+                                data-testid="chat-list-delete-button"
+                                className={clsx(
+                                  "mt-2 block rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] transition disabled:cursor-not-allowed disabled:opacity-60",
+                                  isActive
+                                    ? "border-white/15 bg-white/5 text-white/70 hover:border-white/25 hover:text-white"
+                                    : "border-black/10 bg-white text-stone-500 hover:border-black/20 hover:text-black",
+                                )}
+                              >
+                                {isDeleting ? "Удаление..." : "Удалить"}
+                              </button>
+                            </div>
+                          </div>
+
+                          <Link
+                            href={`/chat/${chat.id}`}
+                            className={clsx(
+                              "mt-3 block truncate text-sm",
+                              isActive ? "text-white/76" : "text-stone-600",
+                            )}
                           >
-                            {isDeleting ? "Удаление..." : "Удалить"}
-                          </button>
+                            {getLastMessagePreviewText(chat.lastMessage)}
+                          </Link>
                         </div>
                       </div>
-
-                      <Link
-                        href={`/chat/${chat.id}`}
-                        className="mt-3 block truncate text-sm text-stone-600"
-                      >
-                        {getLastMessagePreviewText(chat.lastMessage)}
-                      </Link>
                     </div>
                   );
                 })
               ) : (
                 <div
-                  className="rounded-[24px] border border-dashed border-stone-300 bg-white/55 px-4 py-6 text-sm leading-6 text-stone-600"
+                  className="rounded-[26px] border border-dashed border-black/12 bg-white/80 px-4 py-6 text-sm leading-6 text-stone-600"
                   data-testid="chat-list-empty"
                 >
                   Пока нет чатов. Найдите пользователя выше и создайте первый direct chat.
@@ -420,5 +482,14 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 }
 
 function SidebarSkeleton() {
-  return <div className="h-24 animate-pulse rounded-[24px] bg-white/60" />;
+  return <div className="h-24 animate-pulse rounded-[24px] border border-black/6 bg-white/80" />;
+}
+
+function getInitials(value: string) {
+  return value
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("") || "W";
 }
