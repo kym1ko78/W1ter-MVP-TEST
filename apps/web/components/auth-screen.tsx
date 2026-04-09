@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import clsx from "clsx";
@@ -68,9 +68,9 @@ export function AuthScreen({ mode }: { mode: "login" | "register" }) {
   });
 
   return (
-    <main className="auth-scene grain min-h-screen px-4 py-6 sm:px-6 sm:py-8">
-      <div className="relative mx-auto w-full max-w-[1240px] overflow-hidden rounded-[38px] border border-black/6 bg-white shadow-panel">
-        <div className="grid min-h-[760px] lg:grid-cols-[1.08fr_0.92fr]">
+    <main className="auth-scene grain min-h-screen">
+      <div className="relative w-full min-h-screen overflow-hidden bg-white">
+        <div className="grid min-h-screen lg:grid-cols-[1.08fr_0.92fr]">
           <section className="order-2 flex flex-col justify-between bg-white px-6 py-6 sm:px-10 sm:py-8 lg:order-1 lg:px-12 lg:py-10">
             <div>
               <div className="mb-12 flex items-center justify-between gap-6">
@@ -144,25 +144,7 @@ export function AuthScreen({ mode }: { mode: "login" | "register" }) {
                 </div>
               </div>
 
-              <div className="relative z-10 mt-8 flex-1">
-                <div className="auth-float-card auth-float-card-top">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-stone-400">Message flow</p>
-                  <div className="mt-3 flex items-end gap-2">
-                    <span className="h-10 w-8 rounded-full bg-black/80" />
-                    <span className="h-16 w-8 rounded-full bg-black/65" />
-                    <span className="h-8 w-8 rounded-full bg-black/40" />
-                    <span className="h-12 w-8 rounded-full bg-black/70" />
-                  </div>
-                </div>
-
-                <div className="auth-float-card auth-float-card-bottom">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-stone-400">Auth status</p>
-                  <p className="mt-3 text-3xl font-semibold text-[#202229]">Ready</p>
-                  <p className="mt-2 text-sm leading-6 text-stone-500">
-                    Один вход, один экран, прямой путь в chat shell.
-                  </p>
-                </div>
-
+              <div className="relative z-10 mt-8 flex-1 flex items-start">
                 <div className="relative z-10 mx-auto mt-6 w-full max-w-[420px] rounded-[28px] border border-white/10 bg-white px-5 py-6 text-[#1f2430] shadow-[0_24px_60px_rgba(0,0,0,0.24)] sm:px-7 sm:py-7">
                   <p className="text-xs uppercase tracking-[0.24em] text-stone-400">
                     {isRegister ? "Create account" : "Sign in"}

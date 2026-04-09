@@ -122,6 +122,7 @@
 - `pnpm --filter @repo/web build` проходит
 - `pnpm test:ui:e2e:auto` проходит
 - Delete message / delete chat работают и синхронизируются через realtime между участниками
+- Placeholder справа на маршруте /chat теперь не исчезает автоматически при появлении чатов и остается до явного клика по конкретному диалогу
 - `docker compose -f docker-compose.production.yml --env-file .env.production.example config` проходит
 
 ## Что сейчас не получилось
@@ -178,6 +179,7 @@ pnpm test:ui:e2e:auto
 - Confirm-панель удаления сообщения и чата теперь появляется и исчезает плавно через короткий fade + slide transition
 - Серый контурный рисунок на фоне основной области чата убран; полотно переписки стало чище
 - Такой же серый контурный рисунок убран и с auth-экранов login/register
+
 
 
 
