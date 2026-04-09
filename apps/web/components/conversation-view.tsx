@@ -67,6 +67,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [confirmingMessage, setConfirmingMessage] = useState<ChatMessage | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+  const messageListEndRef = useRef<HTMLDivElement | null>(null);
+  const shouldScrollAfterSendRef = useRef(false);
 
   const chatQuery = useQuery({
     queryKey: ["chat", chatId],
@@ -146,6 +149,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
         appendMessageUnique(old, message),
       );
+      shouldScrollAfterSendRef.current = true;
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
       setComposerError(null);
@@ -216,10 +220,35 @@ export function ConversationView({ chatId }: { chatId: string }) {
     });
   }, [authorizedFetch, chatId, messageItems, user?.id]);
 
+  useEffect(() => {
+    if (!shouldScrollAfterSendRef.current || messageItems.length === 0) {
+      return;
+    }
+
+    const scrollToBottom = () => {
+      const endElement = messageListEndRef.current;
+      const listElement = messageListRef.current;
+
+      if (endElement) {
+        endElement.scrollIntoView({ block: "end", behavior: "smooth" });
+      } else if (listElement) {
+        listElement.scrollTo({ top: listElement.scrollHeight, behavior: "smooth" });
+      }
+
+      shouldScrollAfterSendRef.current = false;
+    };
+
+    const frameId = window.requestAnimationFrame(scrollToBottom);
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [messageItems]);
+
   const otherUser = useMemo(
     () => chatQuery.data?.members.find((member) => member.id !== user?.id) ?? null,
     [chatQuery.data?.members, user?.id],
   );
+  const hasComposerContent = Boolean(draft.trim() || pendingFile);
+  const showSendButton = hasComposerContent || sendMessageMutation.isPending;
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0] ?? null;
@@ -361,6 +390,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       </header>
 
       <div
+        ref={messageListRef}
         className="scroll-region-y relative z-10 flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
         data-testid="message-list"
       >
@@ -417,9 +447,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
                   className={clsx(
                     "w-fit max-w-full shadow-sm",
                     shortTextOnlyBubble
-                      ? "rounded-[15px] px-3 py-1"
+                      ? "rounded-[13px] px-2.5 py-0.5"
                       : compactBubble
-                        ? "rounded-[18px] px-3 py-1.5"
+                        ? "rounded-[17px] px-2.5 py-1"
                         : "rounded-[22px] px-4 py-2.5",
                     isMine
                       ? "bg-[#111111] text-white"
@@ -430,7 +460,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     <div
                       className={clsx(
                         "grid grid-cols-[minmax(0,1fr)_auto] items-end",
-                        shortTextOnlyBubble ? "gap-x-1.5" : "gap-x-2",
+                        shortTextOnlyBubble ? "gap-x-1" : "gap-x-1.5",
                       )}
                     >
                       <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
@@ -438,7 +468,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       </p>
                       <p
                         className={clsx(
-                          "shrink-0 self-end pb-0.5 text-[11px] leading-none",
+                          "shrink-0 self-end pb-0 text-[11px] leading-none",
                           isMine ? "text-white/62" : "text-stone-400",
                         )}
                       >
@@ -471,6 +501,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
             </div>
           );
         })}
+        <div ref={messageListEndRef} aria-hidden="true" />
       </div>
 
       <form onSubmit={handleSubmit} className="relative z-10 flex-none border-t border-black/8 p-4 sm:p-5">
@@ -494,7 +525,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
         {pendingFile ? (
           <div
-            className="mb-3 flex items-center justify-between gap-3 rounded-[20px] border border-black/8 bg-white px-4 py-3"
+            className="mb-3 flex items-center justify-between gap-3 rounded-[20px] border border-black/8 bg-white px-4 py-3 shadow-[0_12px_24px_rgba(17,24,39,0.04)]"
             data-testid="attachment-preview"
           >
             <div className="min-w-0">
@@ -511,67 +542,66 @@ export function ConversationView({ chatId }: { chatId: string }) {
           </div>
         ) : null}
 
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
-          <div className="flex-1 rounded-[28px] border border-black/8 bg-white p-2 shadow-[0_16px_28px_rgba(17,24,39,0.05)]">
-            <textarea
-              ref={textareaRef}
-              data-testid="message-input"
-              value={draft}
-              onChange={(event) => {
-                setDraft(event.target.value);
-                if (composerError) {
-                  setComposerError(null);
-                }
-              }}
-              onKeyDown={handleComposerKeyDown}
-              rows={1}
-              maxLength={MESSAGE_MAX_LENGTH}
-              placeholder="Напишите сообщение..."
-              className="h-14 min-h-14 max-h-[200px] w-full resize-none overflow-y-hidden rounded-[22px] border border-transparent bg-transparent px-4 py-4 leading-6 text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/10 focus:bg-[#fafaf8]"
-            />
+        <div className="flex items-center gap-2.5">
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-[27px] border border-black/8 bg-white pl-2 pr-3 py-1.5 shadow-[0_14px_24px_rgba(17,24,39,0.045)]">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-black/10 bg-[#f7f7f5] text-stone-500 transition hover:border-black/25 hover:bg-white hover:text-black"
+              data-testid="attachment-picker-button"
+              aria-label="Прикрепить файл"
+              title="Прикрепить файл"
+            >
+              <PaperclipIcon className="h-5 w-5" />
+            </button>
 
-            <div className="mt-2 flex items-center justify-between gap-3 px-2 pb-1">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="rounded-full border border-black/10 bg-white px-4 py-2 text-xs font-medium uppercase tracking-[0.16em] text-stone-600 transition hover:border-black/25 hover:text-black"
-                data-testid="attachment-picker-button"
-              >
-                Прикрепить файл
-              </button>
-              <div className="text-right text-xs text-stone-500">
-                <p data-testid="message-counter">
+            <div className="min-w-0 flex-1">
+              <textarea
+                ref={textareaRef}
+                data-testid="message-input"
+                value={draft}
+                onChange={(event) => {
+                  setDraft(event.target.value);
+                  if (composerError) {
+                    setComposerError(null);
+                  }
+                }}
+                onKeyDown={handleComposerKeyDown}
+                rows={1}
+                maxLength={MESSAGE_MAX_LENGTH}
+                placeholder="Сообщение..."
+                className="h-[44px] min-h-[44px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 py-[9px] leading-[26px] text-[#171717] outline-none transition placeholder:text-stone-400"
+              />
+
+              <div className="mt-0 flex justify-end px-1 pb-0">
+                <p data-testid="message-counter" className="shrink-0 text-[10px] text-stone-400">
                   {draft.length}/{MESSAGE_MAX_LENGTH}
                 </p>
-                <p className="mt-1">Enter: отправить · Ctrl+Enter: новая строка</p>
               </div>
             </div>
           </div>
 
-          <button
-            data-testid="send-message-button"
-            type="submit"
-            disabled={sendMessageMutation.isPending || (!draft.trim() && !pendingFile)}
-            className="h-14 rounded-[22px] bg-[#111111] px-6 text-sm font-semibold text-white transition hover:translate-y-[-1px] hover:bg-black disabled:cursor-not-allowed disabled:opacity-55 lg:w-[170px]"
+          <div
+            className={clsx(
+              "self-center overflow-hidden transition-all duration-200 ease-out",
+              showSendButton ? "w-12 opacity-100" : "pointer-events-none w-0 opacity-0",
+            )}
           >
-            {sendMessageMutation.isPending ? (pendingFile ? "Загрузка..." : "Отправка...") : "Отправить"}
-          </button>
-        </div>
-
-        <div className="mt-3 flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              setDraft("");
-              setComposerError(null);
-              clearPendingFile();
-            }}
-            className="rounded-full border border-transparent px-1 py-1 text-xs font-medium uppercase tracking-[0.16em] text-stone-400 transition hover:text-black"
-          >
-            Очистить
-          </button>
-          <div className="text-right text-xs text-stone-400">
-            <p>Desktop messenger layout</p>
+            <button
+              data-testid="send-message-button"
+              type="submit"
+              disabled={sendMessageMutation.isPending || !hasComposerContent}
+              tabIndex={showSendButton ? 0 : -1}
+              aria-label="Отправить сообщение"
+              title="Отправить сообщение"
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-[#111111] text-white transition hover:translate-y-[-1px] hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
+            >
+              {sendMessageMutation.isPending ? (
+                <span className="text-sm font-semibold leading-none">...</span>
+              ) : (
+                <SendIcon className="h-5 w-5" />
+              )}
+            </button>
           </div>
         </div>
       </form>
@@ -688,4 +718,39 @@ function getInitials(value: string) {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("") || "W";
+}
+
+function PaperclipIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
+function SendIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M22 2 11 13" />
+      <path d="m22 2-7 20-4-9-9-4Z" />
+    </svg>
+  );
 }

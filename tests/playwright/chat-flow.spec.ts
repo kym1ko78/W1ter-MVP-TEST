@@ -81,10 +81,20 @@ test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messa
 
   await expect(searchResult).toBeVisible();
   await searchResult.click();
+  await expect(alicePage).toHaveURL(/\/chat$/);
+  await expect(alicePage.getByTestId("chat-placeholder")).toBeVisible();
+
+  const aliceChatListItem = alicePage
+    .getByTestId("chat-list-item")
+    .filter({ hasText: bob.displayName });
+
+  await expect(aliceChatListItem).toBeVisible();
+  await aliceChatListItem.click();
   await expect(alicePage).toHaveURL(/\/chat\/.+/);
   await expect(alicePage.getByTestId("conversation-title")).toContainText(bob.displayName);
 
   await gotoAndWaitForTestId(bobPage, "/chat", "chat-list");
+  await expect(bobPage.getByTestId("chat-placeholder")).toBeVisible();
   const bobChatListItem = bobPage
     .getByTestId("chat-list-item")
     .filter({ hasText: alice.displayName });
@@ -157,5 +167,7 @@ test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messa
   await aliceContext.close();
   await bobContext.close();
 });
+
+
 
 

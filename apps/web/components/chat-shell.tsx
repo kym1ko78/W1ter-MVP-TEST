@@ -86,12 +86,12 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
           body: JSON.stringify({ targetUserId }),
         }),
       ),
-    onSuccess: (chat) => {
-      void queryClient.invalidateQueries({ queryKey: ["chats"] });
-      startTransition(() => {
-        router.push(`/chat/${chat.id}`);
-      });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["chats"] });
       setSearch("");
+      startTransition(() => {
+        router.replace("/chat");
+      });
     },
   });
 
@@ -221,16 +221,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     socketRef.current.emit("join_chat_room", { chatId: currentChatId });
   }, [currentChatId]);
 
-  useEffect(() => {
-    if (
-      safePathname === "/chat" &&
-      chatsQuery.data &&
-      chatsQuery.data.length > 0 &&
-      !currentChatId
-    ) {
-      router.replace(`/chat/${chatsQuery.data[0].id}`);
-    }
-  }, [chatsQuery.data, currentChatId, router, safePathname]);
 
   const handleDeleteChat = (chatId: string) => {
     if (deleteChatMutation.isPending) {
@@ -512,3 +502,6 @@ function getInitials(value: string) {
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("") || "W";
 }
+
+
+
