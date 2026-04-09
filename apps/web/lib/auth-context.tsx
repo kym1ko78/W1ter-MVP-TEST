@@ -30,6 +30,9 @@ type AuthContextValue = {
   logout: () => Promise<void>;
   refreshSession: () => Promise<string | null>;
   authorizedFetch: (path: string, init?: RequestInit) => Promise<Response>;
+  updateProfile: (input: { displayName: string }) => Promise<SafeUser>;
+  uploadAvatar: (file: File) => Promise<SafeUser>;
+  removeAvatar: () => Promise<SafeUser>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -199,6 +202,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [accessToken, refreshSession],
   );
 
+  const updateProfile = useCallback(
+    async (input: { displayName: string }) => {
+      const updatedUser = await readJson<SafeUser>(
+        await authorizedFetch("/users/me", {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(input),
+        }),
+      );
+
+      setUser(updatedUser);
+      return updatedUser;
+    },
+    [authorizedFetch],
+  );
+
+  const uploadAvatar = useCallback(
+    async (file: File) => {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const updatedUser = await readJson<SafeUser>(
+        await authorizedFetch("/users/me/avatar", {
+          method: "POST",
+          body: formData,
+        }),
+      );
+
+      setUser(updatedUser);
+      return updatedUser;
+    },
+    [authorizedFetch],
+  );
+
+  const removeAvatar = useCallback(async () => {
+    const updatedUser = await readJson<SafeUser>(
+      await authorizedFetch("/users/me/avatar", {
+        method: "DELETE",
+      }),
+    );
+
+    setUser(updatedUser);
+    return updatedUser;
+  }, [authorizedFetch]);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -210,8 +260,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logout,
       refreshSession,
       authorizedFetch,
+      updateProfile,
+      uploadAvatar,
+      removeAvatar,
     }),
-    [accessToken, authorizedFetch, isLoading, login, logout, refreshSession, register, user],
+    [
+      accessToken,
+      authorizedFetch,
+      isLoading,
+      login,
+      logout,
+      refreshSession,
+      register,
+      removeAvatar,
+      updateProfile,
+      uploadAvatar,
+      user,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -21,6 +21,7 @@ import {
 } from "../lib/utils";
 import type { ChatAttachment, ChatListItem, ChatMessage, MessagePage } from "../types/api";
 import { ConfirmDialog } from "./confirm-dialog";
+import { UserAvatar } from "./user-avatar";
 
 const MESSAGE_MAX_LENGTH = 4000;
 const COMPOSER_MIN_HEIGHT = 56;
@@ -366,9 +367,18 @@ export function ConversationView({ chatId }: { chatId: string }) {
     >
       <header className="relative z-10 flex flex-none items-center justify-between gap-4 border-b border-black/8 px-5 py-4 sm:px-6 sm:py-5">
         <div className="flex min-w-0 items-center gap-4">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[16px] bg-[#111111] text-sm font-semibold text-white">
-            {getInitials(getChatTitle(chatQuery.data.members, user?.id))}
-          </div>
+          <UserAvatar
+            user={
+              otherUser ?? {
+                displayName: getChatTitle(chatQuery.data.members, user?.id),
+                email: getChatTitle(chatQuery.data.members, user?.id),
+                avatarUrl: null,
+              }
+            }
+            accessToken={accessToken}
+            className="h-12 w-12 shrink-0 rounded-[16px]"
+            fallbackClassName="text-sm"
+          />
           <div className="min-w-0">
             <p className="text-[11px] uppercase tracking-[0.22em] text-stone-400">Direct chat</p>
             <h2
@@ -709,15 +719,6 @@ function ConversationSkeleton() {
       <div className="mt-5 h-24 rounded-[24px] bg-stone-200/60" />
     </div>
   );
-}
-
-function getInitials(value: string) {
-  return value
-    .split(/[\s@._-]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("") || "W";
 }
 
 function PaperclipIcon({ className }: { className?: string }) {

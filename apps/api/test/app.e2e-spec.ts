@@ -14,6 +14,7 @@ type AuthResponse = {
     id: string;
     email: string;
     displayName: string;
+    avatarUrl?: string | null;
   };
 };
 
@@ -247,5 +248,63 @@ describe("API e2e", () => {
       .get(`/chats/${chatId}`)
       .set("Authorization", `Bearer ${refreshBody.accessToken}`)
       .expect(404);
+  });
+
+  it("updates profile data and uploads an avatar", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const userData = {
+      email: `api.e2e.profile.${suffix}@example.com`,
+      displayName: "Profile User",
+      password: "password123",
+    };
+    const agent = request.agent(app.getHttpServer());
+
+    const registerResponse = await agent
+      .post("/auth/register")
+      .send(userData)
+      .expect(201);
+
+    const authBody = registerResponse.body as AuthResponse;
+    const renamedDisplayName = "Profile User Updated";
+
+    const updateProfileResponse = await agent
+      .patch("/users/me")
+      .set("Authorization", `Bearer ${authBody.accessToken}`)
+      .send({ displayName: renamedDisplayName })
+      .expect(200);
+
+    expect(updateProfileResponse.body.displayName).toBe(renamedDisplayName);
+
+    const avatarBuffer = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9sLJXewAAAAASUVORK5CYII=",
+      "base64",
+    );
+
+    const uploadResponse = await agent
+      .post("/users/me/avatar")
+      .set("Authorization", `Bearer ${authBody.accessToken}`)
+      .attach("file", avatarBuffer, {
+        filename: "avatar.png",
+        contentType: "image/png",
+      })
+      .expect(201);
+
+    expect(uploadResponse.body.avatarUrl).toContain("/users/avatar-files/");
+
+    const avatarPath = (uploadResponse.body.avatarUrl as string).split("?")[0];
+
+    const avatarResponse = await agent
+      .get(avatarPath)
+      .query({ access_token: authBody.accessToken })
+      .expect(200);
+
+    expect(avatarResponse.headers["content-type"]).toContain("image/png");
+
+    const removeResponse = await agent
+      .delete("/users/me/avatar")
+      .set("Authorization", `Bearer ${authBody.accessToken}`)
+      .expect(200);
+
+    expect(removeResponse.body.avatarUrl).toBeNull();
   });
 });
