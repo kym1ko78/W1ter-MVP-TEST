@@ -59,7 +59,11 @@ export function AuthScreen({ mode }: { mode: "login" | "register" }) {
 
       router.replace("/chat");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Не удалось выполнить вход");
+      const fallbackMessage = isRegister
+        ? "Не удалось создать аккаунт"
+        : "Не удалось выполнить вход";
+
+      setErrorMessage(error instanceof Error ? error.message : fallbackMessage);
     }
   });
 

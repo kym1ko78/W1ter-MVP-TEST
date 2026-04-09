@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+﻿import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 type TestUser = {
   email: string;
@@ -129,11 +129,13 @@ test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messa
     .click();
 
   await expect(
-    alicePage.getByTestId("message-item").filter({ hasText: "Сообщение удалено" }),
-  ).toHaveCount(1);
+    alicePage.getByTestId("message-item").filter({ hasText: singleLineMessage }),
+  ).toHaveCount(0);
   await expect(
-    bobPage.getByTestId("message-item").filter({ hasText: "Сообщение удалено" }),
-  ).toHaveCount(1);
+    bobPage.getByTestId("message-item").filter({ hasText: singleLineMessage }),
+  ).toHaveCount(0);
+  await expect(alicePage.getByText("Сообщение удалено")).toHaveCount(0);
+  await expect(bobPage.getByText("Сообщение удалено")).toHaveCount(0);
 
   alicePage.once("dialog", (dialog) => void dialog.accept());
   await alicePage

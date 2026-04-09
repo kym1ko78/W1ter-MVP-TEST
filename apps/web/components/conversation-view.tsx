@@ -306,7 +306,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   };
 
   const handleDeleteMessage = (message: ChatMessage) => {
-    if (deleteMessageMutation.isPending || message.isDeleted) {
+    if (deleteMessageMutation.isPending) {
       return;
     }
 
@@ -380,11 +380,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
           const { message } = item;
           const isMine = message.senderId === user?.id;
-          const isDeleted = message.isDeleted;
           const normalizedBody = message.body?.trim() ?? "";
           const hasText = Boolean(normalizedBody);
           const hasAttachments = message.attachments.length > 0;
-          const inlineMetaBubble = hasText && !hasAttachments && !isDeleted;
+          const inlineMetaBubble = hasText && !hasAttachments;
           const compactBubble = inlineMetaBubble;
           const shortTextOnlyBubble =
             inlineMetaBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
@@ -403,7 +402,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                   isMine ? "ml-auto max-w-[85%] sm:max-w-[70%]" : "max-w-[85%] sm:max-w-[70%]",
                 )}
               >
-                {isMine && !isDeleted ? (
+                {isMine ? (
                   <button
                     type="button"
                     onClick={() => handleDeleteMessage(message)}
@@ -416,28 +415,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 <div
                   className={clsx(
                     "w-fit max-w-full shadow-sm",
-                    isDeleted
-                      ? "rounded-[20px] border border-dashed border-black/12 bg-stone-100/90 px-3 py-2"
-                      : shortTextOnlyBubble
-                        ? "rounded-[15px] px-3 py-1"
-                        : compactBubble
-                          ? "rounded-[18px] px-3 py-1.5"
-                          : "rounded-[22px] px-4 py-2.5",
-                    isDeleted
-                      ? "text-stone-500"
-                      : isMine
-                        ? "bg-[#111111] text-white"
-                        : "border border-black/8 bg-white text-[#171717]",
+                    shortTextOnlyBubble
+                      ? "rounded-[15px] px-3 py-1"
+                      : compactBubble
+                        ? "rounded-[18px] px-3 py-1.5"
+                        : "rounded-[22px] px-4 py-2.5",
+                    isMine
+                      ? "bg-[#111111] text-white"
+                      : "border border-black/8 bg-white text-[#171717]",
                   )}
                 >
-                  {isDeleted ? (
-                    <div className="space-y-1">
-                      <p className="text-sm italic leading-5">Сообщение удалено</p>
-                      <p className="text-right text-[11px] leading-none text-stone-400">
-                        {formatTime(message.createdAt)}
-                      </p>
-                    </div>
-                  ) : null}
                   {inlineMetaBubble && message.body ? (
                     <div
                       className={clsx(
@@ -458,17 +445,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       </p>
                     </div>
                   ) : null}
-                  {message.body && !inlineMetaBubble && !isDeleted ? (
+                  {message.body && !inlineMetaBubble ? (
                     <p className="whitespace-pre-wrap break-words text-sm leading-5">{message.body}</p>
                   ) : null}
-                  {message.attachments.length > 0 && !isDeleted ? (
+                  {message.attachments.length > 0 ? (
                     <MessageAttachments
                       accessToken={accessToken}
                       attachments={message.attachments}
                       isMine={isMine}
                     />
                   ) : null}
-                  {!inlineMetaBubble && !isDeleted ? (
+                  {!inlineMetaBubble ? (
                     <p
                       className={clsx(
                         hasText ? "mt-1 text-right text-[11px] leading-none" : "mt-1.5 text-right text-[11px] leading-none",

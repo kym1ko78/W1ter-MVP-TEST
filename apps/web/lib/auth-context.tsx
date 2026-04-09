@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   createContext,
@@ -50,6 +50,40 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
+function isConnectivityError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.name === "TypeError" ||
+    /Failed to fetch|Load failed|NetworkError|fetch/i.test(error.message)
+  );
+}
+
+function toConnectivityError() {
+  return new Error(
+    "Не удается подключиться к API. Проверьте, что запущены `docker compose up -d` и `pnpm dev`.",
+  );
+}
+
+async function performAuthRequest(path: string, init: RequestInit) {
+  try {
+    const response = await fetch(`${API_URL}${path}`, {
+      ...init,
+      credentials: "include",
+    });
+
+    return await parseResponse<AuthResponse>(response);
+  } catch (error) {
+    if (isConnectivityError(error)) {
+      throw toConnectivityError();
+    }
+
+    throw error;
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<SafeUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
@@ -89,16 +123,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(
     async (input: { email: string; password: string }) => {
-      const response = await fetch(`${API_URL}/auth/login`, {
+      const session = await performAuthRequest("/auth/login", {
         method: "POST",
-        credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(input),
       });
 
-      const session = await parseResponse<AuthResponse>(response);
       applySession(session);
     },
     [applySession],
@@ -106,16 +138,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const register = useCallback(
     async (input: { email: string; displayName: string; password: string }) => {
-      const response = await fetch(`${API_URL}/auth/register`, {
+      const session = await performAuthRequest("/auth/register", {
         method: "POST",
-        credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(input),
       });
 
-      const session = await parseResponse<AuthResponse>(response);
       applySession(session);
     },
     [applySession],
@@ -200,4 +230,3 @@ export function useAuth() {
 export async function readJson<T>(response: Response): Promise<T> {
   return parseResponse<T>(response);
 }
-
