@@ -121,12 +121,13 @@ test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messa
     bobPage.getByTestId("message-item").filter({ hasText: "Вторая строка" }),
   ).toHaveCount(1);
 
-  alicePage.once("dialog", (dialog) => void dialog.accept());
   await alicePage
     .getByTestId("message-item")
     .filter({ hasText: singleLineMessage })
     .getByTestId("delete-message-button")
     .click();
+  await expect(alicePage.getByTestId("confirm-dialog")).toBeVisible();
+  await alicePage.getByTestId("confirm-dialog-confirm").click();
 
   await expect(
     alicePage.getByTestId("message-item").filter({ hasText: singleLineMessage }),
@@ -137,12 +138,13 @@ test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messa
   await expect(alicePage.getByText("Сообщение удалено")).toHaveCount(0);
   await expect(bobPage.getByText("Сообщение удалено")).toHaveCount(0);
 
-  alicePage.once("dialog", (dialog) => void dialog.accept());
   await alicePage
     .getByTestId("chat-list-entry")
     .filter({ hasText: bob.displayName })
     .getByTestId("chat-list-delete-button")
     .click();
+  await expect(alicePage.getByTestId("confirm-dialog")).toBeVisible();
+  await alicePage.getByTestId("confirm-dialog-confirm").click();
 
   await expect(alicePage).toHaveURL(/\/chat$/);
   await expect(bobPage).toHaveURL(/\/chat$/);

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   useMutation,
@@ -17,6 +17,7 @@ import {
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
+import { ConfirmDialog } from "./confirm-dialog";
 import { readJson, useAuth } from "../lib/auth-context";
 import { appendMessageUnique, upsertMessage } from "../lib/message-cache";
 import { SOCKET_URL } from "../lib/config";
@@ -48,6 +49,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const { accessToken, authorizedFetch, isAuthenticated, isLoading, logout, user } = useAuth();
   const [search, setSearch] = useState("");
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
+  const [confirmingChatId, setConfirmingChatId] = useState<string | null>(null);
   const deferredSearch = useDeferredValue(search);
   const currentChatId = useMemo(() => {
     const segments = safePathname.split("/").filter(Boolean);
@@ -117,6 +119,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     },
     onSettled: () => {
       setDeletingChatId(null);
+      setConfirmingChatId(null);
     },
   });
 
@@ -234,17 +237,15 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    if (!window.confirm("Удалить этот чат целиком?")) {
-      return;
-    }
-
-    deleteChatMutation.mutate(chatId);
+    setConfirmingChatId(chatId);
   };
+
+  const confirmingChat = chatsQuery.data?.find((chat) => chat.id === confirmingChatId) ?? null;
 
   if (isLoading || !isAuthenticated) {
     return (
       <div className="chat-scene flex h-[100dvh] items-center justify-center px-3 py-3 sm:px-5 sm:py-5">
-        <div className="rounded-full border border-black/8 bg-white/90 px-5 py-3 text-sm text-stone-600 shadow-panel">
+        <div className="border-b border-black/8 bg-white/90 px-5 py-3 text-sm text-stone-600 shadow-panel">
           Подготавливаем рабочее пространство...
         </div>
       </div>
@@ -252,13 +253,10 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <main
-      className="chat-scene grain h-[100dvh] overflow-hidden px-3 py-3 sm:px-5 sm:py-5"
-      data-testid="chat-shell"
-    >
-      <div className="grid h-full min-h-0 grid-rows-[360px_minmax(0,1fr)] gap-3 lg:grid-cols-[380px_minmax(0,1fr)] lg:grid-rows-1">
+    <main className="chat-scene grain h-[100dvh] overflow-hidden" data-testid="chat-shell">
+      <div className="grid h-full min-h-0 grid-rows-[360px_minmax(0,1fr)] gap-0 lg:grid-cols-[380px_minmax(0,1fr)] lg:grid-rows-1">
         <aside
-          className="chat-shell-panel flex min-h-0 flex-col overflow-hidden rounded-[34px] p-4 sm:p-5"
+          className="chat-shell-panel flex min-h-0 flex-col overflow-hidden rounded-none border-0 border-r border-black/8 p-4 sm:p-5"
           data-testid="chat-sidebar"
         >
           <div className="relative z-10 mb-5 flex items-start justify-between gap-4">
@@ -477,6 +475,27 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
         <section className="min-h-0 min-w-0">{children}</section>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(confirmingChatId)}
+        title="Удалить этот чат?"
+        description={
+          confirmingChat
+            ? `Диалог с ${getChatTitle(confirmingChat.members, user?.id)} будет удален целиком.`
+            : "Диалог будет удален целиком."
+        }
+        isLoading={deleteChatMutation.isPending}
+        onCancel={() => {
+          if (!deleteChatMutation.isPending) {
+            setConfirmingChatId(null);
+          }
+        }}
+        onConfirm={() => {
+          if (confirmingChatId) {
+            deleteChatMutation.mutate(confirmingChatId);
+          }
+        }}
+      />
     </main>
   );
 }

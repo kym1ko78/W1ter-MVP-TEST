@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
@@ -20,6 +20,7 @@ import {
   getConversationDayKey,
 } from "../lib/utils";
 import type { ChatAttachment, ChatListItem, ChatMessage, MessagePage } from "../types/api";
+import { ConfirmDialog } from "./confirm-dialog";
 
 const MESSAGE_MAX_LENGTH = 4000;
 const COMPOSER_MIN_HEIGHT = 56;
@@ -63,6 +64,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [draft, setDraft] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [confirmingMessage, setConfirmingMessage] = useState<ChatMessage | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -175,6 +177,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
       );
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+    },
+    onSettled: () => {
+      setConfirmingMessage(null);
     },
   });
 
@@ -310,11 +315,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    if (!window.confirm("Удалить это сообщение?")) {
-      return;
-    }
-
-    deleteMessageMutation.mutate(message.id);
+    setConfirmingMessage(message);
   };
 
   if (chatQuery.isLoading || messagesQuery.isLoading) {
@@ -323,7 +324,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   if (!chatQuery.data || !messagesQuery.data) {
     return (
-      <div className="chat-shell-panel flex h-full min-h-0 items-center justify-center rounded-[34px] text-stone-600">
+      <div className="chat-shell-panel flex h-full min-h-0 items-center justify-center rounded-none border-0 text-stone-600">
         Не удалось загрузить чат.
       </div>
     );
@@ -331,7 +332,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   return (
     <section
-      className="chat-shell-panel chat-thread-surface flex h-full min-h-0 flex-col overflow-hidden rounded-[34px]"
+      className="chat-shell-panel chat-thread-surface flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0"
       data-testid="conversation-view"
     >
       <header className="relative z-10 flex flex-none items-center justify-between gap-4 border-b border-black/8 px-5 py-4 sm:px-6 sm:py-5">
@@ -574,6 +575,23 @@ export function ConversationView({ chatId }: { chatId: string }) {
           </div>
         </div>
       </form>
+
+      <ConfirmDialog
+        open={Boolean(confirmingMessage)}
+        title="Удалить это сообщение?"
+        description="Сообщение исчезнет из переписки у участников этого чата."
+        isLoading={deleteMessageMutation.isPending}
+        onCancel={() => {
+          if (!deleteMessageMutation.isPending) {
+            setConfirmingMessage(null);
+          }
+        }}
+        onConfirm={() => {
+          if (confirmingMessage) {
+            deleteMessageMutation.mutate(confirmingMessage.id);
+          }
+        }}
+      />
     </section>
   );
 }
@@ -651,7 +669,7 @@ function MessageAttachments({
 
 function ConversationSkeleton() {
   return (
-    <div className="chat-shell-panel flex h-full min-h-0 animate-pulse flex-col overflow-hidden rounded-[34px] p-5">
+    <div className="chat-shell-panel flex h-full min-h-0 animate-pulse flex-col overflow-hidden rounded-none border-0 p-5">
       <div className="h-16 rounded-[22px] bg-stone-200/70" />
       <div className="mt-5 min-h-0 flex-1 space-y-3 overflow-hidden">
         <div className="h-20 w-2/3 rounded-[22px] bg-stone-200/60" />
