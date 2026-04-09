@@ -64,132 +64,203 @@ export function AuthScreen({ mode }: { mode: "login" | "register" }) {
   });
 
   return (
-    <main className="grain flex min-h-screen items-center justify-center px-4 py-10">
-      <div className="relative w-full max-w-4xl overflow-hidden rounded-[32px] border border-white/60 bg-[rgba(255,251,245,0.78)] shadow-panel backdrop-blur">
-        <div className="grid min-h-[680px] lg:grid-cols-[1.05fr_0.95fr]">
-          <section className="hidden bg-[linear-gradient(180deg,rgba(16,24,39,0.94),rgba(16,24,39,0.82))] p-10 text-white lg:flex lg:flex-col lg:justify-between">
-            <div className="space-y-4">
-              <span className="inline-flex rounded-full border border-white/20 px-3 py-1 text-xs uppercase tracking-[0.28em] text-white/70">
-                Web Messenger MVP
-              </span>
-              <h1 className="max-w-md text-5xl font-semibold leading-tight">
-                Сообщения без перегруза, но с ощущением настоящего продукта.
-              </h1>
-              <p className="max-w-md text-base leading-7 text-white/72">
-                Первая версия мессенджера для личных диалогов, realtime-обновлений и аккуратного
-                web-first интерфейса.
-              </p>
-            </div>
+    <main className="auth-scene grain min-h-screen px-4 py-6 sm:px-6 sm:py-8">
+      <div className="relative mx-auto w-full max-w-[1240px] overflow-hidden rounded-[38px] border border-black/6 bg-white shadow-panel">
+        <div className="grid min-h-[760px] lg:grid-cols-[1.08fr_0.92fr]">
+          <section className="order-2 flex flex-col justify-between bg-white px-6 py-6 sm:px-10 sm:py-8 lg:order-1 lg:px-12 lg:py-10">
+            <div>
+              <div className="mb-12 flex items-center justify-between gap-6">
+                <div className="flex items-center gap-3">
+                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-black/10 bg-black text-sm font-semibold text-white">
+                    W
+                  </span>
+                  <span className="text-lg font-semibold tracking-tight text-ink">W1ter</span>
+                </div>
+                <nav className="hidden items-center gap-8 text-sm text-stone-500 lg:flex">
+                  <span>Features</span>
+                  <span>Realtime</span>
+                  <span>Security</span>
+                </nav>
+              </div>
 
-            <div className="grid gap-4 rounded-[24px] border border-white/10 bg-white/5 p-6">
-              <div>
-                <p className="text-sm uppercase tracking-[0.22em] text-white/55">MVP scope</p>
-                <p className="mt-2 text-lg text-white/88">
-                  Auth, direct chats, history, unread status, Socket.IO и адаптивный UI.
+              <div className="max-w-[520px]">
+                <p className="mb-5 text-xs uppercase tracking-[0.28em] text-stone-400">
+                  Web Messenger MVP
+                </p>
+                <h1 className="font-serif text-[3rem] font-semibold leading-[0.95] tracking-[-0.03em] text-[#1c1c1a] sm:text-[4rem] lg:text-[4.7rem]">
+                  Chat
+                  <br />
+                  For teams
+                  <br />
+                  that prefer
+                  <br />
+                  clarity.
+                </h1>
+                <p className="mt-6 max-w-[420px] text-base leading-7 text-stone-500">
+                  Лаконичный вход в рабочее пространство с прямыми диалогами, историей и
+                  быстрым realtime-потоком без визуального шума.
                 </p>
               </div>
-              <div className="flex gap-3 text-sm text-white/60">
-                <span className="rounded-full border border-white/10 px-3 py-1">Next.js</span>
-                <span className="rounded-full border border-white/10 px-3 py-1">NestJS</span>
-                <span className="rounded-full border border-white/10 px-3 py-1">PostgreSQL</span>
+
+              <div className="mt-10 flex flex-wrap gap-3">
+                <div className="rounded-[18px] border border-black/8 bg-[#faf8f4] px-5 py-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-stone-400">Flow</p>
+                  <p className="mt-2 text-sm font-medium text-ink">Login, search, direct chat</p>
+                </div>
+                <div className="rounded-[18px] border border-black/8 bg-white px-5 py-4 shadow-[0_10px_30px_rgba(17,24,39,0.06)]">
+                  <p className="text-xs uppercase tracking-[0.2em] text-stone-400">Realtime</p>
+                  <p className="mt-2 text-sm font-medium text-ink">Messages, unread, last seen</p>
+                </div>
               </div>
+            </div>
+
+            <div className="mt-10 grid gap-4 sm:grid-cols-3">
+              <FeatureCard title="Fast entry" copy="Форма, которая не перегружает пользователя." />
+              <FeatureCard title="Calm UI" copy="Чистая типографика и аккуратные состояния." />
+              <FeatureCard title="Single flow" copy="Один экран, одна задача, понятный маршрут." />
             </div>
           </section>
 
-          <section className="flex items-center justify-center px-6 py-10 sm:px-10">
-            <div className="w-full max-w-md space-y-8">
-              <div className="space-y-3">
-                <p className="text-sm uppercase tracking-[0.24em] text-stone-500">
-                  {isRegister ? "Create account" : "Welcome back"}
-                </p>
-                <h2 className="text-3xl font-semibold text-ink">
-                  {isRegister ? "Создайте аккаунт" : "Войдите в рабочее пространство"}
-                </h2>
-                <p className="text-sm leading-6 text-stone-600">
-                  {isRegister
-                    ? "Создадим первый аккаунт и сразу попадем в чат-интерфейс."
-                    : "Войдите, чтобы продолжить работу с чатами и историей сообщений."}
-                </p>
+          <section className="auth-dark-panel order-1 px-6 py-6 sm:px-10 sm:py-8 lg:order-2 lg:px-10 lg:py-10">
+            <div className="relative flex h-full min-h-[420px] flex-col justify-between overflow-hidden rounded-[30px] bg-[#24272d] p-6 text-white sm:p-8">
+              <div className="auth-scribble auth-scribble-top" aria-hidden="true" />
+              <div className="auth-scribble auth-scribble-bottom" aria-hidden="true" />
+
+              <div className="relative z-10 flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.26em] text-white/45">
+                    {isRegister ? "Create account" : "Welcome back"}
+                  </p>
+                  <h2 className="mt-3 max-w-[320px] text-3xl font-semibold leading-tight text-white sm:text-[2.45rem]">
+                    {isRegister ? "Создайте ваш вход в продукт." : "Войдите в рабочее пространство."}
+                  </h2>
+                </div>
+                <div className="hidden rounded-full border border-white/12 bg-white/8 px-3 py-1 text-xs uppercase tracking-[0.18em] text-white/60 sm:block">
+                  live
+                </div>
               </div>
 
-              <form onSubmit={onSubmit} className="space-y-4" data-testid="auth-form">
-                {isRegister ? (
-                  <label className="block space-y-2">
-                    <span className="text-sm font-medium text-stone-700">Имя</span>
-                    <input
-                      data-testid="auth-display-name-input"
-                      className="w-full rounded-2xl border border-stone-200 bg-white/70 px-4 py-3 outline-none transition focus:border-clay focus:ring-4 focus:ring-clay/10"
-                      placeholder="Anna"
-                      {...form.register("displayName")}
-                    />
-                    <FieldError error={form.formState.errors.displayName?.message} />
-                  </label>
-                ) : null}
-
-                <label className="block space-y-2">
-                  <span className="text-sm font-medium text-stone-700">Email</span>
-                  <input
-                    data-testid="auth-email-input"
-                    className="w-full rounded-2xl border border-stone-200 bg-white/70 px-4 py-3 outline-none transition focus:border-clay focus:ring-4 focus:ring-clay/10"
-                    placeholder="anna@example.com"
-                    {...form.register("email")}
-                  />
-                  <FieldError error={form.formState.errors.email?.message} />
-                </label>
-
-                <label className="block space-y-2">
-                  <span className="text-sm font-medium text-stone-700">Пароль</span>
-                  <input
-                    data-testid="auth-password-input"
-                    type="password"
-                    className="w-full rounded-2xl border border-stone-200 bg-white/70 px-4 py-3 outline-none transition focus:border-clay focus:ring-4 focus:ring-clay/10"
-                    placeholder="Минимум 8 символов"
-                    {...form.register("password")}
-                  />
-                  <FieldError error={form.formState.errors.password?.message} />
-                </label>
-
-                {errorMessage ? (
-                  <div
-                    data-testid="auth-error-message"
-                    className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
-                  >
-                    {errorMessage}
+              <div className="relative z-10 mt-8 flex-1">
+                <div className="auth-float-card auth-float-card-top">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-stone-400">Message flow</p>
+                  <div className="mt-3 flex items-end gap-2">
+                    <span className="h-10 w-8 rounded-full bg-black/80" />
+                    <span className="h-16 w-8 rounded-full bg-black/65" />
+                    <span className="h-8 w-8 rounded-full bg-black/40" />
+                    <span className="h-12 w-8 rounded-full bg-black/70" />
                   </div>
-                ) : null}
+                </div>
 
-                <button
-                  data-testid="auth-submit-button"
-                  type="submit"
-                  disabled={form.formState.isSubmitting}
-                  className={clsx(
-                    "w-full rounded-2xl px-4 py-3 text-sm font-semibold text-white transition",
-                    "bg-[linear-gradient(135deg,#d17c43,#af5f2d)] shadow-lg shadow-clay/20 hover:translate-y-[-1px]",
-                    "disabled:cursor-not-allowed disabled:opacity-60",
-                  )}
-                >
-                  {form.formState.isSubmitting
-                    ? "Подождите..."
-                    : isRegister
-                      ? "Создать аккаунт"
-                      : "Войти"}
-                </button>
-              </form>
+                <div className="auth-float-card auth-float-card-bottom">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-stone-400">Auth status</p>
+                  <p className="mt-3 text-3xl font-semibold text-[#202229]">Ready</p>
+                  <p className="mt-2 text-sm leading-6 text-stone-500">
+                    Один вход, один экран, прямой путь в chat shell.
+                  </p>
+                </div>
 
-              <p className="text-sm text-stone-600">
-                {isRegister ? "Уже есть аккаунт?" : "Нужен новый аккаунт?"}{" "}
-                <Link
-                  href={isRegister ? "/login" : "/register"}
-                  className="font-semibold text-clay hover:text-[var(--accent-strong)]"
-                >
-                  {isRegister ? "Войти" : "Зарегистрироваться"}
-                </Link>
-              </p>
+                <div className="relative z-10 mx-auto mt-6 w-full max-w-[420px] rounded-[28px] border border-white/10 bg-white px-5 py-6 text-[#1f2430] shadow-[0_24px_60px_rgba(0,0,0,0.24)] sm:px-7 sm:py-7">
+                  <p className="text-xs uppercase tracking-[0.24em] text-stone-400">
+                    {isRegister ? "Create account" : "Sign in"}
+                  </p>
+                  <p className="mt-3 text-2xl font-semibold tracking-tight text-ink">
+                    {isRegister ? "Регистрация" : "Вход"}
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-stone-500">
+                    {isRegister
+                      ? "Создайте аккаунт и сразу попадите в мессенджер."
+                      : "Введите данные, чтобы продолжить работу с чатами."}
+                  </p>
+
+                  <form onSubmit={onSubmit} className="mt-6 space-y-4" data-testid="auth-form">
+                    {isRegister ? (
+                      <label className="block space-y-2">
+                        <span className="text-sm font-medium text-stone-700">Имя</span>
+                        <input
+                          data-testid="auth-display-name-input"
+                          className="w-full rounded-[18px] border border-stone-200 bg-[#fbfbfb] px-4 py-3 outline-none transition focus:border-black/70 focus:ring-4 focus:ring-black/5"
+                          placeholder="Anna"
+                          {...form.register("displayName")}
+                        />
+                        <FieldError error={form.formState.errors.displayName?.message} />
+                      </label>
+                    ) : null}
+
+                    <label className="block space-y-2">
+                      <span className="text-sm font-medium text-stone-700">Email</span>
+                      <input
+                        data-testid="auth-email-input"
+                        className="w-full rounded-[18px] border border-stone-200 bg-[#fbfbfb] px-4 py-3 outline-none transition focus:border-black/70 focus:ring-4 focus:ring-black/5"
+                        placeholder="anna@example.com"
+                        {...form.register("email")}
+                      />
+                      <FieldError error={form.formState.errors.email?.message} />
+                    </label>
+
+                    <label className="block space-y-2">
+                      <span className="text-sm font-medium text-stone-700">Пароль</span>
+                      <input
+                        data-testid="auth-password-input"
+                        type="password"
+                        className="w-full rounded-[18px] border border-stone-200 bg-[#fbfbfb] px-4 py-3 outline-none transition focus:border-black/70 focus:ring-4 focus:ring-black/5"
+                        placeholder="Минимум 8 символов"
+                        {...form.register("password")}
+                      />
+                      <FieldError error={form.formState.errors.password?.message} />
+                    </label>
+
+                    {errorMessage ? (
+                      <div
+                        data-testid="auth-error-message"
+                        className="rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
+                      >
+                        {errorMessage}
+                      </div>
+                    ) : null}
+
+                    <button
+                      data-testid="auth-submit-button"
+                      type="submit"
+                      disabled={form.formState.isSubmitting}
+                      className={clsx(
+                        "w-full rounded-[18px] px-4 py-3 text-sm font-semibold text-white transition",
+                        "bg-[#1f232b] shadow-[0_14px_30px_rgba(31,35,43,0.18)] hover:translate-y-[-1px] hover:bg-black",
+                        "disabled:cursor-not-allowed disabled:opacity-60",
+                      )}
+                    >
+                      {form.formState.isSubmitting
+                        ? "Подождите..."
+                        : isRegister
+                          ? "Создать аккаунт"
+                          : "Войти"}
+                    </button>
+                  </form>
+
+                  <p className="mt-5 text-sm text-stone-500">
+                    {isRegister ? "Уже есть аккаунт?" : "Нужен новый аккаунт?"}{" "}
+                    <Link
+                      href={isRegister ? "/login" : "/register"}
+                      className="font-semibold text-[#1f232b] underline decoration-black/20 underline-offset-4 hover:decoration-black/60"
+                    >
+                      {isRegister ? "Войти" : "Зарегистрироваться"}
+                    </Link>
+                  </p>
+                </div>
+              </div>
             </div>
           </section>
         </div>
       </div>
     </main>
+  );
+}
+
+function FeatureCard({ title, copy }: { title: string; copy: string }) {
+  return (
+    <div className="rounded-[22px] bg-[#25282f] px-5 py-6 text-white shadow-[0_16px_28px_rgba(17,24,39,0.08)]">
+      <p className="text-lg font-semibold tracking-tight">{title}</p>
+      <p className="mt-3 text-sm leading-6 text-white/70">{copy}</p>
+    </div>
   );
 }
 

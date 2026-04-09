@@ -323,7 +323,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   if (!chatQuery.data || !messagesQuery.data) {
     return (
-      <div className="flex h-full min-h-0 items-center justify-center rounded-[28px] bg-white/50 text-stone-600">
+      <div className="chat-shell-panel flex h-full min-h-0 items-center justify-center rounded-[34px] text-stone-600">
         Не удалось загрузить чат.
       </div>
     );
@@ -331,24 +331,38 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   return (
     <section
-      className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-white/70 bg-[rgba(255,251,245,0.82)] shadow-panel backdrop-blur"
+      className="chat-shell-panel chat-thread-surface flex h-full min-h-0 flex-col overflow-hidden rounded-[34px]"
       data-testid="conversation-view"
     >
-      <header className="flex flex-none items-center justify-between border-b border-stone-200/80 px-5 py-4">
-        <div>
-          <h2 className="text-lg font-semibold text-ink" data-testid="conversation-title">
-            {getChatTitle(chatQuery.data.members, user?.id)}
-          </h2>
-          <p className="text-sm text-stone-500" data-testid="conversation-status">
-            {otherUser?.lastSeenAt ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}` : "Личный чат"}
-          </p>
+      <header className="relative z-10 flex flex-none items-center justify-between gap-4 border-b border-black/8 px-5 py-4 sm:px-6 sm:py-5">
+        <div className="flex min-w-0 items-center gap-4">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[16px] bg-[#111111] text-sm font-semibold text-white">
+            {getInitials(getChatTitle(chatQuery.data.members, user?.id))}
+          </div>
+          <div className="min-w-0">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-stone-400">Direct chat</p>
+            <h2
+              className="truncate text-lg font-semibold tracking-tight text-[#171717]"
+              data-testid="conversation-title"
+            >
+              {getChatTitle(chatQuery.data.members, user?.id)}
+            </h2>
+            <p className="truncate text-sm text-stone-500" data-testid="conversation-status">
+              {otherUser?.lastSeenAt
+                ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
+                : "Личный чат"}
+            </p>
+          </div>
         </div>
-        <div className="rounded-full bg-sand px-3 py-1 text-xs font-medium uppercase tracking-[0.22em] text-stone-600">
+        <div className="shrink-0 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-500">
           {chatQuery.data.unreadCount > 0 ? `Unread ${chatQuery.data.unreadCount}` : "Direct"}
         </div>
       </header>
 
-      <div className="scroll-region-y flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6" data-testid="message-list">
+      <div
+        className="scroll-region-y relative z-10 flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
+        data-testid="message-list"
+      >
         {renderItems.map((item) => {
           if (item.type === "date") {
             return (
@@ -357,7 +371,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 className="flex justify-center py-1"
                 data-testid="message-date-separator"
               >
-                <div className="rounded-full bg-stone-900/80 px-4 py-1 text-xs font-medium tracking-[0.02em] text-white/90 shadow-sm">
+                <div className="rounded-full border border-black/8 bg-white/95 px-4 py-1 text-xs font-medium tracking-[0.02em] text-stone-500 shadow-sm">
                   {item.label}
                 </div>
               </div>
@@ -394,7 +408,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     type="button"
                     onClick={() => handleDeleteMessage(message)}
                     data-testid="delete-message-button"
-                    className="mt-1 rounded-full border border-stone-200 bg-white/85 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 opacity-0 transition hover:border-rose-300 hover:text-rose-700 group-hover:opacity-100"
+                    className="mt-1 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 opacity-0 transition hover:border-black/25 hover:text-black group-hover:opacity-100"
                   >
                     {deleteMessageMutation.isPending ? "..." : "Удалить"}
                   </button>
@@ -403,17 +417,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
                   className={clsx(
                     "w-fit max-w-full shadow-sm",
                     isDeleted
-                      ? "rounded-[20px] border border-dashed border-stone-300 bg-stone-100/80 px-3 py-2"
+                      ? "rounded-[20px] border border-dashed border-black/12 bg-stone-100/90 px-3 py-2"
                       : shortTextOnlyBubble
-                        ? "rounded-[17px] px-3 py-1"
+                        ? "rounded-[15px] px-3 py-1"
                         : compactBubble
-                          ? "rounded-[19px] px-3 py-1.5"
-                          : "rounded-[24px] px-4 py-2.5",
+                          ? "rounded-[18px] px-3 py-1.5"
+                          : "rounded-[22px] px-4 py-2.5",
                     isDeleted
                       ? "text-stone-500"
                       : isMine
-                        ? "bg-[linear-gradient(135deg,#d17c43,#af5f2d)] text-white"
-                        : "border border-stone-200 bg-white text-ink",
+                        ? "bg-[#111111] text-white"
+                        : "border border-black/8 bg-white text-[#171717]",
                   )}
                 >
                   {isDeleted ? (
@@ -437,7 +451,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       <p
                         className={clsx(
                           "shrink-0 self-end pb-0.5 text-[11px] leading-none",
-                          isMine ? "text-white/75" : "text-stone-400",
+                          isMine ? "text-white/62" : "text-stone-400",
                         )}
                       >
                         {formatTime(message.createdAt)}
@@ -458,7 +472,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     <p
                       className={clsx(
                         hasText ? "mt-1 text-right text-[11px] leading-none" : "mt-1.5 text-right text-[11px] leading-none",
-                        isMine ? "text-white/75" : "text-stone-400",
+                        isMine ? "text-white/62" : "text-stone-400",
                       )}
                     >
                       {formatTime(message.createdAt)}
@@ -471,7 +485,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
         })}
       </div>
 
-      <form onSubmit={handleSubmit} className="flex-none border-t border-stone-200/80 p-4 sm:p-5">
+      <form onSubmit={handleSubmit} className="relative z-10 flex-none border-t border-black/8 p-4 sm:p-5">
         <input
           ref={fileInputRef}
           type="file"
@@ -483,7 +497,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
         {composerError ? (
           <div
-            className="mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
+            className="mb-3 rounded-[18px] border border-black/10 bg-black px-4 py-3 text-sm text-white"
             data-testid="composer-error"
           >
             {composerError}
@@ -492,62 +506,84 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
         {pendingFile ? (
           <div
-            className="mb-3 flex items-center justify-between gap-3 rounded-[22px] border border-stone-200 bg-white/80 px-4 py-3"
+            className="mb-3 flex items-center justify-between gap-3 rounded-[20px] border border-black/8 bg-white px-4 py-3"
             data-testid="attachment-preview"
           >
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-ink">{pendingFile.name}</p>
+              <p className="truncate text-sm font-semibold text-[#171717]">{pendingFile.name}</p>
               <p className="text-xs text-stone-500">{formatFileSize(pendingFile.size)}</p>
             </div>
             <button
               type="button"
               onClick={clearPendingFile}
-              className="rounded-full border border-stone-200 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-stone-600 transition hover:border-rose-300 hover:text-rose-700"
+              className="rounded-full border border-black/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-stone-600 transition hover:border-black/25 hover:text-black"
             >
               Убрать
             </button>
           </div>
         ) : null}
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-          <textarea
-            ref={textareaRef}
-            data-testid="message-input"
-            value={draft}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              if (composerError) {
-                setComposerError(null);
-              }
-            }}
-            onKeyDown={handleComposerKeyDown}
-            rows={1}
-            maxLength={MESSAGE_MAX_LENGTH}
-            placeholder="Напишите сообщение..."
-            className="h-14 min-h-14 max-h-[200px] flex-1 resize-none overflow-y-hidden rounded-[24px] border border-stone-200 bg-white/85 px-4 py-4 leading-6 outline-none transition focus:border-clay focus:ring-4 focus:ring-clay/10"
-          />
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+          <div className="flex-1 rounded-[28px] border border-black/8 bg-white p-2 shadow-[0_16px_28px_rgba(17,24,39,0.05)]">
+            <textarea
+              ref={textareaRef}
+              data-testid="message-input"
+              value={draft}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                if (composerError) {
+                  setComposerError(null);
+                }
+              }}
+              onKeyDown={handleComposerKeyDown}
+              rows={1}
+              maxLength={MESSAGE_MAX_LENGTH}
+              placeholder="Напишите сообщение..."
+              className="h-14 min-h-14 max-h-[200px] w-full resize-none overflow-y-hidden rounded-[22px] border border-transparent bg-transparent px-4 py-4 leading-6 text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/10 focus:bg-[#fafaf8]"
+            />
+
+            <div className="mt-2 flex items-center justify-between gap-3 px-2 pb-1">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="rounded-full border border-black/10 bg-white px-4 py-2 text-xs font-medium uppercase tracking-[0.16em] text-stone-600 transition hover:border-black/25 hover:text-black"
+                data-testid="attachment-picker-button"
+              >
+                Прикрепить файл
+              </button>
+              <div className="text-right text-xs text-stone-500">
+                <p data-testid="message-counter">
+                  {draft.length}/{MESSAGE_MAX_LENGTH}
+                </p>
+                <p className="mt-1">Enter: отправить · Ctrl+Enter: новая строка</p>
+              </div>
+            </div>
+          </div>
+
           <button
             data-testid="send-message-button"
             type="submit"
             disabled={sendMessageMutation.isPending || (!draft.trim() && !pendingFile)}
-            className="h-14 rounded-[24px] bg-[linear-gradient(135deg,#0f766e,#0b5c56)] px-5 text-sm font-semibold text-white transition hover:translate-y-[-1px] disabled:cursor-not-allowed disabled:opacity-55 sm:w-[180px]"
+            className="h-14 rounded-[22px] bg-[#111111] px-6 text-sm font-semibold text-white transition hover:translate-y-[-1px] hover:bg-black disabled:cursor-not-allowed disabled:opacity-55 lg:w-[170px]"
           >
             {sendMessageMutation.isPending ? (pendingFile ? "Загрузка..." : "Отправка...") : "Отправить"}
           </button>
         </div>
 
-        <div className="mt-2 flex items-center justify-between gap-3">
+        <div className="mt-3 flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="rounded-full border border-stone-200 bg-white/75 px-4 py-2 text-xs font-medium uppercase tracking-[0.16em] text-stone-600 transition hover:border-clay hover:text-clay"
-            data-testid="attachment-picker-button"
+            onClick={() => {
+              setDraft("");
+              setComposerError(null);
+              clearPendingFile();
+            }}
+            className="rounded-full border border-transparent px-1 py-1 text-xs font-medium uppercase tracking-[0.16em] text-stone-400 transition hover:text-black"
           >
-            Прикрепить файл
+            Очистить
           </button>
-          <div className="text-right text-xs text-stone-500">
-            <p data-testid="message-counter">{draft.length}/{MESSAGE_MAX_LENGTH}</p>
-            <p className="mt-1">Enter: отправить · Ctrl+Enter: новая строка</p>
+          <div className="text-right text-xs text-stone-400">
+            <p>Desktop messenger layout</p>
           </div>
         </div>
       </form>
@@ -576,7 +612,7 @@ function MessageAttachments({
               href={downloadUrl}
               target="_blank"
               rel="noreferrer"
-              className="block overflow-hidden rounded-[20px] border border-black/10 bg-black/5"
+              className="block overflow-hidden rounded-[18px] border border-black/10 bg-black/5"
               data-testid="message-attachment"
             >
               <img
@@ -588,7 +624,7 @@ function MessageAttachments({
               <div
                 className={clsx(
                   "flex items-center justify-between gap-3 px-3 py-2 text-xs",
-                  isMine ? "bg-black/10 text-white/85" : "bg-stone-50 text-stone-600",
+                  isMine ? "bg-white/8 text-white/85" : "bg-stone-50 text-stone-600",
                 )}
               >
                 <span className="truncate">{attachment.originalName}</span>
@@ -605,10 +641,10 @@ function MessageAttachments({
             target="_blank"
             rel="noreferrer"
             className={clsx(
-              "flex items-center justify-between gap-3 rounded-[18px] border px-3 py-3 text-sm transition hover:translate-y-[-1px]",
+              "flex items-center justify-between gap-3 rounded-[16px] border px-3 py-3 text-sm transition hover:translate-y-[-1px]",
               isMine
-                ? "border-white/20 bg-black/10 text-white"
-                : "border-stone-200 bg-stone-50 text-ink",
+                ? "border-white/14 bg-white/6 text-white"
+                : "border-black/8 bg-stone-50 text-[#171717]",
             )}
             data-testid="message-attachment"
           >
@@ -628,14 +664,23 @@ function MessageAttachments({
 
 function ConversationSkeleton() {
   return (
-    <div className="flex h-full min-h-0 animate-pulse flex-col overflow-hidden rounded-[28px] border border-white/70 bg-[rgba(255,251,245,0.82)] p-5">
-      <div className="h-16 rounded-2xl bg-stone-200/70" />
+    <div className="chat-shell-panel flex h-full min-h-0 animate-pulse flex-col overflow-hidden rounded-[34px] p-5">
+      <div className="h-16 rounded-[22px] bg-stone-200/70" />
       <div className="mt-5 min-h-0 flex-1 space-y-3 overflow-hidden">
-        <div className="h-20 w-2/3 rounded-3xl bg-stone-200/60" />
-        <div className="ml-auto h-16 w-1/2 rounded-3xl bg-stone-200/60" />
-        <div className="h-20 w-3/4 rounded-3xl bg-stone-200/60" />
+        <div className="h-20 w-2/3 rounded-[22px] bg-stone-200/60" />
+        <div className="ml-auto h-16 w-1/2 rounded-[22px] bg-stone-200/60" />
+        <div className="h-20 w-3/4 rounded-[22px] bg-stone-200/60" />
       </div>
       <div className="mt-5 h-24 rounded-[24px] bg-stone-200/60" />
     </div>
   );
+}
+
+function getInitials(value: string) {
+  return value
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("") || "W";
 }
