@@ -14,7 +14,7 @@ type ConfirmDialogProps = {
   onCancel: () => void;
 };
 
-const EXIT_ANIMATION_MS = 180;
+const EXIT_ANIMATION_MS = 260;
 
 export function ConfirmDialog({
   open,
@@ -70,8 +70,8 @@ export function ConfirmDialog({
   return (
     <div
       className={clsx(
-        "fixed inset-0 z-[120] flex items-center justify-center px-4 py-6 backdrop-blur-[2px] transition-opacity duration-200 motion-reduce:transition-none",
-        isVisible ? "bg-black/45 opacity-100" : "bg-black/0 opacity-0",
+        "fixed inset-0 z-[120] flex items-center justify-center px-4 py-6 backdrop-blur-[4px] transition-all duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none",
+        isVisible ? "bg-black/48 opacity-100" : "bg-black/0 opacity-0",
       )}
       onClick={() => {
         if (!isLoading) {
@@ -86,8 +86,8 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby="confirm-dialog-title"
         className={clsx(
-          "w-full max-w-[420px] border border-white/10 bg-[#13171f] px-5 py-5 text-white shadow-[0_24px_70px_rgba(0,0,0,0.32)] transition-all duration-200 motion-reduce:transition-none sm:px-6 sm:py-6",
-          isVisible ? "translate-y-0 scale-100 opacity-100" : "translate-y-2 scale-[0.985] opacity-0",
+          "w-full max-w-[420px] rounded-[22px] border border-white/10 bg-[#13171f] px-5 py-5 text-white shadow-[0_28px_85px_rgba(0,0,0,0.34)] transition-all duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none sm:px-6 sm:py-6",
+          isVisible ? "translate-y-0 scale-100 opacity-100" : "translate-y-3 scale-[0.98] opacity-0",
         )}
         onClick={(event) => event.stopPropagation()}
       >
@@ -118,11 +118,11 @@ export function ConfirmDialog({
             disabled={isLoading}
             data-testid="confirm-dialog-confirm"
             className={clsx(
-              "rounded-full px-5 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60",
+              "min-w-[120px] rounded-full px-5 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60",
               "bg-[#63a4ff] text-white hover:bg-[#5199fb]",
             )}
           >
-            {isLoading ? "Удаление..." : confirmLabel}
+            {confirmLabel}
           </button>
         </div>
       </div>

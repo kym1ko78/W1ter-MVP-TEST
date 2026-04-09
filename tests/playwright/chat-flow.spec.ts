@@ -126,8 +126,9 @@ test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messa
     .filter({ hasText: singleLineMessage })
     .getByTestId("delete-message-button")
     .click();
-  await expect(alicePage.getByTestId("confirm-dialog")).toBeVisible();
-  await alicePage.getByTestId("confirm-dialog-confirm").click();
+  const messageConfirmDialog = alicePage.getByRole("dialog", { name: "Удалить это сообщение?" });
+  await expect(messageConfirmDialog).toBeVisible();
+  await messageConfirmDialog.getByTestId("confirm-dialog-confirm").click();
 
   await expect(
     alicePage.getByTestId("message-item").filter({ hasText: singleLineMessage }),
@@ -143,8 +144,9 @@ test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messa
     .filter({ hasText: bob.displayName })
     .getByTestId("chat-list-delete-button")
     .click();
-  await expect(alicePage.getByTestId("confirm-dialog")).toBeVisible();
-  await alicePage.getByTestId("confirm-dialog-confirm").click();
+  const chatConfirmDialog = alicePage.getByRole("dialog", { name: "Удалить этот чат?" });
+  await expect(chatConfirmDialog).toBeVisible();
+  await chatConfirmDialog.getByTestId("confirm-dialog-confirm").click();
 
   await expect(alicePage).toHaveURL(/\/chat$/);
   await expect(bobPage).toHaveURL(/\/chat$/);
@@ -155,3 +157,5 @@ test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messa
   await aliceContext.close();
   await bobContext.close();
 });
+
+
