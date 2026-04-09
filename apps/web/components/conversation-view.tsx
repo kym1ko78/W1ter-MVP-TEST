@@ -380,7 +380,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
             fallbackClassName="text-sm"
           />
           <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-[0.22em] text-stone-400">Direct chat</p>
             <h2
               className="truncate text-lg font-semibold tracking-tight text-[#171717]"
               data-testid="conversation-title"
@@ -394,9 +393,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
             </p>
           </div>
         </div>
-        <div className="shrink-0 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-500">
-          {chatQuery.data.unreadCount > 0 ? `Unread ${chatQuery.data.unreadCount}` : "Direct"}
-        </div>
+        {chatQuery.data.unreadCount > 0 ? (
+          <div className="shrink-0 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-500">
+            {chatQuery.data.unreadCount}
+          </div>
+        ) : null}
       </header>
 
       <div

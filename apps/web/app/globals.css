@@ -247,32 +247,29 @@ body.chat-page-locked {
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
-  scrollbar-gutter: stable;
-  scrollbar-width: auto;
-  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .scroll-region-y::-webkit-scrollbar {
-  width: var(--scrollbar-size);
-  height: var(--scrollbar-size);
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .scroll-region-y::-webkit-scrollbar-track {
-  border-radius: 999px;
-  background-color: var(--scrollbar-track);
+  display: none;
+  background: transparent;
 }
 
 .scroll-region-y::-webkit-scrollbar-thumb {
-  border: 2px solid var(--scrollbar-track);
-  border-radius: 999px;
-  background-color: var(--scrollbar-thumb);
-  background-clip: padding-box;
-  min-height: 36px;
+  display: none;
+  background: transparent;
 }
 
 .scroll-region-y::-webkit-scrollbar-thumb:hover {
-  background-color: var(--scrollbar-thumb-hover);
-  background-clip: padding-box;
+  display: none;
+  background: transparent;
 }
 
 .scroll-region-y::-webkit-scrollbar-button,
