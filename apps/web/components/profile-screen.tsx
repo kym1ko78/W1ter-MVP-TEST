@@ -6,6 +6,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../lib/auth-context";
+import {
+  getStoredEmailVerificationPreviewUrl,
+  setStoredEmailVerificationPreviewUrl,
+} from "../lib/email-verification";
 import { formatRelativeLastSeen } from "../lib/utils";
 import { UserAvatar } from "./user-avatar";
 
@@ -20,18 +24,40 @@ type ProfileStatus = {
 export function ProfileScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { accessToken, isAuthenticated, isLoading, logout, removeAvatar, updateProfile, uploadAvatar, user } =
-    useAuth();
+  const {
+    accessToken,
+    isAuthenticated,
+    isLoading,
+    logout,
+    removeAvatar,
+    requestEmailVerification,
+    updateProfile,
+    uploadAvatar,
+    user,
+  } = useAuth();
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const [displayName, setDisplayName] = useState(user?.displayName ?? "");
+  const [verificationPreviewUrl, setVerificationPreviewUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<ProfileStatus>(null);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [isRemovingAvatar, setIsRemovingAvatar] = useState(false);
+  const [isSendingVerification, setIsSendingVerification] = useState(false);
 
   useEffect(() => {
     setDisplayName(user?.displayName ?? "");
   }, [user?.displayName]);
+
+  useEffect(() => {
+    setVerificationPreviewUrl(getStoredEmailVerificationPreviewUrl());
+  }, []);
+
+  useEffect(() => {
+    if (user?.emailVerifiedAt) {
+      setStoredEmailVerificationPreviewUrl(null);
+      setVerificationPreviewUrl(null);
+    }
+  }, [user?.emailVerifiedAt]);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -137,6 +163,41 @@ export function ProfileScreen() {
       });
     } finally {
       setIsRemovingAvatar(false);
+    }
+  };
+
+  const handleSendVerification = async () => {
+    if (isSendingVerification) {
+      return;
+    }
+
+    setIsSendingVerification(true);
+    setStatus(null);
+
+    try {
+      const result = await requestEmailVerification();
+      setStoredEmailVerificationPreviewUrl(result.emailVerificationPreviewUrl);
+      setVerificationPreviewUrl(result.emailVerificationPreviewUrl);
+
+      if (result.alreadyVerified || result.user.emailVerifiedAt) {
+        setStatus({ type: "success", message: "Почта уже подтверждена." });
+        return;
+      }
+
+      setStatus({
+        type: "success",
+        message: "Письмо отправлено. Для локальной разработки ссылка доступна ниже.",
+      });
+    } catch (error) {
+      setStatus({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Не удалось отправить письмо подтверждения.",
+      });
+    } finally {
+      setIsSendingVerification(false);
     }
   };
 
@@ -289,6 +350,55 @@ export function ProfileScreen() {
             </form>
 
             <div className="space-y-5">
+              <div className="rounded-[26px] border border-black/8 bg-white px-5 py-5 shadow-[0_16px_36px_rgba(17,24,39,0.06)]">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">
+                  Email status
+                </p>
+                <p className="mt-3 text-sm text-[#171717]">
+                  {user.emailVerifiedAt
+                    ? "Почта подтверждена и аккаунт полностью активен."
+                    : "Почта пока не подтверждена. Можно отправить письмо повторно."}
+                </p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <span
+                    className={clsx(
+                      "rounded-full px-3 py-1 text-[11px] uppercase tracking-[0.18em]",
+                      user.emailVerifiedAt
+                        ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border border-stone-200 bg-[#f7f7f5] text-stone-500",
+                    )}
+                  >
+                    {user.emailVerifiedAt ? "verified" : "pending"}
+                  </span>
+                  {!user.emailVerifiedAt ? (
+                    <button
+                      type="button"
+                      onClick={handleSendVerification}
+                      data-testid="profile-send-verification-button"
+                      disabled={isSendingVerification}
+                      className="rounded-[18px] border border-black/10 bg-white px-4 py-2 text-sm font-medium text-stone-600 transition hover:border-black hover:text-black disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isSendingVerification ? "Отправляем..." : "Отправить письмо"}
+                    </button>
+                  ) : null}
+                </div>
+                {verificationPreviewUrl ? (
+                  <div className="mt-4 rounded-[18px] border border-black/8 bg-[#f7f7f5] px-4 py-4 text-sm text-stone-600">
+                    <p className="font-medium text-[#171717]">
+                      Dev-ссылка подтверждения доступна локально.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-3">
+                      <a
+                        href={verificationPreviewUrl}
+                        className="rounded-[16px] bg-[#111111] px-4 py-2 text-sm font-semibold text-white transition hover:bg-black"
+                        data-testid="profile-open-verification-link"
+                      >
+                        Открыть ссылку
+                      </a>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
               <InfoCard label="Email" value={user.email} />
               <InfoCard label="User ID" value={user.id} monospace />
               <InfoCard

@@ -3,6 +3,8 @@ export interface SafeUser {
   email: string;
   displayName: string;
   avatarUrl: string | null;
+  emailVerifiedAt: string | null;
+  emailVerificationSentAt: string | null;
   lastSeenAt: string | null;
 }
 

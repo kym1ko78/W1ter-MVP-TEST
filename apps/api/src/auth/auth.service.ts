@@ -1,13 +1,16 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
+  NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { Prisma } from "@prisma/client";
 import * as bcrypt from "bcrypt";
+import { createHash, randomBytes } from "node:crypto";
 import type { JwtPayload } from "../common/types/jwt-payload";
 import { PrismaService } from "../prisma/prisma.service";
 import { UsersService } from "../users/users.service";
@@ -19,7 +22,24 @@ type SafeAuthUser = {
   email: string;
   displayName: string;
   avatarUrl: string | null;
+  emailVerifiedAt: Date | null;
+  emailVerificationSentAt: Date | null;
   lastSeenAt: Date | null;
+};
+
+type SessionMetadata = {
+  userAgent?: string;
+  ip?: string;
+};
+
+type SessionOptions = {
+  rememberMe: boolean;
+};
+
+type EmailVerificationRequestResult = {
+  user: ReturnType<AuthService["toSafeUser"]>;
+  emailVerificationPreviewUrl: string | null;
+  alreadyVerified: boolean;
 };
 
 @Injectable()
@@ -33,7 +53,7 @@ export class AuthService {
     private readonly usersService: UsersService,
   ) {}
 
-  async register(dto: RegisterDto, metadata: { userAgent?: string; ip?: string }) {
+  async register(dto: RegisterDto, metadata: SessionMetadata) {
     try {
       const passwordHash = await bcrypt.hash(dto.password, 10);
 
@@ -45,9 +65,16 @@ export class AuthService {
         },
       });
 
-      const session = await this.issueSession(user, metadata);
+      const verification = await this.issueEmailVerification(user.id);
+      const session = await this.issueSession(verification.user, metadata, {
+        rememberMe: dto.rememberMe ?? false,
+      });
+
       this.logger.log(`Registered user ${user.id} (${user.email})`);
-      return session;
+      return {
+        ...session,
+        emailVerificationPreviewUrl: verification.emailVerificationPreviewUrl,
+      };
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -60,7 +87,7 @@ export class AuthService {
     }
   }
 
-  async login(dto: LoginDto, metadata: { userAgent?: string; ip?: string }) {
+  async login(dto: LoginDto, metadata: SessionMetadata) {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email.toLowerCase() },
     });
@@ -75,15 +102,18 @@ export class AuthService {
       throw new UnauthorizedException("Invalid credentials");
     }
 
-    const session = await this.issueSession(user, metadata);
+    const session = await this.issueSession(user, metadata, {
+      rememberMe: dto.rememberMe ?? false,
+    });
+
     this.logger.log(`Logged in user ${user.id}`);
-    return session;
+    return {
+      ...session,
+      emailVerificationPreviewUrl: null,
+    };
   }
 
-  async refreshSession(
-    refreshToken: string | undefined,
-    metadata: { userAgent?: string; ip?: string },
-  ) {
+  async refreshSession(refreshToken: string | undefined, metadata: SessionMetadata) {
     if (!refreshToken) {
       throw new UnauthorizedException("Missing refresh token");
     }
@@ -128,9 +158,15 @@ export class AuthService {
       data: { revokedAt: new Date() },
     });
 
-    const session = await this.issueSession(user, metadata);
+    const session = await this.issueSession(user, metadata, {
+      rememberMe: matchedRecord.isPersistent,
+    });
+
     this.logger.log(`Refreshed session for user ${user.id}`);
-    return session;
+    return {
+      ...session,
+      emailVerificationPreviewUrl: null,
+    };
   }
 
   async logout(refreshToken: string | undefined) {
@@ -163,9 +199,78 @@ export class AuthService {
     return this.usersService.getSafeUserById(userId);
   }
 
+  async requestEmailVerification(userId: string): Promise<EmailVerificationRequestResult> {
+    const user = await this.requireUserRecord(userId);
+
+    if (user.emailVerifiedAt) {
+      return {
+        user: this.toSafeUser(user),
+        emailVerificationPreviewUrl: null,
+        alreadyVerified: true,
+      };
+    }
+
+    const verification = await this.issueEmailVerification(user.id);
+
+    return {
+      user: this.toSafeUser(verification.user),
+      emailVerificationPreviewUrl: verification.emailVerificationPreviewUrl,
+      alreadyVerified: false,
+    };
+  }
+
+  async confirmEmailVerification(token: string) {
+    const normalizedToken = token.trim();
+
+    if (!normalizedToken) {
+      throw new BadRequestException("Verification token is required");
+    }
+
+    const tokenHash = this.hashEmailVerificationToken(normalizedToken);
+    const user = await this.prisma.user.findUnique({
+      where: {
+        emailVerificationTokenHash: tokenHash,
+      },
+    });
+
+    if (!user) {
+      throw new BadRequestException("Ссылка подтверждения недействительна или устарела.");
+    }
+
+    if (!user.emailVerificationExpiresAt || user.emailVerificationExpiresAt <= new Date()) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          emailVerificationTokenHash: null,
+          emailVerificationExpiresAt: null,
+        },
+      });
+
+      throw new BadRequestException("Ссылка подтверждения недействительна или устарела.");
+    }
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerifiedAt: user.emailVerifiedAt ?? new Date(),
+        emailVerificationTokenHash: null,
+        emailVerificationExpiresAt: null,
+      },
+    });
+
+    this.logger.log(`Verified email for user ${updatedUser.id}`);
+
+    return {
+      success: true,
+      email: updatedUser.email,
+      user: this.toSafeUser(updatedUser),
+    };
+  }
+
   private async issueSession(
     user: SafeAuthUser,
-    metadata: { userAgent?: string; ip?: string },
+    metadata: SessionMetadata,
+    options: SessionOptions,
   ) {
     const payload: JwtPayload = {
       sub: user.id,
@@ -188,6 +293,7 @@ export class AuthService {
       data: {
         userId: user.id,
         tokenHash: refreshTokenHash,
+        isPersistent: options.rememberMe,
         expiresAt: new Date(
           Date.now() + this.getRefreshTtlDays() * 24 * 60 * 60 * 1000,
         ),
@@ -199,12 +305,62 @@ export class AuthService {
     return {
       accessToken,
       refreshToken,
+      rememberMe: options.rememberMe,
       user: this.toSafeUser(user),
     };
   }
 
+  private async issueEmailVerification(userId: string) {
+    const token = randomBytes(32).toString("hex");
+    const sentAt = new Date();
+    const expiresAt = new Date(sentAt.getTime() + 24 * 60 * 60 * 1000);
+
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        emailVerificationTokenHash: this.hashEmailVerificationToken(token),
+        emailVerificationExpiresAt: expiresAt,
+        emailVerificationSentAt: sentAt,
+      },
+    });
+
+    return {
+      user,
+      emailVerificationPreviewUrl: this.getEmailVerificationPreviewUrl(token),
+    };
+  }
+
+  private getEmailVerificationPreviewUrl(token: string) {
+    const environment = this.configService.get<string>("NODE_ENV") ?? "development";
+
+    if (environment === "production") {
+      return null;
+    }
+
+    const appOrigin =
+      this.configService.get<string>("API_CORS_ORIGIN") ?? "http://localhost:3000";
+
+    return `${appOrigin.replace(/\/$/, "")}/verify-email?token=${encodeURIComponent(token)}`;
+  }
+
+  private hashEmailVerificationToken(token: string) {
+    return createHash("sha256").update(token).digest("hex");
+  }
+
+  private async requireUserRecord(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+
+    return user;
+  }
+
   private async findRefreshRecord(
-    records: Array<{ id: string; tokenHash: string }>,
+    records: Array<{ id: string; tokenHash: string; isPersistent: boolean }>,
     refreshToken: string,
   ) {
     for (const record of records) {
@@ -223,6 +379,8 @@ export class AuthService {
       email: user.email,
       displayName: user.displayName,
       avatarUrl: user.avatarUrl,
+      emailVerifiedAt: user.emailVerifiedAt?.toISOString() ?? null,
+      emailVerificationSentAt: user.emailVerificationSentAt?.toISOString() ?? null,
       lastSeenAt: user.lastSeenAt?.toISOString() ?? null,
     };
   }

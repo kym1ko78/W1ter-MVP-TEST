@@ -4,14 +4,16 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import clsx from "clsx";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { useAuth } from "../lib/auth-context";
+import { setStoredEmailVerificationPreviewUrl } from "../lib/email-verification";
 
 const loginSchema = z.object({
   email: z.string().email("Введите корректный email"),
   password: z.string().min(8, "Минимум 8 символов"),
+  rememberMe: z.boolean(),
 });
 
 const registerSchema = loginSchema.extend({
@@ -24,12 +26,14 @@ type AuthFormValues = {
   email: string;
   password: string;
   displayName: string;
+  rememberMe: boolean;
 };
 
 export function AuthScreen({ mode }: { mode: "login" | "register" }) {
   const router = useRouter();
   const { login, register, isAuthenticated, isLoading } = useAuth();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const manualRedirectRef = useRef(false);
   const isRegister = mode === "register";
 
   const form = useForm<AuthFormValues>({
@@ -38,27 +42,40 @@ export function AuthScreen({ mode }: { mode: "login" | "register" }) {
       displayName: "",
       email: "",
       password: "",
+      rememberMe: false,
     },
   });
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated) {
+    if (!isLoading && isAuthenticated && !manualRedirectRef.current) {
       router.replace("/chat");
     }
   }, [isAuthenticated, isLoading, router]);
 
   const onSubmit = form.handleSubmit(async (values) => {
     setErrorMessage(null);
+    manualRedirectRef.current = true;
 
     try {
       if (isRegister) {
-        await register(values as RegisterValues);
+        const session = await register(values as RegisterValues);
+        setStoredEmailVerificationPreviewUrl(session.emailVerificationPreviewUrl ?? null);
+
+        if (!session.user.emailVerifiedAt) {
+          router.replace("/verify-email?sent=1");
+          return;
+        }
       } else {
-        await login(values as LoginValues);
+        const session = await login(values as LoginValues);
+
+        if (session.user.emailVerifiedAt) {
+          setStoredEmailVerificationPreviewUrl(null);
+        }
       }
 
       router.replace("/chat");
     } catch (error) {
+      manualRedirectRef.current = false;
       const fallbackMessage = isRegister
         ? "Не удалось создать аккаунт"
         : "Не удалось выполнить вход";
@@ -193,6 +210,16 @@ export function AuthScreen({ mode }: { mode: "login" | "register" }) {
                         {...form.register("password")}
                       />
                       <FieldError error={form.formState.errors.password?.message} />
+                    </label>
+
+                    <label className="flex items-center gap-3 rounded-[18px] border border-stone-200 bg-[#fbfbfb] px-4 py-3 text-sm text-stone-600">
+                      <input
+                        data-testid="auth-remember-me-input"
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-stone-300 text-black focus:ring-black/20"
+                        {...form.register("rememberMe")}
+                      />
+                      <span>Запомнить меня на этом устройстве</span>
                     </label>
 
                     {errorMessage ? (

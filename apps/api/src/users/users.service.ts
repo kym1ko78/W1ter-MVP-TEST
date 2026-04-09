@@ -187,6 +187,8 @@ export class UsersService {
     email: string;
     displayName: string;
     avatarUrl: string | null;
+    emailVerifiedAt: Date | null;
+    emailVerificationSentAt: Date | null;
     lastSeenAt: Date | null;
   }) {
     return {
@@ -194,6 +196,8 @@ export class UsersService {
       email: user.email,
       displayName: user.displayName,
       avatarUrl: user.avatarUrl,
+      emailVerifiedAt: user.emailVerifiedAt?.toISOString() ?? null,
+      emailVerificationSentAt: user.emailVerificationSentAt?.toISOString() ?? null,
       lastSeenAt: user.lastSeenAt?.toISOString() ?? null,
     };
   }

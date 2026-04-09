@@ -11,9 +11,17 @@ import {
 import { API_URL } from "./config";
 import type { SafeUser } from "../types/api";
 
-type AuthResponse = {
+type AuthSessionResponse = {
   accessToken: string;
   user: SafeUser;
+  emailVerificationPreviewUrl?: string | null;
+};
+
+type EmailVerificationResponse = {
+  success?: boolean;
+  user: SafeUser;
+  emailVerificationPreviewUrl: string | null;
+  alreadyVerified?: boolean;
 };
 
 type AuthContextValue = {
@@ -21,15 +29,21 @@ type AuthContextValue = {
   accessToken: string | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  login: (input: { email: string; password: string }) => Promise<void>;
+  login: (input: {
+    email: string;
+    password: string;
+    rememberMe: boolean;
+  }) => Promise<AuthSessionResponse>;
   register: (input: {
     email: string;
     displayName: string;
     password: string;
-  }) => Promise<void>;
+    rememberMe: boolean;
+  }) => Promise<AuthSessionResponse>;
   logout: () => Promise<void>;
   refreshSession: () => Promise<string | null>;
   authorizedFetch: (path: string, init?: RequestInit) => Promise<Response>;
+  requestEmailVerification: () => Promise<EmailVerificationResponse>;
   updateProfile: (input: { displayName: string }) => Promise<SafeUser>;
   uploadAvatar: (file: File) => Promise<SafeUser>;
   removeAvatar: () => Promise<SafeUser>;
@@ -77,7 +91,7 @@ async function performAuthRequest(path: string, init: RequestInit) {
       credentials: "include",
     });
 
-    return await parseResponse<AuthResponse>(response);
+    return await parseResponse<AuthSessionResponse>(response);
   } catch (error) {
     if (isConnectivityError(error)) {
       throw toConnectivityError();
@@ -92,7 +106,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const applySession = useCallback((session: AuthResponse | null) => {
+  const applySession = useCallback((session: AuthSessionResponse | null) => {
     setAccessToken(session?.accessToken ?? null);
     setUser(session?.user ?? null);
   }, []);
@@ -109,7 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return null;
       }
 
-      const session = await parseResponse<AuthResponse>(response);
+      const session = await parseResponse<AuthSessionResponse>(response);
       applySession(session);
       return session.accessToken;
     } catch {
@@ -125,7 +139,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [refreshSession]);
 
   const login = useCallback(
-    async (input: { email: string; password: string }) => {
+    async (input: { email: string; password: string; rememberMe: boolean }) => {
       const session = await performAuthRequest("/auth/login", {
         method: "POST",
         headers: {
@@ -135,12 +149,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       applySession(session);
+      return session;
     },
     [applySession],
   );
 
   const register = useCallback(
-    async (input: { email: string; displayName: string; password: string }) => {
+    async (input: {
+      email: string;
+      displayName: string;
+      password: string;
+      rememberMe: boolean;
+    }) => {
       const session = await performAuthRequest("/auth/register", {
         method: "POST",
         headers: {
@@ -150,6 +170,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       applySession(session);
+      return session;
     },
     [applySession],
   );
@@ -201,6 +222,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     },
     [accessToken, refreshSession],
   );
+
+  const requestEmailVerification = useCallback(async () => {
+    const payload = await readJson<EmailVerificationResponse>(
+      await authorizedFetch("/auth/verify-email/request", {
+        method: "POST",
+      }),
+    );
+
+    setUser(payload.user);
+    return payload;
+  }, [authorizedFetch]);
 
   const updateProfile = useCallback(
     async (input: { displayName: string }) => {
@@ -260,6 +292,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logout,
       refreshSession,
       authorizedFetch,
+      requestEmailVerification,
       updateProfile,
       uploadAvatar,
       removeAvatar,
@@ -270,6 +303,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isLoading,
       login,
       logout,
+      requestEmailVerification,
       refreshSession,
       register,
       removeAvatar,
