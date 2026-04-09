@@ -1,14 +1,20 @@
-import { createConnection } from "node:net";
+﻿import { createConnection } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+const CHECK_EXPECTATIONS = {
+  FREE: "free",
+  LISTENING: "listening",
+};
 
 const DEFAULT_CHECKS = [
   {
     port: 3000,
     label: "Web dev server",
     required: true,
+    expectation: CHECK_EXPECTATIONS.FREE,
     guidance:
       "Этот порт нужен основному frontend dev-серверу. Освободите его перед `pnpm dev`, чтобы не уехать на случайный fallback-порт.",
   },
@@ -16,15 +22,18 @@ const DEFAULT_CHECKS = [
     port: 4000,
     label: "API dev server",
     required: true,
+    expectation: CHECK_EXPECTATIONS.FREE,
     guidance:
       "Этот порт нужен backend dev-серверу. Обычно его занимает старый `pnpm dev` или отдельный `pnpm --filter @repo/api start`.",
   },
   {
     port: 5433,
     label: "Docker PostgreSQL",
-    required: false,
+    required: true,
+    expectation: CHECK_EXPECTATIONS.LISTENING,
     guidance:
-      "Если база не поднята, запустите `docker compose up -d` перед работой с приложением.",
+      "Этот порт нужен локальной базе. Без нее API не сможет стартовать, а login/register будут падать с Failed to fetch. Сначала запустите `docker compose up -d`.",
+    startCommand: "docker compose up -d",
   },
 ];
 
@@ -145,6 +154,14 @@ function fallbackListener(port) {
   return [{ pid: null, processName: null, port, localAddress: `127.0.0.1:${port}` }];
 }
 
+function isCheckPassing(result) {
+  if (result.expectation === CHECK_EXPECTATIONS.LISTENING) {
+    return result.occupied;
+  }
+
+  return !result.occupied;
+}
+
 export async function inspectPort(port) {
   const occupied = await isPortOccupied(port);
 
@@ -194,21 +211,42 @@ export async function inspectDevPorts(checks = DEFAULT_CHECKS) {
       ...check,
       listeners,
       occupied: listeners.length > 0,
+      passing: false,
     });
   }
 
-  return results;
+  return results.map((result) => ({
+    ...result,
+    passing: isCheckPassing(result),
+  }));
 }
 
 export function formatDevPortReport(results) {
   const lines = [];
-  const blocking = results.filter((result) => result.required && result.occupied);
-  const warnings = results.filter((result) => !result.required && !result.occupied);
+  const blocking = results.filter((result) => result.required && !result.passing);
+  const warnings = results.filter((result) => !result.required && !result.passing);
 
   lines.push("Local dev preflight");
   lines.push("");
 
   for (const result of results) {
+    if (result.expectation === CHECK_EXPECTATIONS.LISTENING) {
+      if (result.occupied) {
+        lines.push(`[OK] ${result.label} on port ${result.port} is listening.`);
+      } else {
+        const severity = result.required ? "[BLOCKED]" : "[WARN]";
+        lines.push(`${severity} ${result.label} on port ${result.port} is not listening yet.`);
+        lines.push(`       ${result.guidance}`);
+
+        if (result.startCommand) {
+          lines.push(`       To start it: ${result.startCommand}`);
+        }
+      }
+
+      lines.push("");
+      continue;
+    }
+
     if (result.occupied) {
       for (const listener of result.listeners) {
         const pidLabel = Number.isInteger(listener.pid) ? `PID ${listener.pid}` : "PID unavailable";
@@ -226,11 +264,7 @@ export function formatDevPortReport(results) {
       }
     } else {
       const severity = result.required ? "[OK]" : "[WARN]";
-      const statusMessage = result.required
-        ? `${result.label} port ${result.port} is available.`
-        : `${result.label} on port ${result.port} is not listening yet.`;
-
-      lines.push(`${severity} ${statusMessage}`);
+      lines.push(`${severity} ${result.label} port ${result.port} is available.`);
 
       if (!result.required) {
         lines.push(`       ${result.guidance}`);
@@ -241,7 +275,7 @@ export function formatDevPortReport(results) {
   }
 
   if (blocking.length > 0) {
-    lines.push("Result: dev start is blocked until required ports are free.");
+    lines.push("Result: dev start is blocked until required services are ready.");
   } else if (warnings.length > 0) {
     lines.push("Result: dev start can continue, but you still need to bring optional services up.");
   } else {
@@ -251,6 +285,10 @@ export function formatDevPortReport(results) {
   return lines.join("\n");
 }
 
+export function hasBlockingDevIssues(results) {
+  return results.some((result) => result.required && !result.passing);
+}
+
 export function hasBlockingPortConflicts(results) {
-  return results.some((result) => result.required && result.occupied);
+  return hasBlockingDevIssues(results);
 }

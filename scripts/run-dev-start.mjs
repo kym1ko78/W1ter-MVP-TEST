@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
+﻿import { spawn } from "node:child_process";
 import {
   formatDevPortReport,
-  hasBlockingPortConflicts,
+  hasBlockingDevIssues,
   inspectDevPorts,
 } from "./dev-port-utils.mjs";
 
@@ -9,7 +9,7 @@ async function main() {
   const results = await inspectDevPorts();
   console.log(formatDevPortReport(results));
 
-  if (hasBlockingPortConflicts(results)) {
+  if (hasBlockingDevIssues(results)) {
     process.exit(1);
     return;
   }

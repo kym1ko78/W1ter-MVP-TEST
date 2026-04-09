@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+﻿import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 type TestUser = {
   email: string;
@@ -121,26 +121,32 @@ test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messa
     bobPage.getByTestId("message-item").filter({ hasText: "Вторая строка" }),
   ).toHaveCount(1);
 
-  alicePage.once("dialog", (dialog) => void dialog.accept());
   await alicePage
     .getByTestId("message-item")
     .filter({ hasText: singleLineMessage })
     .getByTestId("delete-message-button")
     .click();
+  const messageConfirmDialog = alicePage.getByRole("dialog", { name: "Удалить это сообщение?" });
+  await expect(messageConfirmDialog).toBeVisible();
+  await messageConfirmDialog.getByTestId("confirm-dialog-confirm").click();
 
   await expect(
-    alicePage.getByTestId("message-item").filter({ hasText: "Сообщение удалено" }),
-  ).toHaveCount(1);
+    alicePage.getByTestId("message-item").filter({ hasText: singleLineMessage }),
+  ).toHaveCount(0);
   await expect(
-    bobPage.getByTestId("message-item").filter({ hasText: "Сообщение удалено" }),
-  ).toHaveCount(1);
+    bobPage.getByTestId("message-item").filter({ hasText: singleLineMessage }),
+  ).toHaveCount(0);
+  await expect(alicePage.getByText("Сообщение удалено")).toHaveCount(0);
+  await expect(bobPage.getByText("Сообщение удалено")).toHaveCount(0);
 
-  alicePage.once("dialog", (dialog) => void dialog.accept());
   await alicePage
     .getByTestId("chat-list-entry")
     .filter({ hasText: bob.displayName })
     .getByTestId("chat-list-delete-button")
     .click();
+  const chatConfirmDialog = alicePage.getByRole("dialog", { name: "Удалить этот чат?" });
+  await expect(chatConfirmDialog).toBeVisible();
+  await chatConfirmDialog.getByTestId("confirm-dialog-confirm").click();
 
   await expect(alicePage).toHaveURL(/\/chat$/);
   await expect(bobPage).toHaveURL(/\/chat$/);
@@ -151,3 +157,5 @@ test("users stay signed in, send by Enter, keep Ctrl+Enter newline, delete messa
   await aliceContext.close();
   await bobContext.close();
 });
+
+

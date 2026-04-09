@@ -1,7 +1,7 @@
 export function ChatPlaceholder() {
   return (
     <section
-      className="chat-shell-panel chat-placeholder-surface relative flex h-full min-h-0 overflow-hidden rounded-[34px]"
+      className="chat-shell-panel chat-placeholder-surface relative flex h-full min-h-0 overflow-hidden rounded-none border-0"
       data-testid="chat-placeholder"
     >
       <div className="pointer-events-none absolute inset-0">

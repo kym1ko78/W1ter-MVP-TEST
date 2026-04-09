@@ -1,4 +1,4 @@
-@tailwind base;
+﻿@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -76,18 +76,6 @@ textarea {
     linear-gradient(180deg, #f3efe8 0%, #ece7de 100%);
 }
 
-.auth-scene::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='420' viewBox='0 0 420 420'%3E%3Cg fill='none' stroke='%23c9c3b7' stroke-opacity='.42' stroke-width='1.1'%3E%3Cpath d='M286 33c49 14 79 47 81 91 2 50-34 76-33 120 1 33 25 47 20 84-6 47-58 76-133 84-69 8-160-3-181-56-18-44 25-78 35-123 12-57-28-89-12-137 19-56 113-87 223-63z'/%3E%3Cpath d='M281 61c36 10 58 34 59 66 1 37-25 56-24 88 1 24 19 35 15 62-4 35-43 56-100 62-52 6-121-2-137-41-14-33 19-57 27-90 10-42-21-66-9-101 14-41 85-63 169-46z'/%3E%3Cpath d='M271 92c24 7 39 22 40 43 1 24-17 37-16 58 0 16 12 23 10 41-3 24-30 38-70 42-37 4-85-1-96-28-9-22 13-38 18-61 6-28-14-45-6-69 10-28 61-43 120-32z'/%3E%3C/g%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: 18% 14%;
-  opacity: 0.7;
-}
-
 .auth-dark-panel {
   background:
     radial-gradient(circle at 84% 24%, rgba(255, 255, 255, 0.06), transparent 18%),
@@ -144,18 +132,6 @@ textarea {
     linear-gradient(180deg, #f5f5f1 0%, #efefea 100%);
 }
 
-.chat-scene::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='520' height='520' viewBox='0 0 520 520'%3E%3Cg fill='none' stroke='%23d2d2ca' stroke-opacity='.48' stroke-width='1.1'%3E%3Cpath d='M335 38c58 15 97 52 99 101 3 56-40 86-38 135 2 36 30 53 24 95-8 54-68 87-155 96-80 8-186-3-211-64-21-51 30-91 42-142 14-66-34-104-14-160 22-65 131-101 253-61z'/%3E%3Cpath d='M328 74c43 11 72 38 74 72 2 42-30 64-29 101 1 27 22 40 18 69-6 39-50 64-117 71-61 7-143-2-162-48-17-39 22-68 31-108 11-50-26-79-10-120 17-47 98-74 195-37z'/%3E%3Cpath d='M315 117c29 8 48 25 49 49 1 28-20 43-19 67 1 18 15 27 12 46-4 28-34 45-83 50-45 5-103-2-117-33-12-27 15-47 22-75 8-35-18-56-7-85 12-34 71-53 143-19z'/%3E%3C/g%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: 42% 10%;
-  opacity: 0.72;
-}
-
 .chat-shell-panel {
   position: relative;
   border: 1px solid var(--chat-line);
@@ -204,13 +180,7 @@ textarea {
 }
 
 @media (max-width: 1024px) {
-  .auth-scene::after {
-    background-position: center 8%;
-    background-size: 300px 300px;
-    opacity: 0.42;
-  }
-
-  .auth-float-card {
+    .auth-float-card {
     display: none;
   }
 
@@ -219,13 +189,7 @@ textarea {
     height: 94px;
   }
 
-  .chat-scene::after {
-    background-position: center 20%;
-    background-size: 360px 360px;
-    opacity: 0.34;
-  }
-
-  .chat-scribble-mark {
+    .chat-scribble-mark {
     width: 136px;
     height: 90px;
   }
@@ -294,3 +258,6 @@ body.chat-page-locked {
   height: 0;
   background: transparent;
 }
+
+
+

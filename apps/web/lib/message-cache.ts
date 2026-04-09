@@ -1,4 +1,8 @@
-import type { ChatMessage, MessagePage } from "../types/api";
+﻿import type { ChatMessage, MessagePage } from "../types/api";
+
+function isVisibleMessage(message: ChatMessage) {
+  return !message.isDeleted && !message.deletedAt;
+}
 
 export function dedupeMessages(messages: ChatMessage[]): ChatMessage[] {
   const uniqueMessages = new Map<string, ChatMessage>();
@@ -19,7 +23,7 @@ export function normalizeMessagePage(
     return page;
   }
 
-  const items = dedupeMessages(page.items);
+  const items = dedupeMessages(page.items).filter(isVisibleMessage);
 
   if (items.length === page.items.length) {
     return page;
@@ -36,6 +40,15 @@ export function appendMessageUnique(
   message: ChatMessage,
 ): MessagePage {
   const normalizedPage = normalizeMessagePage(page);
+
+  if (!isVisibleMessage(message)) {
+    return (
+      normalizedPage ?? {
+        items: [],
+        nextCursor: null,
+      }
+    );
+  }
 
   if (!normalizedPage) {
     return {
@@ -59,6 +72,20 @@ export function upsertMessage(
   message: ChatMessage,
 ): MessagePage {
   const normalizedPage = normalizeMessagePage(page);
+
+  if (!isVisibleMessage(message)) {
+    if (!normalizedPage) {
+      return {
+        items: [],
+        nextCursor: null,
+      };
+    }
+
+    return {
+      ...normalizedPage,
+      items: normalizedPage.items.filter((item) => item.id !== message.id),
+    };
+  }
 
   if (!normalizedPage) {
     return {

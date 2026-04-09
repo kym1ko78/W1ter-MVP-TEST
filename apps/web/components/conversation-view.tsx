@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
@@ -20,6 +20,7 @@ import {
   getConversationDayKey,
 } from "../lib/utils";
 import type { ChatAttachment, ChatListItem, ChatMessage, MessagePage } from "../types/api";
+import { ConfirmDialog } from "./confirm-dialog";
 
 const MESSAGE_MAX_LENGTH = 4000;
 const COMPOSER_MIN_HEIGHT = 56;
@@ -63,6 +64,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [draft, setDraft] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [confirmingMessage, setConfirmingMessage] = useState<ChatMessage | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -175,6 +177,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
       );
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+    },
+    onSettled: () => {
+      setConfirmingMessage(null);
     },
   });
 
@@ -306,15 +311,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
   };
 
   const handleDeleteMessage = (message: ChatMessage) => {
-    if (deleteMessageMutation.isPending || message.isDeleted) {
+    if (deleteMessageMutation.isPending) {
       return;
     }
 
-    if (!window.confirm("Удалить это сообщение?")) {
-      return;
-    }
-
-    deleteMessageMutation.mutate(message.id);
+    setConfirmingMessage(message);
   };
 
   if (chatQuery.isLoading || messagesQuery.isLoading) {
@@ -323,7 +324,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   if (!chatQuery.data || !messagesQuery.data) {
     return (
-      <div className="chat-shell-panel flex h-full min-h-0 items-center justify-center rounded-[34px] text-stone-600">
+      <div className="chat-shell-panel flex h-full min-h-0 items-center justify-center rounded-none border-0 text-stone-600">
         Не удалось загрузить чат.
       </div>
     );
@@ -331,7 +332,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   return (
     <section
-      className="chat-shell-panel chat-thread-surface flex h-full min-h-0 flex-col overflow-hidden rounded-[34px]"
+      className="chat-shell-panel chat-thread-surface flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0"
       data-testid="conversation-view"
     >
       <header className="relative z-10 flex flex-none items-center justify-between gap-4 border-b border-black/8 px-5 py-4 sm:px-6 sm:py-5">
@@ -380,11 +381,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
           const { message } = item;
           const isMine = message.senderId === user?.id;
-          const isDeleted = message.isDeleted;
           const normalizedBody = message.body?.trim() ?? "";
           const hasText = Boolean(normalizedBody);
           const hasAttachments = message.attachments.length > 0;
-          const inlineMetaBubble = hasText && !hasAttachments && !isDeleted;
+          const inlineMetaBubble = hasText && !hasAttachments;
           const compactBubble = inlineMetaBubble;
           const shortTextOnlyBubble =
             inlineMetaBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
@@ -403,7 +403,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                   isMine ? "ml-auto max-w-[85%] sm:max-w-[70%]" : "max-w-[85%] sm:max-w-[70%]",
                 )}
               >
-                {isMine && !isDeleted ? (
+                {isMine ? (
                   <button
                     type="button"
                     onClick={() => handleDeleteMessage(message)}
@@ -416,28 +416,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 <div
                   className={clsx(
                     "w-fit max-w-full shadow-sm",
-                    isDeleted
-                      ? "rounded-[20px] border border-dashed border-black/12 bg-stone-100/90 px-3 py-2"
-                      : shortTextOnlyBubble
-                        ? "rounded-[15px] px-3 py-1"
-                        : compactBubble
-                          ? "rounded-[18px] px-3 py-1.5"
-                          : "rounded-[22px] px-4 py-2.5",
-                    isDeleted
-                      ? "text-stone-500"
-                      : isMine
-                        ? "bg-[#111111] text-white"
-                        : "border border-black/8 bg-white text-[#171717]",
+                    shortTextOnlyBubble
+                      ? "rounded-[15px] px-3 py-1"
+                      : compactBubble
+                        ? "rounded-[18px] px-3 py-1.5"
+                        : "rounded-[22px] px-4 py-2.5",
+                    isMine
+                      ? "bg-[#111111] text-white"
+                      : "border border-black/8 bg-white text-[#171717]",
                   )}
                 >
-                  {isDeleted ? (
-                    <div className="space-y-1">
-                      <p className="text-sm italic leading-5">Сообщение удалено</p>
-                      <p className="text-right text-[11px] leading-none text-stone-400">
-                        {formatTime(message.createdAt)}
-                      </p>
-                    </div>
-                  ) : null}
                   {inlineMetaBubble && message.body ? (
                     <div
                       className={clsx(
@@ -458,17 +446,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       </p>
                     </div>
                   ) : null}
-                  {message.body && !inlineMetaBubble && !isDeleted ? (
+                  {message.body && !inlineMetaBubble ? (
                     <p className="whitespace-pre-wrap break-words text-sm leading-5">{message.body}</p>
                   ) : null}
-                  {message.attachments.length > 0 && !isDeleted ? (
+                  {message.attachments.length > 0 ? (
                     <MessageAttachments
                       accessToken={accessToken}
                       attachments={message.attachments}
                       isMine={isMine}
                     />
                   ) : null}
-                  {!inlineMetaBubble && !isDeleted ? (
+                  {!inlineMetaBubble ? (
                     <p
                       className={clsx(
                         hasText ? "mt-1 text-right text-[11px] leading-none" : "mt-1.5 text-right text-[11px] leading-none",
@@ -587,6 +575,23 @@ export function ConversationView({ chatId }: { chatId: string }) {
           </div>
         </div>
       </form>
+
+      <ConfirmDialog
+        open={Boolean(confirmingMessage)}
+        title="Удалить это сообщение?"
+        description="Сообщение исчезнет из переписки у участников этого чата."
+        isLoading={deleteMessageMutation.isPending}
+        onCancel={() => {
+          if (!deleteMessageMutation.isPending) {
+            setConfirmingMessage(null);
+          }
+        }}
+        onConfirm={() => {
+          if (confirmingMessage) {
+            deleteMessageMutation.mutate(confirmingMessage.id);
+          }
+        }}
+      />
     </section>
   );
 }
@@ -664,7 +669,7 @@ function MessageAttachments({
 
 function ConversationSkeleton() {
   return (
-    <div className="chat-shell-panel flex h-full min-h-0 animate-pulse flex-col overflow-hidden rounded-[34px] p-5">
+    <div className="chat-shell-panel flex h-full min-h-0 animate-pulse flex-col overflow-hidden rounded-none border-0 p-5">
       <div className="h-16 rounded-[22px] bg-stone-200/70" />
       <div className="mt-5 min-h-0 flex-1 space-y-3 overflow-hidden">
         <div className="h-20 w-2/3 rounded-[22px] bg-stone-200/60" />
