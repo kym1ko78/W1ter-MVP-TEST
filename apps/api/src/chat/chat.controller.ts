@@ -6,6 +6,7 @@ import {
   Patch,
   Param,
   Post,
+  Put,
   Query,
   UploadedFile,
   UseGuards,
@@ -21,8 +22,10 @@ import { ChatService } from "./chat.service";
 import { AddChatMemberDto } from "./dto/add-chat-member.dto";
 import { CreateDirectChatDto } from "./dto/create-direct-chat.dto";
 import { CreateGroupChatDto } from "./dto/create-group-chat.dto";
+import { ForwardMessageDto } from "./dto/forward-message.dto";
 import { MarkReadDto } from "./dto/mark-read.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
+import { ToggleMessageReactionDto } from "./dto/toggle-message-reaction.dto";
 import { UpdateChatMemberRoleDto } from "./dto/update-chat-member-role.dto";
 import { UpdateMessageDto } from "./dto/update-message.dto";
 import { UploadAttachmentDto } from "./dto/upload-attachment.dto";
@@ -167,6 +170,26 @@ export class ChatController {
     @Body() dto: UpdateMessageDto,
   ) {
     return this.chatService.editMessage(chatId, messageId, user.sub, dto.body);
+  }
+
+  @Post(":chatId/messages/:messageId/forward")
+  async forwardMessage(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+    @Param("messageId") messageId: string,
+    @Body() dto: ForwardMessageDto,
+  ) {
+    return this.chatService.forwardMessage(chatId, messageId, dto.targetChatId, user.sub);
+  }
+
+  @Put(":chatId/messages/:messageId/reaction")
+  async toggleMessageReaction(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+    @Param("messageId") messageId: string,
+    @Body() dto: ToggleMessageReactionDto,
+  ) {
+    return this.chatService.toggleMessageReaction(chatId, messageId, user.sub, dto.emoji);
   }
 
   @Delete(":chatId/messages/:messageId")

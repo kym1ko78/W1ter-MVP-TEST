@@ -6,10 +6,10 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Attachment, ChatMemberRole, ChatType, Prisma, User } from "@prisma/client";
+import { Attachment, ChatMemberRole, ChatType, MessageReaction, Prisma, User } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
@@ -30,6 +30,7 @@ const ATTACHMENT_ALLOWED_MIME_TYPES = new Set([
   "audio/mp4",
   "audio/mpeg",
 ]);
+const REACTION_EMOJIS = new Set(["👍", "❤️", "😂", "🔥", "😮", "😢"]);
 
 type UploadedAttachmentFile = {
   buffer: Buffer;
@@ -49,6 +50,7 @@ type MessageWithRelations = Prisma.MessageGetPayload<{
   include: {
     sender: true;
     attachments: true;
+    reactions: true;
     replyTo: {
       include: {
         sender: true;
@@ -555,6 +557,7 @@ export class ChatService {
       include: {
         sender: true,
         attachments: true,
+        reactions: true,
         replyTo: {
           include: {
             sender: true,
@@ -599,6 +602,7 @@ export class ChatService {
         include: {
           sender: true,
           attachments: true,
+          reactions: true,
           replyTo: {
             include: {
               sender: true,
@@ -643,6 +647,7 @@ export class ChatService {
       include: {
         sender: true,
         attachments: true,
+        reactions: true,
         replyTo: {
           include: {
             sender: true,
@@ -676,6 +681,7 @@ export class ChatService {
       include: {
         sender: true,
         attachments: true,
+        reactions: true,
         replyTo: {
           include: {
             sender: true,
@@ -705,6 +711,7 @@ export class ChatService {
         include: {
           sender: true,
           attachments: true,
+          reactions: true,
           replyTo: {
             include: {
               sender: true,
@@ -749,11 +756,18 @@ export class ChatService {
         include: {
           sender: true,
           attachments: true,
+          reactions: true,
           replyTo: {
             include: {
               sender: true,
             },
           },
+        },
+      });
+
+      await transaction.messageReaction.deleteMany({
+        where: {
+          messageId: message.id,
         },
       });
 
@@ -771,6 +785,240 @@ export class ChatService {
     this.realtimeGateway.emitMessageUpdated(chatId, payload);
     this.realtimeGateway.emitChatUpdated(chatId);
     this.logger.log(`Deleted message ${message.id} in chat ${chatId} by user ${currentUserId}`);
+
+    return payload;
+  }
+
+  async forwardMessage(
+    chatId: string,
+    messageId: string,
+    targetChatId: string,
+    currentUserId: string,
+  ) {
+    await this.ensureMembership(chatId, currentUserId);
+    await this.ensureMembership(targetChatId, currentUserId);
+
+    const sourceMessage = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        chatId,
+      },
+      include: {
+        sender: true,
+        attachments: true,
+        reactions: true,
+        replyTo: {
+          include: {
+            sender: true,
+          },
+        },
+      },
+    });
+
+    if (!sourceMessage) {
+      throw new NotFoundException("Сообщение для пересылки не найдено.");
+    }
+
+    if (sourceMessage.deletedAt) {
+      throw new BadRequestException("Удаленное сообщение нельзя переслать.");
+    }
+
+    const normalizedBody = sourceMessage.body?.trim() ?? "";
+
+    if (!normalizedBody && sourceMessage.attachments.length === 0) {
+      throw new BadRequestException("В этом сообщении нечего пересылать.");
+    }
+
+    const uploadsDir = this.getUploadsDirectory();
+    await mkdir(uploadsDir, { recursive: true });
+
+    const copiedAttachments = sourceMessage.attachments.map((attachment) => {
+      const sourceAbsolutePath = join(uploadsDir, attachment.storageKey);
+
+      if (!existsSync(sourceAbsolutePath)) {
+        throw new NotFoundException("Один из файлов вложения недоступен для пересылки.");
+      }
+
+      const safeOriginalName = this.sanitizeOriginalName(attachment.originalName);
+      const storageKey = `${randomUUID()}${extname(safeOriginalName).slice(0, 24)}`;
+      const targetAbsolutePath = join(uploadsDir, storageKey);
+
+      return {
+        sourceAbsolutePath,
+        targetAbsolutePath,
+        storageKey,
+        originalName: safeOriginalName,
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.sizeBytes,
+      };
+    });
+
+    await Promise.all(
+      copiedAttachments.map((attachment) =>
+        copyFile(attachment.sourceAbsolutePath, attachment.targetAbsolutePath),
+      ),
+    );
+
+    try {
+      const forwardedMessage = await this.prisma.$transaction(async (transaction) => {
+        const createdMessage = await transaction.message.create({
+          data: {
+            chatId: targetChatId,
+            senderId: currentUserId,
+            body: normalizedBody || null,
+            attachments:
+              copiedAttachments.length > 0
+                ? {
+                    create: copiedAttachments.map((attachment) => ({
+                      uploaderId: currentUserId,
+                      storageKey: attachment.storageKey,
+                      originalName: attachment.originalName,
+                      mimeType: attachment.mimeType,
+                      sizeBytes: attachment.sizeBytes,
+                    })),
+                  }
+                : undefined,
+          },
+          include: {
+            sender: true,
+            attachments: true,
+            reactions: true,
+            replyTo: {
+              include: {
+                sender: true,
+              },
+            },
+          },
+        });
+
+        await transaction.chat.update({
+          where: { id: targetChatId },
+          data: {
+            lastMessageId: createdMessage.id,
+            updatedAt: new Date(),
+          },
+        });
+
+        return createdMessage;
+      });
+
+      const payload = this.toMessagePayload(forwardedMessage);
+
+      this.realtimeGateway.emitMessageNew(targetChatId, payload);
+      this.realtimeGateway.emitChatUpdated(targetChatId);
+      this.logger.log(
+        `Forwarded message ${messageId} from chat ${chatId} to chat ${targetChatId} by user ${currentUserId}`,
+      );
+
+      return payload;
+    } catch (error) {
+      await this.cleanupStoredFiles(copiedAttachments.map((attachment) => attachment.storageKey));
+      throw error;
+    }
+  }
+
+  async toggleMessageReaction(
+    chatId: string,
+    messageId: string,
+    currentUserId: string,
+    emoji: string,
+  ) {
+    await this.ensureMembership(chatId, currentUserId);
+
+    const normalizedEmoji = emoji.trim();
+
+    if (!REACTION_EMOJIS.has(normalizedEmoji)) {
+      throw new BadRequestException("Выберите реакцию из доступного списка.");
+    }
+
+    const targetMessage = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        chatId,
+      },
+      select: {
+        id: true,
+        deletedAt: true,
+      },
+    });
+
+    if (!targetMessage) {
+      throw new NotFoundException("Message not found");
+    }
+
+    if (targetMessage.deletedAt) {
+      throw new BadRequestException("Нельзя поставить реакцию на удаленное сообщение.");
+    }
+
+    const updatedMessage = await this.prisma.$transaction(async (transaction) => {
+      const existingReaction = await transaction.messageReaction.findUnique({
+        where: {
+          messageId_userId: {
+            messageId,
+            userId: currentUserId,
+          },
+        },
+      });
+
+      if (!existingReaction) {
+        await transaction.messageReaction.create({
+          data: {
+            messageId,
+            userId: currentUserId,
+            emoji: normalizedEmoji,
+          },
+        });
+      } else if (existingReaction.emoji === normalizedEmoji) {
+        await transaction.messageReaction.delete({
+          where: {
+            messageId_userId: {
+              messageId,
+              userId: currentUserId,
+            },
+          },
+        });
+      } else {
+        await transaction.messageReaction.update({
+          where: {
+            messageId_userId: {
+              messageId,
+              userId: currentUserId,
+            },
+          },
+          data: {
+            emoji: normalizedEmoji,
+          },
+        });
+      }
+
+      return transaction.message.findFirst({
+        where: {
+          id: messageId,
+          chatId,
+        },
+        include: {
+          sender: true,
+          attachments: true,
+          reactions: true,
+          replyTo: {
+            include: {
+              sender: true,
+            },
+          },
+        },
+      });
+    });
+
+    if (!updatedMessage) {
+      throw new NotFoundException("Message not found");
+    }
+
+    const payload = this.toMessagePayload(updatedMessage);
+
+    this.realtimeGateway.emitMessageUpdated(chatId, payload);
+    this.logger.log(
+      `Toggled reaction ${normalizedEmoji} for message ${messageId} in chat ${chatId} by user ${currentUserId}`,
+    );
 
     return payload;
   }
@@ -831,6 +1079,7 @@ export class ChatService {
           include: {
             sender: true,
             attachments: true,
+            reactions: true,
             replyTo: {
               include: {
                 sender: true,
@@ -1131,7 +1380,43 @@ export class ChatService {
       attachments: isDeleted
         ? []
         : message.attachments.map((attachment) => this.toAttachmentPayload(attachment)),
+      reactions: isDeleted ? [] : this.toMessageReactionsPayload(message.reactions),
     };
+  }
+
+  private toMessageReactionsPayload(reactions: MessageReaction[]) {
+    if (reactions.length === 0) {
+      return [];
+    }
+
+    const grouped = new Map<string, { emoji: string; count: number; userIds: string[] }>();
+    const sortedReactions = [...reactions].sort(
+      (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+    );
+
+    for (const reaction of sortedReactions) {
+      const existing = grouped.get(reaction.emoji);
+
+      if (existing) {
+        existing.count += 1;
+        existing.userIds.push(reaction.userId);
+        continue;
+      }
+
+      grouped.set(reaction.emoji, {
+        emoji: reaction.emoji,
+        count: 1,
+        userIds: [reaction.userId],
+      });
+    }
+
+    return Array.from(grouped.values()).sort((left, right) => {
+      if (left.count !== right.count) {
+        return right.count - left.count;
+      }
+
+      return left.emoji.localeCompare(right.emoji, "ru");
+    });
   }
 
   private toMessagePreview(

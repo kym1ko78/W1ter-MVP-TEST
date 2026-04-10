@@ -33,6 +33,11 @@ export interface MessageDto {
     updatedAt: string;
   } | null;
   attachments: AttachmentDto[];
+  reactions: Array<{
+    emoji: string;
+    count: number;
+    userIds: string[];
+  }>;
 }
 
 export type ChatTypeDto = "direct" | "group";

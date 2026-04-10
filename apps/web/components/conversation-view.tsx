@@ -73,6 +73,7 @@ const ATTACHMENT_ALLOWED_TYPES = new Set([
 const VOICE_RECORDER_MIME_TYPE = "audio/webm";
 const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
 const SCROLL_BOTTOM_THRESHOLD = 180;
+const QUICK_REACTIONS = ["👍", "❤️", "😂", "🔥", "😮", "😢"] as const;
 
 type ComposerPayload = {
   body: string;
@@ -85,6 +86,16 @@ type RecordingState = "idle" | "recording" | "stopping";
 type EditMessagePayload = {
   messageId: string;
   body: string;
+};
+
+type ForwardMessagePayload = {
+  messageId: string;
+  targetChatId: string;
+};
+
+type ToggleReactionPayload = {
+  messageId: string;
+  emoji: (typeof QUICK_REACTIONS)[number];
 };
 
 type ConversationRenderItem =
@@ -119,12 +130,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [confirmingMessage, setConfirmingMessage] = useState<ChatMessage | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
+  const [forwardSearch, setForwardSearch] = useState("");
+  const [forwardPanelError, setForwardPanelError] = useState<string | null>(null);
+  const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null);
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
   const deferredMessageSearch = useDeferredValue(messageSearch);
   const deferredGroupMemberSearch = useDeferredValue(groupMemberSearch);
+  const deferredForwardSearch = useDeferredValue(forwardSearch);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -155,6 +171,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
       )!,
   });
 
+  const chatsQuery = useQuery({
+    queryKey: ["chats"],
+    enabled: isAuthenticated,
+    queryFn: async () => readJson<ChatListItem[]>(await authorizedFetch("/chats")),
+  });
+
   const messageItems = useMemo(
     () => dedupeMessages(messagesQuery.data?.items ?? []),
     [messagesQuery.data?.items],
@@ -177,6 +199,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const searchParamMessageId = searchParams?.get("message") ?? null;
   const searchParamQuery = searchParams?.get("q") ?? null;
   const normalizedGroupMemberSearch = deferredGroupMemberSearch.trim();
+  const normalizedForwardSearch = deferredForwardSearch.trim().toLocaleLowerCase();
   const isGroupChat = chatQuery.data?.type === "group";
 
   const groupMembersQuery = useQuery({
@@ -394,6 +417,67 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
   });
 
+  const forwardMessageMutation = useMutation({
+    mutationFn: async ({ messageId, targetChatId }: ForwardMessagePayload) =>
+      readJson<ChatMessage>(
+        await authorizedFetch(`/chats/${chatId}/messages/${messageId}/forward`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            targetChatId,
+          }),
+        }),
+      ),
+    onSuccess: (forwardedMessage) => {
+      queryClient.setQueryData<MessagePage>(["messages", forwardedMessage.chatId], (old) =>
+        appendMessageUnique(old, forwardedMessage),
+      );
+
+      if (forwardedMessage.chatId === chatId) {
+        shouldScrollAfterSendRef.current = true;
+        scrollToBottom("smooth");
+      }
+
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", forwardedMessage.chatId] });
+      setForwardPanelError(null);
+      setForwardingMessage(null);
+      setForwardSearch("");
+    },
+    onError: (error) => {
+      setForwardPanelError(
+        error instanceof Error ? error.message : "Не удалось переслать сообщение.",
+      );
+    },
+  });
+
+  const toggleReactionMutation = useMutation({
+    mutationFn: async ({ messageId, emoji }: ToggleReactionPayload) =>
+      readJson<ChatMessage>(
+        await authorizedFetch(`/chats/${chatId}/messages/${messageId}/reaction`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ emoji }),
+        }),
+      ),
+    onSuccess: (message) => {
+      queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
+        upsertMessage(old, message),
+      );
+      setComposerError(null);
+      setForwardPanelError(null);
+    },
+    onError: (error) => {
+      setComposerError(
+        error instanceof Error ? error.message : "Не удалось обновить реакцию. Попробуйте еще раз.",
+      );
+    },
+  });
+
   const addGroupMemberMutation = useMutation({
     mutationFn: async (userId: string) =>
       readJson<GroupMembersResponse>(
@@ -533,6 +617,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setConfirmingGroupLeave(false);
     setReplyingToMessage(null);
     setEditingMessage(null);
+    setForwardingMessage(null);
+    setForwardSearch("");
+    setForwardPanelError(null);
+    setReactionPickerMessageId(null);
   }, [chatId]);
 
   useEffect(() => {
@@ -623,6 +711,50 @@ export function ConversationView({ chatId }: { chatId: string }) {
     type: chatQuery.data?.type,
     title: chatQuery.data?.title,
   });
+  const memberNameById = useMemo(
+    () =>
+      new Map(
+        chatMembers.map((member) => [member.id, member.displayName] as const),
+      ),
+    [chatMembers],
+  );
+  const forwardCandidates = useMemo(() => {
+    const candidates = chatsQuery.data ?? [];
+
+    return candidates
+      .map((chat) => {
+        const title = getChatTitle(chat.members, user?.id, {
+          type: chat.type,
+          title: chat.title,
+        });
+        const lastMessagePreview = getLastMessagePreviewText(chat.lastMessage);
+        const searchableContent = `${title} ${lastMessagePreview}`.toLocaleLowerCase();
+
+        return {
+          ...chat,
+          title,
+          lastMessagePreview,
+          isCurrentChat: chat.id === chatId,
+          searchableContent,
+        };
+      })
+      .filter((chat) =>
+        normalizedForwardSearch ? chat.searchableContent.includes(normalizedForwardSearch) : true,
+      )
+      .sort((left, right) => {
+        if (left.isCurrentChat && !right.isCurrentChat) {
+          return -1;
+        }
+
+        if (!left.isCurrentChat && right.isCurrentChat) {
+          return 1;
+        }
+
+        return (
+          new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+        );
+      });
+  }, [chatId, chatsQuery.data, normalizedForwardSearch, user?.id]);
   const existingGroupMemberIds = useMemo(
     () =>
       new Set(
@@ -942,6 +1074,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setReactionPickerMessageId(null);
     setConfirmingMessage(message);
   };
 
@@ -955,6 +1088,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setReactionPickerMessageId(null);
     setComposerError(null);
     setEditingMessage(null);
     setReplyingToMessage(message);
@@ -974,6 +1108,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setReactionPickerMessageId(null);
     setComposerError(null);
     setReplyingToMessage(null);
     setEditingMessage(message);
@@ -983,6 +1118,53 @@ export function ConversationView({ chatId }: { chatId: string }) {
       fileInputRef.current.value = "";
     }
     queueMicrotask(() => textareaRef.current?.focus());
+  };
+
+  const handleStartForwardMessage = (message: ChatMessage) => {
+    if (message.isDeleted) {
+      setComposerError("Удаленное сообщение нельзя переслать.");
+      return;
+    }
+
+    if (!message.body?.trim() && message.attachments.length === 0) {
+      setComposerError("В этом сообщении нечего пересылать.");
+      return;
+    }
+
+    setComposerError(null);
+    setForwardPanelError(null);
+    setForwardSearch("");
+    setReactionPickerMessageId(null);
+    setForwardingMessage(message);
+  };
+
+  const handleForwardToChat = (targetChatId: string) => {
+    if (!forwardingMessage || forwardMessageMutation.isPending) {
+      return;
+    }
+
+    forwardMessageMutation.mutate({
+      messageId: forwardingMessage.id,
+      targetChatId,
+    });
+  };
+
+  const handleToggleReactionPicker = (messageId: string) => {
+    setReactionPickerMessageId((current) => (current === messageId ? null : messageId));
+  };
+
+  const handleToggleMessageReaction = (
+    message: ChatMessage,
+    emoji: (typeof QUICK_REACTIONS)[number],
+  ) => {
+    if (message.isDeleted || toggleReactionMutation.isPending) {
+      return;
+    }
+
+    toggleReactionMutation.mutate({
+      messageId: message.id,
+      emoji,
+    });
   };
 
   const cancelComposerContext = () => {
@@ -1363,6 +1545,13 @@ export function ConversationView({ chatId }: { chatId: string }) {
           const compactBubble = inlineMetaBubble;
           const shortTextOnlyBubble =
             inlineMetaBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
+          const currentUserId = user?.id ?? null;
+          const currentUserReaction =
+            currentUserId
+              ? message.reactions.find((reaction) => reaction.userIds.includes(currentUserId))?.emoji ??
+                null
+              : null;
+          const isReactionPickerOpen = reactionPickerMessageId === message.id;
 
           return (
             <div
@@ -1380,18 +1569,39 @@ export function ConversationView({ chatId }: { chatId: string }) {
                   isMine ? "ml-auto max-w-[85%] sm:max-w-[70%]" : "max-w-[85%] sm:max-w-[70%]",
                 )}
               >
-                {isMine ? (
+                {!message.isDeleted ? (
                   <div className="mt-1 flex flex-col gap-1 opacity-0 transition group-hover:opacity-100">
-                    {!message.isDeleted ? (
+                    <button
+                      type="button"
+                      onClick={() => handleReplyMessage(message)}
+                      data-testid="reply-message-button"
+                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                    >
+                      Ответ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleReactionPicker(message.id)}
+                      data-testid="reaction-message-button"
+                      className={clsx(
+                        "rounded-full border px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] transition",
+                        isReactionPickerOpen || currentUserReaction
+                          ? "border-black/25 bg-black text-white"
+                          : "border-black/10 bg-white text-stone-500 hover:border-black/25 hover:text-black",
+                      )}
+                    >
+                      Реакция
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleStartForwardMessage(message)}
+                      data-testid="forward-message-button"
+                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                    >
+                      Переслать
+                    </button>
+                    {isMine ? (
                       <>
-                        <button
-                          type="button"
-                          onClick={() => handleReplyMessage(message)}
-                          data-testid="reply-message-button"
-                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/25 hover:text-black"
-                        >
-                          Ответ
-                        </button>
                         <button
                           type="button"
                           onClick={() => handleStartEditingMessage(message)}
@@ -1515,15 +1725,77 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     </p>
                   ) : null}
                 </div>
-                {!isMine && !message.isDeleted ? (
-                  <button
-                    type="button"
-                    onClick={() => handleReplyMessage(message)}
-                    data-testid="reply-message-button"
-                    className="mt-1 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 opacity-0 transition hover:border-black/25 hover:text-black group-hover:opacity-100"
+                {message.reactions.length > 0 ? (
+                  <div className="mt-1.5 flex w-full flex-wrap gap-1">
+                    {message.reactions.map((reaction) => {
+                      const reactedByCurrentUser =
+                        currentUserId ? reaction.userIds.includes(currentUserId) : false;
+                      const reactedByNames = reaction.userIds
+                        .map((userId) => memberNameById.get(userId))
+                        .filter((name): name is string => Boolean(name))
+                        .join(", ");
+
+                      return (
+                        <button
+                          key={`${message.id}-${reaction.emoji}`}
+                          type="button"
+                          onClick={() =>
+                            handleToggleMessageReaction(
+                              message,
+                              reaction.emoji as (typeof QUICK_REACTIONS)[number],
+                            )
+                          }
+                          className={clsx(
+                            "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
+                            reactedByCurrentUser
+                              ? isMine
+                                ? "border-white/25 bg-white text-[#111111]"
+                                : "border-black bg-black text-white"
+                              : isMine
+                                ? "border-white/28 bg-white/10 text-white hover:bg-white/20"
+                                : "border-black/10 bg-white text-stone-600 hover:border-black/25 hover:text-black",
+                          )}
+                          title={reactedByNames || "Реакция"}
+                          data-testid="message-reaction-chip"
+                        >
+                          <span>{reaction.emoji}</span>
+                          <span>{reaction.count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {isReactionPickerOpen && !message.isDeleted ? (
+                  <div
+                    className={clsx(
+                      "mt-1.5 flex w-full flex-wrap gap-1 rounded-[14px] border px-2 py-1.5",
+                      isMine ? "border-white/22 bg-white/10" : "border-black/10 bg-white",
+                    )}
+                    data-testid="message-reaction-picker"
                   >
-                    Ответ
-                  </button>
+                    {QUICK_REACTIONS.map((emoji) => (
+                      <button
+                        key={`${message.id}-${emoji}-quick-reaction`}
+                        type="button"
+                        onClick={() => handleToggleMessageReaction(message, emoji)}
+                        disabled={toggleReactionMutation.isPending}
+                        className={clsx(
+                          "rounded-full border px-2 py-1 text-sm transition disabled:cursor-not-allowed disabled:opacity-50",
+                          currentUserReaction === emoji
+                            ? isMine
+                              ? "border-white bg-white text-[#111111]"
+                              : "border-black bg-black text-white"
+                            : isMine
+                              ? "border-white/25 bg-white/10 text-white hover:bg-white/20"
+                              : "border-black/10 bg-white text-stone-700 hover:border-black/25 hover:text-black",
+                        )}
+                        data-testid="quick-reaction-button"
+                        aria-label={`Поставить реакцию ${emoji}`}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
                 ) : null}
               </div>
             </div>
@@ -1727,6 +1999,91 @@ export function ConversationView({ chatId }: { chatId: string }) {
           </div>
         </div>
       </form>
+
+      {forwardingMessage ? (
+        <div
+          className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[3px]"
+          onClick={() => {
+            if (!forwardMessageMutation.isPending) {
+              setForwardingMessage(null);
+              setForwardPanelError(null);
+            }
+          }}
+          data-testid="forward-message-modal"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="forward-message-title"
+            className="w-full max-w-[470px] rounded-[22px] border border-black/10 bg-white p-4 shadow-[0_22px_52px_rgba(17,24,39,0.22)] sm:p-5"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="forward-message-title" className="text-lg font-semibold tracking-tight text-[#171717]">
+              Переслать сообщение
+            </h3>
+            <p className="mt-1 text-sm text-stone-500">
+              {getReplyPreviewText(forwardingMessage)}
+            </p>
+
+            <input
+              value={forwardSearch}
+              onChange={(event) => setForwardSearch(event.target.value)}
+              placeholder="Поиск чата для пересылки"
+              className="mt-3 w-full rounded-[14px] border border-black/10 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+              data-testid="forward-search-input"
+            />
+
+            {forwardPanelError ? (
+              <p className="mt-3 rounded-[12px] border border-black/10 bg-black px-3 py-2 text-xs text-white">
+                {forwardPanelError}
+              </p>
+            ) : null}
+
+            <div className="scroll-region-y mt-3 max-h-64 space-y-1.5 overflow-y-auto rounded-[14px] border border-black/8 bg-[#fafaf9] p-1.5">
+              {chatsQuery.isLoading ? (
+                <p className="px-2 py-2 text-sm text-stone-500">Загружаем чаты...</p>
+              ) : forwardCandidates.length > 0 ? (
+                forwardCandidates.map((candidate) => (
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    onClick={() => handleForwardToChat(candidate.id)}
+                    disabled={forwardMessageMutation.isPending}
+                    className="flex w-full items-center justify-between gap-3 rounded-[12px] border border-transparent px-3 py-2.5 text-left transition hover:border-black/10 hover:bg-white disabled:cursor-not-allowed disabled:opacity-55"
+                    data-testid="forward-target-chat"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-[#171717]">{candidate.title}</p>
+                      <p className="truncate text-xs text-stone-500">{candidate.lastMessagePreview}</p>
+                    </div>
+                    <span className="shrink-0 rounded-full border border-black/10 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-500">
+                      {candidate.isCurrentChat ? "Текущий" : candidate.type === "group" ? "Группа" : "Личный"}
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <p className="px-2 py-2 text-sm text-stone-500">Подходящих чатов не найдено.</p>
+              )}
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!forwardMessageMutation.isPending) {
+                    setForwardingMessage(null);
+                    setForwardPanelError(null);
+                  }
+                }}
+                disabled={forwardMessageMutation.isPending}
+                className="rounded-full border border-black/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <ConfirmDialog
         open={Boolean(confirmingMessage)}
