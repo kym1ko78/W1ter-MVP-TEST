@@ -19,7 +19,11 @@ import { usePathname, useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
 import { ConfirmDialog } from "./confirm-dialog";
 import { readJson, useAuth } from "../lib/auth-context";
-import { appendMessageUnique, upsertMessage } from "../lib/message-cache";
+import {
+  appendMessageUnique,
+  normalizeMessagePage,
+  upsertMessage,
+} from "../lib/message-cache";
 import { SOCKET_URL } from "../lib/config";
 import {
   formatRelativeLastSeen,
@@ -41,6 +45,24 @@ type DeleteChatResponse = {
   chatId: string;
 };
 
+type GlobalMessageSearchResult = {
+  chatId: string;
+  messageId: string;
+  chatTitle: string;
+  senderName: string;
+  body: string;
+  createdAt: string;
+};
+
+type GlobalSearchResult = {
+  users: SafeUser[];
+  chats: ChatListItem[];
+  messages: GlobalMessageSearchResult[];
+  totalUsers: number;
+  totalChats: number;
+  totalMessages: number;
+};
+
 export function ChatShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -49,9 +71,12 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const socketRef = useRef<Socket | null>(null);
   const { accessToken, authorizedFetch, isAuthenticated, isLoading, logout, user } = useAuth();
   const [search, setSearch] = useState("");
+  const [globalSearch, setGlobalSearch] = useState("");
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
   const [confirmingChatId, setConfirmingChatId] = useState<string | null>(null);
   const deferredSearch = useDeferredValue(search);
+  const deferredGlobalSearch = useDeferredValue(globalSearch);
+  const normalizedGlobalSearch = deferredGlobalSearch.trim();
   const currentChatId = useMemo(() => {
     const segments = safePathname.split("/").filter(Boolean);
     if (segments[0] === "chat" && segments[1]) {
@@ -74,6 +99,89 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       readJson<SafeUser[]>(
         await authorizedFetch(`/users/search?query=${encodeURIComponent(deferredSearch.trim())}`),
       ),
+  });
+
+  const globalSearchQuery = useQuery({
+    queryKey: [
+      "global-search",
+      normalizedGlobalSearch,
+      chatsQuery.data?.map((chat) => chat.id).join("|") ?? "",
+    ],
+    enabled: isAuthenticated && normalizedGlobalSearch.length > 1,
+    staleTime: 15_000,
+    queryFn: async () => {
+      const normalizedQuery = normalizedGlobalSearch.toLocaleLowerCase();
+      const chats = chatsQuery.data ?? [];
+      const users = await readJson<SafeUser[]>(
+        await authorizedFetch(`/users/search?query=${encodeURIComponent(normalizedGlobalSearch)}`),
+      );
+
+      const chatMatches = chats.filter((chat) => {
+        const title = getChatTitle(chat.members, user?.id).toLocaleLowerCase();
+        const lastMessage = getLastMessagePreviewText(chat.lastMessage).toLocaleLowerCase();
+        const matchedByMember = chat.members.some(
+          (member) =>
+            member.id !== user?.id &&
+            `${member.displayName} ${member.email}`.toLocaleLowerCase().includes(normalizedQuery),
+        );
+
+        return (
+          title.includes(normalizedQuery) ||
+          lastMessage.includes(normalizedQuery) ||
+          matchedByMember
+        );
+      });
+
+      const messageMatches: GlobalMessageSearchResult[] = [];
+
+      await Promise.all(
+        chats.map(async (chat) => {
+          const page = normalizeMessagePage(
+            await readJson<MessagePage>(await authorizedFetch(`/chats/${chat.id}/messages`)),
+          );
+
+          if (!page?.items.length) {
+            return;
+          }
+
+          const chatTitle = getChatTitle(chat.members, user?.id);
+
+          for (const message of page.items) {
+            const body = message.body?.trim();
+
+            if (!body || message.isDeleted) {
+              continue;
+            }
+
+            if (!body.toLocaleLowerCase().includes(normalizedQuery)) {
+              continue;
+            }
+
+            messageMatches.push({
+              chatId: chat.id,
+              messageId: message.id,
+              chatTitle,
+              senderName: message.sender.displayName,
+              body,
+              createdAt: message.createdAt,
+            });
+          }
+        }),
+      );
+
+      messageMatches.sort(
+        (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+      );
+
+      return {
+        users: users.slice(0, 8),
+        chats: chatMatches.slice(0, 8),
+        messages: messageMatches.slice(0, 20),
+        totalUsers: users.length,
+        totalChats: chatMatches.length,
+        totalMessages: messageMatches.length,
+      } satisfies GlobalSearchResult;
+    },
   });
 
   const createDirectChatMutation = useMutation({
@@ -337,6 +445,135 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                 ) : (
                   <p className="px-3 py-4 text-sm text-stone-500">Ничего не найдено.</p>
                 )}
+              </div>
+            ) : null}
+
+            <label className="block pt-1">
+              <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-stone-400">
+                Global search
+              </span>
+              <input
+                data-testid="global-search-input"
+                value={globalSearch}
+                onChange={(event) => setGlobalSearch(event.target.value)}
+                placeholder="Чаты, пользователи, сообщения"
+                className="w-full rounded-[20px] border border-black/8 bg-[#f7f7f5] px-4 py-3 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+              />
+            </label>
+
+            {normalizedGlobalSearch.length > 1 ? (
+              <div
+                className="scroll-region-y max-h-72 overflow-y-auto rounded-[24px] border border-black/8 bg-white p-2 shadow-[0_18px_30px_rgba(17,24,39,0.06)]"
+                data-testid="global-search-results"
+              >
+                {globalSearchQuery.isLoading ? (
+                  <p className="px-3 py-4 text-sm text-stone-500">Ищем по всем чатам...</p>
+                ) : globalSearchQuery.isError ? (
+                  <p className="px-3 py-4 text-sm text-stone-500">
+                    Не удалось выполнить глобальный поиск.
+                  </p>
+                ) : globalSearchQuery.data ? (
+                  globalSearchQuery.data.chats.length === 0 &&
+                  globalSearchQuery.data.users.length === 0 &&
+                  globalSearchQuery.data.messages.length === 0 ? (
+                    <p className="px-3 py-4 text-sm text-stone-500">Ничего не найдено.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {globalSearchQuery.data.chats.length > 0 ? (
+                        <div className="space-y-2">
+                          <p className="px-1 text-[10px] uppercase tracking-[0.16em] text-stone-400">
+                            Чаты
+                          </p>
+                          {globalSearchQuery.data.chats.map((chat) => {
+                            const title = getChatTitle(chat.members, user?.id);
+                            const partner = chat.members.find((member) => member.id !== user?.id);
+
+                            return (
+                              <Link
+                                key={chat.id}
+                                href={`/chat/${chat.id}`}
+                                className="block rounded-[16px] border border-transparent px-3 py-2 text-sm transition hover:border-black/10 hover:bg-[#f7f7f5]"
+                              >
+                                <p className="truncate font-semibold text-[#171717]">{title}</p>
+                                <p className="truncate text-xs text-stone-500">
+                                  {partner?.email ?? getLastMessagePreviewText(chat.lastMessage)}
+                                </p>
+                              </Link>
+                            );
+                          })}
+                          {globalSearchQuery.data.totalChats > globalSearchQuery.data.chats.length ? (
+                            <p className="px-1 text-[11px] text-stone-400">
+                              Показаны первые {globalSearchQuery.data.chats.length} чатов.
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {globalSearchQuery.data.users.length > 0 ? (
+                        <div className="space-y-2">
+                          <p className="px-1 text-[10px] uppercase tracking-[0.16em] text-stone-400">
+                            Пользователи
+                          </p>
+                          {globalSearchQuery.data.users.map((foundUser) => (
+                            <button
+                              key={foundUser.id}
+                              type="button"
+                              onClick={() => createDirectChatMutation.mutate(foundUser.id)}
+                              className="flex w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-3 py-2 text-left transition hover:border-black/10 hover:bg-[#f7f7f5]"
+                            >
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold text-[#171717]">
+                                  {foundUser.displayName}
+                                </p>
+                                <p className="truncate text-xs text-stone-500">{foundUser.email}</p>
+                              </div>
+                              <span className="shrink-0 rounded-full border border-black/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.15em] text-stone-500">
+                                {createDirectChatMutation.isPending ? "..." : "Direct"}
+                              </span>
+                            </button>
+                          ))}
+                          {globalSearchQuery.data.totalUsers > globalSearchQuery.data.users.length ? (
+                            <p className="px-1 text-[11px] text-stone-400">
+                              Показаны первые {globalSearchQuery.data.users.length} пользователей.
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {globalSearchQuery.data.messages.length > 0 ? (
+                        <div className="space-y-2">
+                          <p className="px-1 text-[10px] uppercase tracking-[0.16em] text-stone-400">
+                            Сообщения
+                          </p>
+                          {globalSearchQuery.data.messages.map((result) => (
+                            <Link
+                              key={result.messageId}
+                              href={`/chat/${result.chatId}?message=${encodeURIComponent(result.messageId)}&q=${encodeURIComponent(normalizedGlobalSearch)}`}
+                              className="block rounded-[16px] border border-transparent px-3 py-2 transition hover:border-black/10 hover:bg-[#f7f7f5]"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate text-xs font-semibold uppercase tracking-[0.12em] text-stone-500">
+                                  {result.chatTitle}
+                                </p>
+                                <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-stone-400">
+                                  {formatTime(result.createdAt)}
+                                </span>
+                              </div>
+                              <p className="mt-1 line-clamp-2 text-sm text-[#171717]">
+                                {result.senderName}: {result.body}
+                              </p>
+                            </Link>
+                          ))}
+                          {globalSearchQuery.data.totalMessages > globalSearchQuery.data.messages.length ? (
+                            <p className="px-1 text-[11px] text-stone-400">
+                              Показаны первые {globalSearchQuery.data.messages.length} сообщений.
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                ) : null}
               </div>
             ) : null}
           </div>
