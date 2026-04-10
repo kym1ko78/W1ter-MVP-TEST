@@ -4,13 +4,13 @@ export const API_URL =
 export const SOCKET_URL =
   process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000";
 
-export function buildAttachmentUrl(
-  downloadPath: string,
+export function buildAuthorizedAssetUrl(
+  assetPath: string,
   accessToken: string | null | undefined,
 ) {
-  const baseUrl = downloadPath.startsWith("http")
-    ? downloadPath
-    : `${API_URL}${downloadPath}`;
+  const baseUrl = assetPath.startsWith("http")
+    ? assetPath
+    : `${API_URL}${assetPath}`;
 
   if (!accessToken) {
     return baseUrl;
@@ -19,3 +19,6 @@ export function buildAttachmentUrl(
   const separator = baseUrl.includes("?") ? "&" : "?";
   return `${baseUrl}${separator}access_token=${encodeURIComponent(accessToken)}`;
 }
+
+export const buildAttachmentUrl = buildAuthorizedAssetUrl;
+export const buildAvatarUrl = buildAuthorizedAssetUrl;

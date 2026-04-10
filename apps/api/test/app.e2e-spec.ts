@@ -10,12 +10,24 @@ import { AppModule } from "../src/app.module";
 
 type AuthResponse = {
   accessToken: string;
+  emailVerificationPreviewUrl?: string | null;
   user: {
     id: string;
     email: string;
     displayName: string;
+    avatarUrl?: string | null;
+    emailVerifiedAt?: string | null;
+    emailVerificationSentAt?: string | null;
   };
 };
+
+function normalizeSetCookieHeader(header: string | string[] | undefined) {
+  if (!header) {
+    return "";
+  }
+
+  return Array.isArray(header) ? header.join("; ") : header;
+}
 
 describe("API e2e", () => {
   let app: INestApplication;
@@ -247,5 +259,122 @@ describe("API e2e", () => {
       .get(`/chats/${chatId}`)
       .set("Authorization", `Bearer ${refreshBody.accessToken}`)
       .expect(404);
+  });
+
+  it("updates profile data and uploads an avatar", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const userData = {
+      email: `api.e2e.profile.${suffix}@example.com`,
+      displayName: "Profile User",
+      password: "password123",
+    };
+    const agent = request.agent(app.getHttpServer());
+
+    const registerResponse = await agent
+      .post("/auth/register")
+      .send(userData)
+      .expect(201);
+
+    const authBody = registerResponse.body as AuthResponse;
+    const renamedDisplayName = "Profile User Updated";
+
+    const updateProfileResponse = await agent
+      .patch("/users/me")
+      .set("Authorization", `Bearer ${authBody.accessToken}`)
+      .send({ displayName: renamedDisplayName })
+      .expect(200);
+
+    expect(updateProfileResponse.body.displayName).toBe(renamedDisplayName);
+
+    const avatarBuffer = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9sLJXewAAAAASUVORK5CYII=",
+      "base64",
+    );
+
+    const uploadResponse = await agent
+      .post("/users/me/avatar")
+      .set("Authorization", `Bearer ${authBody.accessToken}`)
+      .attach("file", avatarBuffer, {
+        filename: "avatar.png",
+        contentType: "image/png",
+      })
+      .expect(201);
+
+    expect(uploadResponse.body.avatarUrl).toContain("/users/avatar-files/");
+
+    const avatarPath = (uploadResponse.body.avatarUrl as string).split("?")[0];
+
+    const avatarResponse = await agent
+      .get(avatarPath)
+      .query({ access_token: authBody.accessToken })
+      .expect(200);
+
+    expect(avatarResponse.headers["content-type"]).toContain("image/png");
+
+    const removeResponse = await agent
+      .delete("/users/me/avatar")
+      .set("Authorization", `Bearer ${authBody.accessToken}`)
+      .expect(200);
+
+    expect(removeResponse.body.avatarUrl).toBeNull();
+  });
+
+  it("confirms email and preserves remember-me cookie behavior", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const persistentAgent = request.agent(app.getHttpServer());
+    const sessionAgent = request.agent(app.getHttpServer());
+
+    const persistentRegister = await persistentAgent
+      .post("/auth/register")
+      .send({
+        email: `api.e2e.verify.${suffix}@example.com`,
+        displayName: "Verify User",
+        password: "password123",
+        rememberMe: true,
+      })
+      .expect(201);
+
+    const persistentBody = persistentRegister.body as AuthResponse;
+    const persistentCookie = normalizeSetCookieHeader(
+      persistentRegister.headers["set-cookie"],
+    );
+
+    expect(persistentCookie).toContain("Max-Age=");
+    expect(persistentBody.user.emailVerifiedAt).toBeNull();
+    expect(persistentBody.user.emailVerificationSentAt).toBeTruthy();
+    expect(persistentBody.emailVerificationPreviewUrl).toContain("/verify-email?token=");
+
+    const verificationUrl = new URL(persistentBody.emailVerificationPreviewUrl ?? "");
+    const verificationToken = verificationUrl.searchParams.get("token");
+
+    expect(verificationToken).toBeTruthy();
+
+    const confirmResponse = await persistentAgent
+      .post("/auth/verify-email/confirm")
+      .send({ token: verificationToken })
+      .expect(200);
+
+    expect(confirmResponse.body.success).toBe(true);
+    expect(confirmResponse.body.user.emailVerifiedAt).toBeTruthy();
+
+    const meResponse = await persistentAgent
+      .get("/auth/me")
+      .set("Authorization", `Bearer ${persistentBody.accessToken}`)
+      .expect(200);
+
+    expect(meResponse.body.emailVerifiedAt).toBeTruthy();
+
+    const sessionRegister = await sessionAgent
+      .post("/auth/register")
+      .send({
+        email: `api.e2e.session.${suffix}@example.com`,
+        displayName: "Session User",
+        password: "password123",
+        rememberMe: false,
+      })
+      .expect(201);
+
+    const sessionCookie = normalizeSetCookieHeader(sessionRegister.headers["set-cookie"]);
+    expect(sessionCookie).not.toContain("Max-Age=");
   });
 });

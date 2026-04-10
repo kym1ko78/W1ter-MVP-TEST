@@ -17,6 +17,7 @@ import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { RateLimitGuard } from "../common/guards/rate-limit.guard";
 import type { JwtPayload } from "../common/types/jwt-payload";
 import { AuthService } from "./auth.service";
+import { ConfirmEmailDto } from "./dto/confirm-email.dto";
 import { LoginDto } from "./dto/login.dto";
 import { RegisterDto } from "./dto/register.dto";
 
@@ -43,11 +44,12 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ) {
     const session = await this.authService.register(dto, this.getRequestMetadata(request));
-    this.setRefreshCookie(response, session.refreshToken);
+    this.setRefreshCookie(response, session.refreshToken, session.rememberMe);
 
     return {
       accessToken: session.accessToken,
       user: session.user,
+      emailVerificationPreviewUrl: session.emailVerificationPreviewUrl,
     };
   }
 
@@ -66,11 +68,12 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ) {
     const session = await this.authService.login(dto, this.getRequestMetadata(request));
-    this.setRefreshCookie(response, session.refreshToken);
+    this.setRefreshCookie(response, session.refreshToken, session.rememberMe);
 
     return {
       accessToken: session.accessToken,
       user: session.user,
+      emailVerificationPreviewUrl: session.emailVerificationPreviewUrl,
     };
   }
 
@@ -93,11 +96,12 @@ export class AuthController {
       this.getRequestMetadata(request),
     );
 
-    this.setRefreshCookie(response, session.refreshToken);
+    this.setRefreshCookie(response, session.refreshToken, session.rememberMe);
 
     return {
       accessToken: session.accessToken,
       user: session.user,
+      emailVerificationPreviewUrl: session.emailVerificationPreviewUrl,
     };
   }
 
@@ -137,13 +141,43 @@ export class AuthController {
     return safeUser;
   }
 
-  private setRefreshCookie(response: Response, refreshToken: string) {
+  @UseGuards(AccessTokenGuard, RateLimitGuard)
+  @RateLimit({
+    key: "auth-verify-email-request",
+    limit: 5,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
+  @HttpCode(200)
+  @Post("verify-email/request")
+  async requestEmailVerification(@CurrentUser() user: JwtPayload) {
+    return this.authService.requestEmailVerification(user.sub);
+  }
+
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "auth-verify-email-confirm",
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+    scope: "ip",
+  })
+  @HttpCode(200)
+  @Post("verify-email/confirm")
+  async confirmEmailVerification(@Body() dto: ConfirmEmailDto) {
+    return this.authService.confirmEmailVerification(dto.token);
+  }
+
+  private setRefreshCookie(
+    response: Response,
+    refreshToken: string,
+    rememberMe: boolean,
+  ) {
     response.cookie(REFRESH_COOKIE, refreshToken, {
       httpOnly: true,
       sameSite: "lax",
       secure: false,
       path: "/",
-      maxAge: this.getRefreshMaxAgeMs(),
+      ...(rememberMe ? { maxAge: this.getRefreshMaxAgeMs() } : {}),
     });
   }
 

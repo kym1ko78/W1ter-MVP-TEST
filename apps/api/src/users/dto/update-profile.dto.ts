@@ -1,4 +1,4 @@
-import { IsOptional, IsString, MaxLength, MinLength, IsUrl } from "class-validator";
+import { IsOptional, IsString, MaxLength, MinLength } from "class-validator";
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -6,9 +6,4 @@ export class UpdateProfileDto {
   @MinLength(2)
   @MaxLength(50)
   displayName?: string;
-
-  @IsOptional()
-  @IsUrl()
-  avatarUrl?: string;
 }
-

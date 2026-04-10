@@ -2,7 +2,16 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { readJson, useAuth } from "../lib/auth-context";
 import {
   appendMessageUnique,
@@ -21,6 +30,7 @@ import {
 } from "../lib/utils";
 import type { ChatAttachment, ChatListItem, ChatMessage, MessagePage } from "../types/api";
 import { ConfirmDialog } from "./confirm-dialog";
+import { UserAvatar } from "./user-avatar";
 
 const MESSAGE_MAX_LENGTH = 4000;
 const COMPOSER_MIN_HEIGHT = 56;
@@ -32,6 +42,10 @@ const ATTACHMENT_ACCEPT = [
   "image/webp",
   "application/pdf",
   "text/plain",
+  "audio/webm",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/mpeg",
 ].join(",");
 const ATTACHMENT_ALLOWED_TYPES = new Set([
   "image/png",
@@ -39,12 +53,21 @@ const ATTACHMENT_ALLOWED_TYPES = new Set([
   "image/webp",
   "application/pdf",
   "text/plain",
+  "audio/webm",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/mpeg",
 ]);
+const VOICE_RECORDER_MIME_TYPE = "audio/webm";
+const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
+const SCROLL_BOTTOM_THRESHOLD = 180;
 
 type ComposerPayload = {
   body: string;
   file: File | null;
 };
+
+type RecordingState = "idle" | "recording" | "stopping";
 
 type ConversationRenderItem =
   | {
@@ -65,11 +88,19 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [confirmingMessage, setConfirmingMessage] = useState<ChatMessage | null>(null);
+  const [recordingState, setRecordingState] = useState<RecordingState>("idle");
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const messageListEndRef = useRef<HTMLDivElement | null>(null);
   const shouldScrollAfterSendRef = useRef(false);
+  const shouldStickToBottomRef = useRef(true);
+  const lastMessageIdRef = useRef<string | null>(null);
+  const hasInitialScrollRef = useRef(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recordedChunksRef = useRef<BlobPart[]>([]);
 
   const chatQuery = useQuery({
     queryKey: ["chat", chatId],
@@ -118,6 +149,40 @@ export function ConversationView({ chatId }: { chatId: string }) {
     return items;
   }, [messageItems]);
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const listElement = messageListRef.current;
+
+    if (!listElement) {
+      return;
+    }
+
+    const runScroll = () => {
+      listElement.scrollTo({
+        top: listElement.scrollHeight,
+        behavior,
+      });
+    };
+
+    window.requestAnimationFrame(() => {
+      runScroll();
+      window.requestAnimationFrame(runScroll);
+    });
+  }, []);
+
+  const updateStickToBottomState = useCallback(() => {
+    const listElement = messageListRef.current;
+
+    if (!listElement) {
+      shouldStickToBottomRef.current = true;
+      return;
+    }
+
+    const distanceToBottom =
+      listElement.scrollHeight - listElement.scrollTop - listElement.clientHeight;
+
+    shouldStickToBottomRef.current = distanceToBottom <= SCROLL_BOTTOM_THRESHOLD;
+  }, []);
+
   const sendMessageMutation = useMutation({
     mutationFn: async ({ body, file }: ComposerPayload) => {
       if (file) {
@@ -158,6 +223,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+      scrollToBottom("smooth");
     },
     onError: (error) => {
       setComposerError(
@@ -221,27 +287,32 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, [authorizedFetch, chatId, messageItems, user?.id]);
 
   useEffect(() => {
-    if (!shouldScrollAfterSendRef.current || messageItems.length === 0) {
+    const lastMessage = messageItems[messageItems.length - 1] ?? null;
+
+    if (!lastMessage) {
+      lastMessageIdRef.current = null;
+      hasInitialScrollRef.current = false;
       return;
     }
 
-    const scrollToBottom = () => {
-      const endElement = messageListEndRef.current;
-      const listElement = messageListRef.current;
+    const isInitialRender = !hasInitialScrollRef.current;
+    const isNewLastMessage = lastMessage.id !== lastMessageIdRef.current;
+    const isOwnMessage = lastMessage.senderId === user?.id;
+    const shouldScroll =
+      isInitialRender ||
+      shouldScrollAfterSendRef.current ||
+      isOwnMessage ||
+      shouldStickToBottomRef.current;
 
-      if (endElement) {
-        endElement.scrollIntoView({ block: "end", behavior: "smooth" });
-      } else if (listElement) {
-        listElement.scrollTo({ top: listElement.scrollHeight, behavior: "smooth" });
-      }
+    lastMessageIdRef.current = lastMessage.id;
+    hasInitialScrollRef.current = true;
 
-      shouldScrollAfterSendRef.current = false;
-    };
+    if (isNewLastMessage && shouldScroll) {
+      scrollToBottom(isInitialRender ? "auto" : "smooth");
+    }
 
-    const frameId = window.requestAnimationFrame(scrollToBottom);
-
-    return () => window.cancelAnimationFrame(frameId);
-  }, [messageItems]);
+    shouldScrollAfterSendRef.current = false;
+  }, [messageItems, scrollToBottom, user?.id]);
 
   const otherUser = useMemo(
     () => chatQuery.data?.members.find((member) => member.id !== user?.id) ?? null,
@@ -249,6 +320,156 @@ export function ConversationView({ chatId }: { chatId: string }) {
   );
   const hasComposerContent = Boolean(draft.trim() || pendingFile);
   const showSendButton = hasComposerContent || sendMessageMutation.isPending;
+  const showVoiceButton =
+    !hasComposerContent && !sendMessageMutation.isPending && recordingState === "idle";
+
+  const stopMediaStream = useCallback(() => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+  }, []);
+
+  const startVoiceRecording = useCallback(async () => {
+    if (recordingState !== "idle" || sendMessageMutation.isPending) {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setComposerError("Запись голосовых сообщений не поддерживается в этом браузере.");
+      return;
+    }
+
+    try {
+      setComposerError(null);
+      setPendingFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      recordedChunksRef.current = [];
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const preferredMimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported(VOICE_RECORDER_MIME_TYPE)
+          ? VOICE_RECORDER_MIME_TYPE
+          : "";
+      const recorder = new MediaRecorder(
+        stream,
+        preferredMimeType ? { mimeType: preferredMimeType } : undefined,
+      );
+
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      setRecordingSeconds(0);
+      setRecordingState("recording");
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        stopMediaStream();
+        mediaRecorderRef.current = null;
+        recordedChunksRef.current = [];
+        setRecordingState("idle");
+        setRecordingSeconds(0);
+        setComposerError("Не удалось записать голосовое сообщение.");
+      };
+
+      recorder.start();
+    } catch (error) {
+      stopMediaStream();
+      mediaRecorderRef.current = null;
+      recordedChunksRef.current = [];
+      setRecordingState("idle");
+      setRecordingSeconds(0);
+      setComposerError(
+        error instanceof DOMException && error.name === "NotAllowedError"
+          ? "Разрешите доступ к микрофону, чтобы записывать голосовые."
+          : "Не удалось получить доступ к микрофону.",
+      );
+    }
+  }, [recordingState, sendMessageMutation.isPending, stopMediaStream]);
+
+  const finishVoiceRecording = useCallback(
+    (shouldSend: boolean) => {
+      const recorder = mediaRecorderRef.current;
+
+      if (!recorder || recorder.state === "inactive") {
+        stopMediaStream();
+        mediaRecorderRef.current = null;
+        recordedChunksRef.current = [];
+        setRecordingState("idle");
+        setRecordingSeconds(0);
+        return;
+      }
+
+      setRecordingState("stopping");
+
+      recorder.onstop = () => {
+        const mimeType = recorder.mimeType || VOICE_RECORDER_MIME_TYPE;
+        const normalizedMimeType = mimeType.includes("audio/ogg")
+          ? "audio/ogg"
+          : mimeType.includes("audio/webm")
+            ? VOICE_RECORDER_MIME_TYPE
+            : mimeType;
+        const chunks = recordedChunksRef.current;
+
+        stopMediaStream();
+        mediaRecorderRef.current = null;
+        recordedChunksRef.current = [];
+        setRecordingState("idle");
+        setRecordingSeconds(0);
+
+        if (!shouldSend) {
+          return;
+        }
+
+        const blob = new Blob(chunks, { type: normalizedMimeType });
+
+        if (blob.size <= 0) {
+          setComposerError("Голосовое сообщение получилось пустым. Попробуйте ещё раз.");
+          return;
+        }
+
+        const voiceFile = new File([blob], VOICE_RECORDING_FILE_NAME, {
+          type: normalizedMimeType,
+        });
+
+        shouldScrollAfterSendRef.current = true;
+        sendMessageMutation.mutate({ body: "", file: voiceFile });
+      };
+
+      recorder.stop();
+    },
+    [sendMessageMutation, stopMediaStream],
+  );
+
+  useEffect(() => {
+    if (recordingState !== "recording") {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setRecordingSeconds((seconds) => seconds + 1);
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [recordingState]);
+
+  useEffect(
+    () => () => {
+      const recorder = mediaRecorderRef.current;
+
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+
+      stopMediaStream();
+    },
+    [stopMediaStream],
+  );
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0] ?? null;
@@ -259,7 +480,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     if (!ATTACHMENT_ALLOWED_TYPES.has(selectedFile.type)) {
-      setComposerError("Поддерживаются только PNG, JPEG, WEBP, PDF и TXT файлы.");
+      setComposerError("Поддерживаются PNG, JPEG, WEBP, PDF, TXT и аудио WEBM/OGG/MP4/MP3.");
       event.target.value = "";
       return;
     }
@@ -283,7 +504,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   const submitComposer = () => {
     const body = draft.trim();
-    if ((!body && !pendingFile) || sendMessageMutation.isPending) {
+    if ((!body && !pendingFile) || sendMessageMutation.isPending || recordingState !== "idle") {
       return;
     }
 
@@ -366,11 +587,19 @@ export function ConversationView({ chatId }: { chatId: string }) {
     >
       <header className="relative z-10 flex flex-none items-center justify-between gap-4 border-b border-black/8 px-5 py-4 sm:px-6 sm:py-5">
         <div className="flex min-w-0 items-center gap-4">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[16px] bg-[#111111] text-sm font-semibold text-white">
-            {getInitials(getChatTitle(chatQuery.data.members, user?.id))}
-          </div>
+          <UserAvatar
+            user={
+              otherUser ?? {
+                displayName: getChatTitle(chatQuery.data.members, user?.id),
+                email: getChatTitle(chatQuery.data.members, user?.id),
+                avatarUrl: null,
+              }
+            }
+            accessToken={accessToken}
+            className="h-12 w-12 shrink-0 rounded-[16px]"
+            fallbackClassName="text-sm"
+          />
           <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-[0.22em] text-stone-400">Direct chat</p>
             <h2
               className="truncate text-lg font-semibold tracking-tight text-[#171717]"
               data-testid="conversation-title"
@@ -384,13 +613,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
             </p>
           </div>
         </div>
-        <div className="shrink-0 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-500">
-          {chatQuery.data.unreadCount > 0 ? `Unread ${chatQuery.data.unreadCount}` : "Direct"}
-        </div>
+        {chatQuery.data.unreadCount > 0 ? (
+          <div className="shrink-0 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-500">
+            {chatQuery.data.unreadCount}
+          </div>
+        ) : null}
       </header>
 
       <div
         ref={messageListRef}
+        onScroll={updateStickToBottomState}
         className="scroll-region-y relative z-10 flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
         data-testid="message-list"
       >
@@ -414,6 +646,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           const normalizedBody = message.body?.trim() ?? "";
           const hasText = Boolean(normalizedBody);
           const hasAttachments = message.attachments.length > 0;
+          const attachmentOnlyBubble = hasAttachments && !hasText;
           const inlineMetaBubble = hasText && !hasAttachments;
           const compactBubble = inlineMetaBubble;
           const shortTextOnlyBubble =
@@ -450,6 +683,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       ? "rounded-[13px] px-2.5 py-0.5"
                       : compactBubble
                         ? "rounded-[17px] px-2.5 py-1"
+                        : attachmentOnlyBubble
+                          ? "rounded-[20px] px-3 py-[2px]"
                         : "rounded-[22px] px-4 py-2.5",
                     isMine
                       ? "bg-[#111111] text-white"
@@ -489,7 +724,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
                   {!inlineMetaBubble ? (
                     <p
                       className={clsx(
-                        hasText ? "mt-1 text-right text-[11px] leading-none" : "mt-1.5 text-right text-[11px] leading-none",
+                        hasText
+                          ? "mt-1 text-right text-[11px] leading-none"
+                          : attachmentOnlyBubble
+                            ? "mt-0 text-right text-[11px] leading-none"
+                            : "mt-1.5 text-right text-[11px] leading-none",
                         isMine ? "text-white/62" : "text-stone-400",
                       )}
                     >
@@ -542,11 +781,52 @@ export function ConversationView({ chatId }: { chatId: string }) {
           </div>
         ) : null}
 
+        {recordingState !== "idle" ? (
+          <div
+            className="mb-3 flex flex-col gap-3 rounded-[22px] border border-black/8 bg-white px-4 py-3 shadow-[0_14px_26px_rgba(17,24,39,0.05)] sm:flex-row sm:items-center sm:justify-between"
+            data-testid="voice-recorder-panel"
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#111111] text-white">
+                <span className="absolute h-full w-full animate-ping rounded-full bg-black/20" />
+                <MicIcon className="relative h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-[#171717]">
+                  {recordingState === "stopping" ? "Готовим голосовое..." : "Идёт запись"}
+                </p>
+                <p className="text-xs text-stone-500">
+                  {formatRecordingDuration(recordingSeconds)} · как в Telegram, можно отменить или отправить
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <button
+                type="button"
+                onClick={() => finishVoiceRecording(false)}
+                disabled={recordingState === "stopping"}
+                className="rounded-full border border-black/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={() => finishVoiceRecording(true)}
+                disabled={recordingState === "stopping"}
+                className="rounded-full bg-[#111111] px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Отправить
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         <div className="flex items-center gap-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-2 rounded-[27px] border border-black/8 bg-white pl-2 pr-3 py-1.5 shadow-[0_14px_24px_rgba(17,24,39,0.045)]">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
+              disabled={recordingState !== "idle"}
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-black/10 bg-[#f7f7f5] text-stone-500 transition hover:border-black/25 hover:bg-white hover:text-black"
               data-testid="attachment-picker-button"
               aria-label="Прикрепить файл"
@@ -569,8 +849,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 maxLength={MESSAGE_MAX_LENGTH}
+                disabled={recordingState !== "idle"}
                 placeholder="Сообщение..."
-                className="h-[44px] min-h-[44px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 py-[9px] leading-[26px] text-[#171717] outline-none transition placeholder:text-stone-400"
+                className="h-[44px] min-h-[44px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 py-[9px] leading-[26px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
               />
 
               <div className="mt-0 flex justify-end px-1 pb-0">
@@ -601,6 +882,25 @@ export function ConversationView({ chatId }: { chatId: string }) {
               ) : (
                 <SendIcon className="h-5 w-5" />
               )}
+            </button>
+          </div>
+
+          <div
+            className={clsx(
+              "self-center overflow-hidden transition-all duration-200 ease-out",
+              showVoiceButton ? "w-12 opacity-100" : "pointer-events-none w-0 opacity-0",
+            )}
+          >
+            <button
+              data-testid="voice-message-button"
+              type="button"
+              onClick={startVoiceRecording}
+              tabIndex={showVoiceButton ? 0 : -1}
+              aria-label="Записать голосовое сообщение"
+              title="Записать голосовое сообщение"
+              className="flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-[#111111] transition hover:translate-y-[-1px] hover:border-black/25 hover:bg-[#111111] hover:text-white"
+            >
+              <MicIcon className="h-5 w-5" />
             </button>
           </div>
         </div>
@@ -636,9 +936,10 @@ function MessageAttachments({
   isMine: boolean;
 }) {
   return (
-    <div className={clsx("space-y-2", attachments.length > 0 && "mt-3")}>
+    <div className={clsx("space-y-2", attachments.length > 0 && "mt-1")}>
       {attachments.map((attachment) => {
         const downloadUrl = buildAttachmentUrl(attachment.downloadPath, accessToken);
+        const isAudio = attachment.mimeType.startsWith("audio/");
 
         if (attachment.isImage) {
           return (
@@ -666,6 +967,17 @@ function MessageAttachments({
                 <span className="shrink-0">{formatFileSize(attachment.sizeBytes)}</span>
               </div>
             </a>
+          );
+        }
+
+        if (isAudio) {
+          return (
+            <VoiceMessageAttachment
+              key={attachment.id}
+              attachment={attachment}
+              downloadUrl={downloadUrl}
+              isMine={isMine}
+            />
           );
         }
 
@@ -697,6 +1009,183 @@ function MessageAttachments({
   );
 }
 
+function VoiceMessageAttachment({
+  attachment,
+  downloadUrl,
+  isMine,
+}: {
+  attachment: ChatAttachment;
+  downloadUrl: string;
+  isMine: boolean;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [durationSeconds, setDurationSeconds] = useState(0);
+  const [currentSeconds, setCurrentSeconds] = useState(0);
+  const [showTranscript, setShowTranscript] = useState(false);
+  const progress = durationSeconds > 0 ? Math.min(currentSeconds / durationSeconds, 1) : 0;
+  const waveform = useMemo(() => buildWaveformVariant(attachment.id, 34), [attachment.id]);
+  const pseudoTranscript = useMemo(
+    () => buildPseudoTranscript(attachment.id, durationSeconds || currentSeconds, attachment.sizeBytes),
+    [attachment.id, attachment.sizeBytes, currentSeconds, durationSeconds],
+  );
+
+  const togglePlayback = async () => {
+    const audio = audioRef.current;
+
+    if (!audio) {
+      return;
+    }
+
+    if (audio.paused) {
+      await audio.play().catch(() => undefined);
+      return;
+    }
+
+    audio.pause();
+  };
+
+  useEffect(() => {
+    if (!isPlaying) {
+      return;
+    }
+
+    let frameId = 0;
+    const updateProgress = () => {
+      const audio = audioRef.current;
+
+      if (!audio) {
+        return;
+      }
+
+      setCurrentSeconds(audio.currentTime);
+      frameId = window.requestAnimationFrame(updateProgress);
+    };
+
+    frameId = window.requestAnimationFrame(updateProgress);
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [isPlaying]);
+
+  return (
+    <div
+      className={clsx(
+        "w-[min(290px,52vw)] max-w-full",
+        isMine ? "text-white" : "text-[#171717]",
+      )}
+      data-testid="message-voice"
+    >
+      <audio
+        ref={audioRef}
+        preload="metadata"
+        src={downloadUrl}
+        className="hidden"
+        onLoadedMetadata={(event) => {
+          const duration = event.currentTarget.duration;
+          setDurationSeconds(Number.isFinite(duration) ? duration : 0);
+        }}
+        onTimeUpdate={(event) => {
+          setCurrentSeconds(event.currentTarget.currentTime);
+        }}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onEnded={() => {
+          setIsPlaying(false);
+          setCurrentSeconds(0);
+        }}
+      >
+        <a href={downloadUrl} target="_blank" rel="noreferrer">
+          Открыть голосовое сообщение
+        </a>
+      </audio>
+
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={togglePlayback}
+          className={clsx(
+            "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition hover:scale-[1.03]",
+            isMine ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
+          )}
+          aria-label={isPlaying ? "Пауза" : "Воспроизвести голосовое сообщение"}
+        >
+          {isPlaying ? <PauseIcon className="h-3.5 w-3.5" /> : <PlayIcon className="h-3.5 w-3.5 -ml-[1px]" />}
+        </button>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <div
+              className="grid h-3.5 min-w-0 flex-1 items-center gap-[2px]"
+              style={{ gridTemplateColumns: `repeat(${waveform.length}, minmax(0, 1fr))` }}
+              aria-hidden="true"
+            >
+              {waveform.map((height, index) => {
+                const barProgress = (index + 1) / waveform.length;
+                const isActive = barProgress <= progress;
+
+                return (
+                  <span
+                    key={`${height}-${index}`}
+                    className={clsx(
+                      "w-full rounded-full transition-colors",
+                      isMine
+                        ? isActive
+                          ? "bg-white"
+                          : "bg-white/35"
+                        : isActive
+                          ? "bg-[#111111]"
+                          : "bg-black/22",
+                    )}
+                    style={{ height: `${height}px` }}
+                  />
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowTranscript((prev) => !prev)}
+              className={clsx(
+                "flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border text-[12px] font-semibold transition",
+                isMine
+                  ? "border-white/30 bg-white/10 text-white hover:bg-white/20"
+                  : "border-black/15 bg-white text-[#111111] hover:border-black/30",
+              )}
+              data-testid="voice-transcript-button"
+              title="Псевдо-расшифровка"
+              aria-label="Псевдо-расшифровка"
+            >
+              A
+            </button>
+          </div>
+          <div className="mt-0.5 flex items-center gap-1.5 text-xs font-medium">
+            <span className={clsx(isMine ? "text-white/78" : "text-stone-500")}>
+              {formatRecordingDuration(durationSeconds || currentSeconds)}
+            </span>
+            <span className={clsx("h-1 w-1 rounded-full", isMine ? "bg-white/55" : "bg-black/30")} />
+            <span className={clsx(isMine ? "text-white/78" : "text-stone-500")}>
+              {formatFileSize(attachment.sizeBytes)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {showTranscript ? (
+        <div
+          className={clsx(
+            "mt-2 rounded-[12px] border px-2.5 py-2 text-[12px] leading-5",
+            isMine
+              ? "border-white/22 bg-white/10 text-white/90"
+              : "border-black/10 bg-white/75 text-stone-700",
+          )}
+          data-testid="voice-transcript-content"
+        >
+          {pseudoTranscript}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ConversationSkeleton() {
   return (
     <div className="chat-shell-panel flex h-full min-h-0 animate-pulse flex-col overflow-hidden rounded-none border-0 p-5">
@@ -711,13 +1200,52 @@ function ConversationSkeleton() {
   );
 }
 
-function getInitials(value: string) {
-  return value
-    .split(/[\s@._-]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("") || "W";
+function formatRecordingDuration(seconds: number) {
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+  const minutes = Math.floor(safeSeconds / 60);
+  const restSeconds = safeSeconds % 60;
+
+  return `${minutes}:${String(restSeconds).padStart(2, "0")}`;
+}
+
+function buildWaveformVariant(seed: string, bars: number) {
+  const normalizedBars = Math.max(24, bars);
+  let hash = 0;
+
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+
+  const heights: number[] = [];
+  for (let index = 0; index < normalizedBars; index += 1) {
+    hash = (hash * 1664525 + 1013904223) >>> 0;
+    const normalized = hash / 0xffffffff;
+    const gaussianEnvelope = Math.exp(-Math.pow((index - normalizedBars * 0.34) / 7.2, 2));
+    const baseHeight = 2 + Math.round(normalized * 7);
+    const peakBoost = Math.round(gaussianEnvelope * 6);
+
+    heights.push(Math.max(2, Math.min(12, baseHeight + peakBoost)));
+  }
+
+  return heights;
+}
+
+function buildPseudoTranscript(seed: string, durationSeconds: number, sizeBytes: number) {
+  const variants = [
+    "Псевдо-расшифровка: короткая реплика про текущую задачу и следующий шаг.",
+    "Псевдо-расшифровка: подтверждение, что всё ок, продолжаем в том же потоке.",
+    "Псевдо-расшифровка: уточнение по дизайну и просьба сделать компактнее.",
+    "Псевдо-расшифровка: голосовое с быстрым фидбеком по интерфейсу.",
+    "Псевдо-расшифровка: обсуждение деталей перед финальным коммитом.",
+  ];
+  let hash = 0;
+
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 33 + seed.charCodeAt(index)) >>> 0;
+  }
+
+  const variant = variants[hash % variants.length];
+  return `${variant} (${formatRecordingDuration(durationSeconds)} · ${formatFileSize(sizeBytes)})`;
 }
 
 function PaperclipIcon({ className }: { className?: string }) {
@@ -733,6 +1261,51 @@ function PaperclipIcon({ className }: { className?: string }) {
       aria-hidden="true"
     >
       <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
+function MicIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <path d="M12 19v3" />
+    </svg>
+  );
+}
+
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M8 5.75c0-1.2 1.32-1.94 2.35-1.32l10.02 6.01c1 .6 1 2.05 0 2.65L10.35 19.1C9.32 19.72 8 18.98 8 17.78V5.75Z" />
+    </svg>
+  );
+}
+
+function PauseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M8.4 5.25A1.4 1.4 0 0 0 7 6.65v10.7a1.4 1.4 0 0 0 2.8 0V6.65a1.4 1.4 0 0 0-1.4-1.4Zm7.2 0a1.4 1.4 0 0 0-1.4 1.4v10.7a1.4 1.4 0 0 0 2.8 0V6.65a1.4 1.4 0 0 0-1.4-1.4Z" />
     </svg>
   );
 }

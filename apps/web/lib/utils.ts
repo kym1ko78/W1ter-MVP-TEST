@@ -111,7 +111,7 @@ export function getLastMessagePreviewText(
         body: string | null;
         deletedAt?: string | null;
         isDeleted?: boolean;
-        attachments?: Array<{ originalName: string }>;
+        attachments?: Array<{ originalName: string; mimeType?: string | null }>;
       }
     | null
     | undefined,
@@ -130,8 +130,23 @@ export function getLastMessagePreviewText(
 
   const firstAttachment = message.attachments?.[0];
   if (firstAttachment) {
+    if (firstAttachment.mimeType?.startsWith("audio/")) {
+      return "Голосовое сообщение";
+    }
+
     return `Вложение: ${firstAttachment.originalName}`;
   }
 
   return "Сообщений пока нет";
+}
+
+export function getInitials(value: string) {
+  return (
+    value
+      .split(/[\s@._-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "W"
+  );
 }

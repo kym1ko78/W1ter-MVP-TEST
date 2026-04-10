@@ -28,6 +28,7 @@ import {
   getLastMessagePreviewText,
 } from "../lib/utils";
 import type { ChatListItem, ChatMessage, MessagePage, SafeUser } from "../types/api";
+import { UserAvatar } from "./user-avatar";
 
 const CHAT_PAGE_LOCK_CLASS = "chat-page-locked";
 
@@ -250,18 +251,28 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
           data-testid="chat-sidebar"
         >
           <div className="relative z-10 mb-5 flex items-start justify-between gap-4">
-            <div className="flex min-w-0 items-start gap-3">
-              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[18px] bg-[#111111] text-base font-semibold text-white">
-                {getInitials(user?.displayName ?? user?.email ?? "User")}
-              </div>
+            <Link
+              href="/profile"
+              data-testid="profile-link"
+              className="flex min-w-0 items-start gap-3 rounded-[24px] border border-transparent pr-2 transition hover:border-black/8 hover:bg-black/[0.02]"
+            >
+              <UserAvatar
+                user={user}
+                accessToken={accessToken}
+                className="h-14 w-14 shrink-0 rounded-[18px]"
+                fallbackClassName="text-base"
+              />
               <div className="min-w-0">
                 <p className="text-[11px] uppercase tracking-[0.28em] text-stone-400">Messenger</p>
                 <h1 className="mt-2 truncate text-[1.75rem] font-semibold leading-none tracking-tight text-[#171717]">
                   {user?.displayName}
                 </h1>
                 <p className="mt-2 truncate text-sm text-stone-500">{user?.email}</p>
+                <p className="mt-2 text-[11px] uppercase tracking-[0.2em] text-stone-400">
+                  Открыть профиль
+                </p>
               </div>
-            </div>
+            </Link>
             <button
               data-testid="logout-button"
               type="button"
@@ -304,9 +315,12 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                         className="flex w-full items-center justify-between gap-3 rounded-[18px] border border-transparent px-3 py-3 text-left transition hover:border-black/8 hover:bg-[#f7f7f5]"
                       >
                         <div className="flex min-w-0 items-center gap-3">
-                          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] bg-[#111111] text-sm font-semibold text-white">
-                            {getInitials(foundUser.displayName)}
-                          </div>
+                          <UserAvatar
+                            user={foundUser}
+                            accessToken={accessToken}
+                            className="h-11 w-11 shrink-0 rounded-[14px]"
+                            fallbackClassName="text-sm"
+                          />
                           <div className="min-w-0">
                             <p className="truncate text-sm font-semibold text-[#171717]">
                               {foundUser.displayName}
@@ -364,14 +378,15 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                       )}
                     >
                       <div className="flex items-start gap-3">
-                        <div
-                          className={clsx(
-                            "flex h-12 w-12 shrink-0 items-center justify-center rounded-[16px] text-sm font-semibold",
+                        <UserAvatar
+                          user={partner ?? { displayName: title, email: title, avatarUrl: null }}
+                          accessToken={accessToken}
+                          className="h-12 w-12 shrink-0 rounded-[16px]"
+                          fallbackClassName={clsx(
+                            "text-sm",
                             isActive ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
                           )}
-                        >
-                          {getInitials(title)}
-                        </div>
+                        />
 
                         <div className="min-w-0 flex-1">
                           <div className="flex items-start justify-between gap-3">
@@ -493,15 +508,3 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 function SidebarSkeleton() {
   return <div className="h-24 animate-pulse rounded-[24px] border border-black/6 bg-white/80" />;
 }
-
-function getInitials(value: string) {
-  return value
-    .split(/[\s@._-]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("") || "W";
-}
-
-
-

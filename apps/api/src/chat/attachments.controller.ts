@@ -28,7 +28,8 @@ export class AttachmentsController {
       attachmentId,
       user.sub,
     );
-    const disposition = attachment.mimeType.startsWith("image/")
+    const disposition =
+      attachment.mimeType.startsWith("image/") || attachment.mimeType.startsWith("audio/")
       ? "inline"
       : "attachment";
     const fileName = attachment.originalName.replace(/[\r\n\"]/g, "_");

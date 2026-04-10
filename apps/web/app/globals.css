@@ -146,6 +146,44 @@ textarea {
     linear-gradient(180deg, #f5f5f1 0%, #efefea 100%);
 }
 
+.profile-scene {
+  background:
+    radial-gradient(circle at 12% 14%, rgba(255, 255, 255, 0.95), transparent 18%),
+    radial-gradient(circle at 84% 18%, rgba(0, 0, 0, 0.04), transparent 18%),
+    linear-gradient(180deg, #f5f5f1 0%, #ecece7 100%);
+}
+
+.profile-panel {
+  position: relative;
+  border: 1px solid rgba(17, 17, 17, 0.08);
+  background:
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.72), transparent 24%),
+    rgba(255, 255, 255, 0.88);
+  box-shadow: 0 24px 70px rgba(18, 22, 32, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.profile-orbit {
+  position: absolute;
+  border-radius: 999px;
+  border: 18px solid rgba(17, 17, 17, 0.82);
+  opacity: 0.95;
+}
+
+.profile-orbit-top {
+  right: -54px;
+  top: 92px;
+  height: 146px;
+  width: 146px;
+}
+
+.profile-orbit-bottom {
+  bottom: -56px;
+  left: -48px;
+  height: 148px;
+  width: 148px;
+}
+
 .chat-shell-panel {
   position: relative;
   border: 1px solid var(--chat-line);
@@ -223,32 +261,29 @@ body.chat-page-locked {
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
-  scrollbar-gutter: stable;
-  scrollbar-width: auto;
-  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .scroll-region-y::-webkit-scrollbar {
-  width: var(--scrollbar-size);
-  height: var(--scrollbar-size);
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .scroll-region-y::-webkit-scrollbar-track {
-  border-radius: 999px;
-  background-color: var(--scrollbar-track);
+  display: none;
+  background: transparent;
 }
 
 .scroll-region-y::-webkit-scrollbar-thumb {
-  border: 2px solid var(--scrollbar-track);
-  border-radius: 999px;
-  background-color: var(--scrollbar-thumb);
-  background-clip: padding-box;
-  min-height: 36px;
+  display: none;
+  background: transparent;
 }
 
 .scroll-region-y::-webkit-scrollbar-thumb:hover {
-  background-color: var(--scrollbar-thumb-hover);
-  background-clip: padding-box;
+  display: none;
+  background: transparent;
 }
 
 .scroll-region-y::-webkit-scrollbar-button,
@@ -272,6 +307,3 @@ body.chat-page-locked {
   height: 0;
   background: transparent;
 }
-
-
-
