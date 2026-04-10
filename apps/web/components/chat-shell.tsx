@@ -45,6 +45,13 @@ type DeleteChatResponse = {
   chatId: string;
 };
 
+type LeaveGroupResponse = {
+  success: boolean;
+  chatId: string;
+};
+
+type ChatActionMode = "delete" | "leave";
+
 type GlobalMessageSearchResult = {
   chatId: string;
   messageId: string;
@@ -71,11 +78,21 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const socketRef = useRef<Socket | null>(null);
   const { accessToken, authorizedFetch, isAuthenticated, isLoading, logout, user } = useAuth();
   const [search, setSearch] = useState("");
+  const [groupTitleDraft, setGroupTitleDraft] = useState("");
+  const [groupSearch, setGroupSearch] = useState("");
+  const [selectedGroupMembers, setSelectedGroupMembers] = useState<SafeUser[]>([]);
+  const [groupCreateError, setGroupCreateError] = useState<string | null>(null);
   const [globalSearch, setGlobalSearch] = useState("");
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
-  const [confirmingChatId, setConfirmingChatId] = useState<string | null>(null);
+  const [confirmingChatAction, setConfirmingChatAction] = useState<{
+    chatId: string;
+    mode: ChatActionMode;
+  } | null>(null);
   const deferredSearch = useDeferredValue(search);
+  const deferredGroupSearch = useDeferredValue(groupSearch);
   const deferredGlobalSearch = useDeferredValue(globalSearch);
+  const normalizedGroupSearch = deferredGroupSearch.trim();
+  const normalizedGroupTitle = groupTitleDraft.trim();
   const normalizedGlobalSearch = deferredGlobalSearch.trim();
   const currentChatId = useMemo(() => {
     const segments = safePathname.split("/").filter(Boolean);
@@ -101,6 +118,15 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       ),
   });
 
+  const groupUserSearchQuery = useQuery({
+    queryKey: ["group-user-search", normalizedGroupSearch],
+    enabled: isAuthenticated && normalizedGroupSearch.length > 1,
+    queryFn: async () =>
+      readJson<SafeUser[]>(
+        await authorizedFetch(`/users/search?query=${encodeURIComponent(normalizedGroupSearch)}`),
+      ),
+  });
+
   const globalSearchQuery = useQuery({
     queryKey: [
       "global-search",
@@ -117,7 +143,10 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       );
 
       const chatMatches = chats.filter((chat) => {
-        const title = getChatTitle(chat.members, user?.id).toLocaleLowerCase();
+        const title = getChatTitle(chat.members, user?.id, {
+          type: chat.type,
+          title: chat.title,
+        }).toLocaleLowerCase();
         const lastMessage = getLastMessagePreviewText(chat.lastMessage).toLocaleLowerCase();
         const matchedByMember = chat.members.some(
           (member) =>
@@ -144,7 +173,10 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
             return;
           }
 
-          const chatTitle = getChatTitle(chat.members, user?.id);
+          const chatTitle = getChatTitle(chat.members, user?.id, {
+            type: chat.type,
+            title: chat.title,
+          });
 
           for (const message of page.items) {
             const body = message.body?.trim();
@@ -204,6 +236,37 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     },
   });
 
+  const createGroupChatMutation = useMutation({
+    mutationFn: async (payload: { title: string; memberIds: string[] }) =>
+      readJson<ChatListItem>(
+        await authorizedFetch("/chats/group", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        }),
+      ),
+    onMutate: () => {
+      setGroupCreateError(null);
+    },
+    onSuccess: async (chat) => {
+      await queryClient.invalidateQueries({ queryKey: ["chats"] });
+      setGroupTitleDraft("");
+      setGroupSearch("");
+      setSelectedGroupMembers([]);
+      setGroupCreateError(null);
+      startTransition(() => {
+        router.replace(`/chat/${chat.id}`);
+      });
+    },
+    onError: (error) => {
+      setGroupCreateError(
+        error instanceof Error ? error.message : "Не удалось создать группу. Попробуйте снова.",
+      );
+    },
+  });
+
   const deleteChatMutation = useMutation({
     mutationFn: async (chatId: string) =>
       readJson<DeleteChatResponse>(
@@ -228,7 +291,35 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     },
     onSettled: () => {
       setDeletingChatId(null);
-      setConfirmingChatId(null);
+      setConfirmingChatAction(null);
+    },
+  });
+
+  const leaveGroupMutation = useMutation({
+    mutationFn: async (chatId: string) =>
+      readJson<LeaveGroupResponse>(
+        await authorizedFetch(`/chats/${chatId}/leave`, {
+          method: "POST",
+        }),
+      ),
+    onMutate: (chatId) => {
+      setDeletingChatId(chatId);
+    },
+    onSuccess: ({ chatId }) => {
+      queryClient.removeQueries({ queryKey: ["chat", chatId] });
+      queryClient.removeQueries({ queryKey: ["messages", chatId] });
+      queryClient.setQueryData<ChatListItem[] | undefined>(["chats"], (old) =>
+        old?.filter((chat) => chat.id !== chatId),
+      );
+      if (currentChatId === chatId) {
+        startTransition(() => {
+          router.replace("/chat");
+        });
+      }
+    },
+    onSettled: () => {
+      setDeletingChatId(null);
+      setConfirmingChatAction(null);
     },
   });
 
@@ -330,16 +421,42 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     socketRef.current.emit("join_chat_room", { chatId: currentChatId });
   }, [currentChatId]);
 
-
-  const handleDeleteChat = (chatId: string) => {
-    if (deleteChatMutation.isPending) {
+  const handleChatDangerAction = (chat: ChatListItem) => {
+    if (deleteChatMutation.isPending || leaveGroupMutation.isPending) {
       return;
     }
 
-    setConfirmingChatId(chatId);
+    const mode: ChatActionMode =
+      chat.type === "group" && chat.currentUserRole !== "creator" ? "leave" : "delete";
+    setConfirmingChatAction({ chatId: chat.id, mode });
   };
 
-  const confirmingChat = chatsQuery.data?.find((chat) => chat.id === confirmingChatId) ?? null;
+  const confirmingChat =
+    chatsQuery.data?.find((chat) => chat.id === confirmingChatAction?.chatId) ?? null;
+  const selectedGroupMemberIds = useMemo(
+    () => selectedGroupMembers.map((member) => member.id),
+    [selectedGroupMembers],
+  );
+  const availableGroupUserResults = useMemo(
+    () =>
+      (groupUserSearchQuery.data ?? []).filter(
+        (foundUser) =>
+          foundUser.id !== user?.id && !selectedGroupMemberIds.includes(foundUser.id),
+      ),
+    [groupUserSearchQuery.data, selectedGroupMemberIds, user?.id],
+  );
+
+  const handleCreateGroup = () => {
+    if (!normalizedGroupTitle || createGroupChatMutation.isPending) {
+      return;
+    }
+
+    setGroupCreateError(null);
+    createGroupChatMutation.mutate({
+      title: normalizedGroupTitle,
+      memberIds: selectedGroupMemberIds,
+    });
+  };
 
   if (isLoading || !isAuthenticated) {
     return (
@@ -448,6 +565,100 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
               </div>
             ) : null}
 
+            <div className="rounded-[22px] border border-black/8 bg-white/90 p-3">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-stone-400">Новая группа</p>
+              <input
+                data-testid="group-title-input"
+                value={groupTitleDraft}
+                onChange={(event) => {
+                  setGroupTitleDraft(event.target.value);
+                  if (groupCreateError) {
+                    setGroupCreateError(null);
+                  }
+                }}
+                placeholder="Название группы"
+                maxLength={80}
+                className="mt-2 w-full rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+              />
+              <input
+                data-testid="group-members-search-input"
+                value={groupSearch}
+                onChange={(event) => setGroupSearch(event.target.value)}
+                placeholder="Добавить участников"
+                className="mt-2 w-full rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+              />
+
+              {selectedGroupMembers.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-1.5" data-testid="group-selected-members">
+                  {selectedGroupMembers.map((selectedUser) => (
+                    <button
+                      key={selectedUser.id}
+                      type="button"
+                      onClick={() =>
+                        setSelectedGroupMembers((current) =>
+                          current.filter((member) => member.id !== selectedUser.id),
+                        )
+                      }
+                      className="rounded-full border border-black/10 bg-white px-2.5 py-1 text-xs text-stone-600 transition hover:border-black/25 hover:text-black"
+                    >
+                      {selectedUser.displayName} ×
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              {normalizedGroupSearch.length > 1 ? (
+                <div
+                  className="scroll-region-y mt-2 max-h-40 overflow-y-auto rounded-[16px] border border-black/8 bg-[#fafaf9] p-1.5"
+                  data-testid="group-members-search-results"
+                >
+                  {groupUserSearchQuery.isLoading ? (
+                    <p className="px-2 py-3 text-xs text-stone-500">Ищем участников...</p>
+                  ) : availableGroupUserResults.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {availableGroupUserResults.map((foundUser) => (
+                        <button
+                          key={foundUser.id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedGroupMembers((current) => [...current, foundUser])
+                          }
+                          className="flex w-full items-center justify-between rounded-[12px] border border-transparent px-2 py-2 text-left transition hover:border-black/8 hover:bg-white"
+                        >
+                          <span className="truncate text-xs font-medium text-[#171717]">
+                            {foundUser.displayName}
+                          </span>
+                          <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-stone-500">
+                            Add
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="px-2 py-3 text-xs text-stone-500">Подходящих пользователей нет.</p>
+                  )}
+                </div>
+              ) : null}
+
+              {groupCreateError ? (
+                <p className="mt-2 text-xs text-stone-600">{groupCreateError}</p>
+              ) : (
+                <p className="mt-2 text-[11px] text-stone-500">
+                  Можно создать пустую группу и добавить участников позже.
+                </p>
+              )}
+
+              <button
+                type="button"
+                onClick={handleCreateGroup}
+                disabled={!normalizedGroupTitle || createGroupChatMutation.isPending}
+                data-testid="create-group-button"
+                className="mt-2 w-full rounded-full bg-[#111111] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                {createGroupChatMutation.isPending ? "Создаём..." : "Создать группу"}
+              </button>
+            </div>
+
             <label className="block pt-1">
               <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-stone-400">
                 Global search
@@ -485,7 +696,10 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                             Чаты
                           </p>
                           {globalSearchQuery.data.chats.map((chat) => {
-                            const title = getChatTitle(chat.members, user?.id);
+                            const title = getChatTitle(chat.members, user?.id, {
+                              type: chat.type,
+                              title: chat.title,
+                            });
                             const partner = chat.members.find((member) => member.id !== user?.id);
 
                             return (
@@ -496,7 +710,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                               >
                                 <p className="truncate font-semibold text-[#171717]">{title}</p>
                                 <p className="truncate text-xs text-stone-500">
-                                  {partner?.email ?? getLastMessagePreviewText(chat.lastMessage)}
+                                  {chat.type === "group"
+                                    ? `${chat.members.length} участников`
+                                    : partner?.email ?? getLastMessagePreviewText(chat.lastMessage)}
                                 </p>
                               </Link>
                             );
@@ -598,8 +814,14 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                 </>
               ) : chatsQuery.data?.length ? (
                 chatsQuery.data.map((chat) => {
-                  const title = getChatTitle(chat.members, user?.id);
+                  const title = getChatTitle(chat.members, user?.id, {
+                    type: chat.type,
+                    title: chat.title,
+                  });
                   const partner = chat.members.find((member) => member.id !== user?.id);
+                  const isGroup = chat.type === "group";
+                  const actionMode: ChatActionMode =
+                    isGroup && chat.currentUserRole !== "creator" ? "leave" : "delete";
                   const isActive = currentChatId === chat.id;
                   const isDeleting = deletingChatId === chat.id;
 
@@ -616,7 +838,11 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                     >
                       <div className="flex items-start gap-3">
                         <UserAvatar
-                          user={partner ?? { displayName: title, email: title, avatarUrl: null }}
+                          user={
+                            isGroup
+                              ? { displayName: title, email: title, avatarUrl: null }
+                              : partner ?? { displayName: title, email: title, avatarUrl: null }
+                          }
                           accessToken={accessToken}
                           className="h-12 w-12 shrink-0 rounded-[16px]"
                           fallbackClassName={clsx(
@@ -646,9 +872,11 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                   isActive ? "text-white/60" : "text-stone-500",
                                 )}
                               >
-                                {partner?.lastSeenAt
-                                  ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
-                                  : "Личный чат"}
+                                {isGroup
+                                  ? `${chat.members.length} участников`
+                                  : partner?.lastSeenAt
+                                    ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
+                                    : "Личный чат"}
                               </p>
                             </Link>
 
@@ -674,8 +902,8 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                               ) : null}
                               <button
                                 type="button"
-                                onClick={() => handleDeleteChat(chat.id)}
-                                disabled={deleteChatMutation.isPending}
+                                onClick={() => handleChatDangerAction(chat)}
+                                disabled={deleteChatMutation.isPending || leaveGroupMutation.isPending}
                                 data-testid="chat-list-delete-button"
                                 className={clsx(
                                   "mt-2 block rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] transition disabled:cursor-not-allowed disabled:opacity-60",
@@ -684,7 +912,13 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                     : "border-black/10 bg-white text-stone-500 hover:border-black/20 hover:text-black",
                                 )}
                               >
-                                {isDeleting ? "Удаление..." : "Удалить"}
+                                {isDeleting
+                                  ? actionMode === "leave"
+                                    ? "Выход..."
+                                    : "Удаление..."
+                                  : actionMode === "leave"
+                                    ? "Выйти"
+                                    : "Удалить"}
                               </button>
                             </div>
                           </div>
@@ -708,7 +942,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                   className="rounded-[26px] border border-dashed border-black/12 bg-white/80 px-4 py-6 text-sm leading-6 text-stone-600"
                   data-testid="chat-list-empty"
                 >
-                  Пока нет чатов. Найдите пользователя выше и создайте первый direct chat.
+                  Пока нет чатов. Найдите пользователя для direct-диалога или создайте первую группу.
                 </div>
               )}
             </div>
@@ -719,23 +953,43 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <ConfirmDialog
-        open={Boolean(confirmingChatId)}
-        title="Удалить этот чат?"
+        open={Boolean(confirmingChatAction)}
+        title={
+          confirmingChatAction?.mode === "leave"
+            ? "Выйти из группы?"
+            : confirmingChat?.type === "group"
+              ? "Удалить группу?"
+              : "Удалить этот чат?"
+        }
         description={
           confirmingChat
-            ? `Диалог с ${getChatTitle(confirmingChat.members, user?.id)} будет удален целиком.`
-            : "Диалог будет удален целиком."
+            ? confirmingChatAction?.mode === "leave"
+              ? `Вы выйдете из «${getChatTitle(confirmingChat.members, user?.id, { type: confirmingChat.type, title: confirmingChat.title })}» и потеряете доступ к сообщениям этой группы.`
+              : confirmingChat.type === "group"
+                ? `Группа «${getChatTitle(confirmingChat.members, user?.id, { type: confirmingChat.type, title: confirmingChat.title })}» будет удалена для всех участников.`
+                : `Диалог с ${getChatTitle(confirmingChat.members, user?.id, { type: confirmingChat.type, title: confirmingChat.title })} будет удален целиком.`
+            : confirmingChatAction?.mode === "leave"
+              ? "Вы выйдете из группы."
+              : "Диалог будет удален целиком."
         }
-        isLoading={deleteChatMutation.isPending}
+        confirmLabel={confirmingChatAction?.mode === "leave" ? "Выйти" : "Удалить"}
+        isLoading={deleteChatMutation.isPending || leaveGroupMutation.isPending}
         onCancel={() => {
-          if (!deleteChatMutation.isPending) {
-            setConfirmingChatId(null);
+          if (!deleteChatMutation.isPending && !leaveGroupMutation.isPending) {
+            setConfirmingChatAction(null);
           }
         }}
         onConfirm={() => {
-          if (confirmingChatId) {
-            deleteChatMutation.mutate(confirmingChatId);
+          if (!confirmingChatAction) {
+            return;
           }
+
+          if (confirmingChatAction.mode === "leave") {
+            leaveGroupMutation.mutate(confirmingChatAction.chatId);
+            return;
+          }
+
+          deleteChatMutation.mutate(confirmingChatAction.chatId);
         }}
       />
     </main>

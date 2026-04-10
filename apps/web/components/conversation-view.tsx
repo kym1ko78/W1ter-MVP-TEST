@@ -6,6 +6,7 @@ import {
   ChangeEvent,
   FormEvent,
   KeyboardEvent,
+  startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -13,7 +14,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { readJson, useAuth } from "../lib/auth-context";
 import {
   appendMessageUnique,
@@ -30,7 +31,15 @@ import {
   getChatTitle,
   getConversationDayKey,
 } from "../lib/utils";
-import type { ChatAttachment, ChatListItem, ChatMessage, MessagePage } from "../types/api";
+import type {
+  ChatAttachment,
+  ChatListItem,
+  ChatMemberRole,
+  ChatMessage,
+  GroupMembersResponse,
+  MessagePage,
+  SafeUser,
+} from "../types/api";
 import { ConfirmDialog } from "./confirm-dialog";
 import { UserAvatar } from "./user-avatar";
 
@@ -84,11 +93,20 @@ type ConversationRenderItem =
     };
 
 export function ConversationView({ chatId }: { chatId: string }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const { accessToken, authorizedFetch, isAuthenticated, user } = useAuth();
   const [draft, setDraft] = useState("");
   const [messageSearch, setMessageSearch] = useState("");
+  const [showGroupMembersPanel, setShowGroupMembersPanel] = useState(false);
+  const [groupMemberSearch, setGroupMemberSearch] = useState("");
+  const [groupPanelError, setGroupPanelError] = useState<string | null>(null);
+  const [confirmingMemberRemoval, setConfirmingMemberRemoval] = useState<{
+    userId: string;
+    displayName: string;
+  } | null>(null);
+  const [confirmingGroupLeave, setConfirmingGroupLeave] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [confirmingMessage, setConfirmingMessage] = useState<ChatMessage | null>(null);
@@ -97,6 +115,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
   const deferredMessageSearch = useDeferredValue(messageSearch);
+  const deferredGroupMemberSearch = useDeferredValue(groupMemberSearch);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -148,6 +167,29 @@ export function ConversationView({ chatId }: { chatId: string }) {
       : null;
   const searchParamMessageId = searchParams?.get("message") ?? null;
   const searchParamQuery = searchParams?.get("q") ?? null;
+  const normalizedGroupMemberSearch = deferredGroupMemberSearch.trim();
+  const isGroupChat = chatQuery.data?.type === "group";
+
+  const groupMembersQuery = useQuery({
+    queryKey: ["group-members", chatId],
+    enabled: isAuthenticated && isGroupChat && showGroupMembersPanel,
+    queryFn: async () =>
+      readJson<GroupMembersResponse>(await authorizedFetch(`/chats/${chatId}/members`)),
+  });
+
+  const groupUsersSearchQuery = useQuery({
+    queryKey: ["group-users-search", chatId, normalizedGroupMemberSearch],
+    enabled:
+      isAuthenticated &&
+      isGroupChat &&
+      showGroupMembersPanel &&
+      Boolean(groupMembersQuery.data?.permissions.canAddMembers) &&
+      normalizedGroupMemberSearch.length > 1,
+    queryFn: async () =>
+      readJson<SafeUser[]>(
+        await authorizedFetch(`/users/search?query=${encodeURIComponent(normalizedGroupMemberSearch)}`),
+      ),
+  });
 
   const renderItems = useMemo<ConversationRenderItem[]>(() => {
     const items: ConversationRenderItem[] = [];
@@ -306,6 +348,100 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
   });
 
+  const addGroupMemberMutation = useMutation({
+    mutationFn: async (userId: string) =>
+      readJson<GroupMembersResponse>(
+        await authorizedFetch(`/chats/${chatId}/members`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ userId }),
+        }),
+      ),
+    onSuccess: (payload) => {
+      queryClient.setQueryData<GroupMembersResponse>(["group-members", chatId], payload);
+      setGroupPanelError(null);
+      setGroupMemberSearch("");
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+    },
+    onError: (error) => {
+      setGroupPanelError(
+        error instanceof Error ? error.message : "Не удалось добавить участника.",
+      );
+    },
+  });
+
+  const removeGroupMemberMutation = useMutation({
+    mutationFn: async (userId: string) =>
+      readJson<GroupMembersResponse>(
+        await authorizedFetch(`/chats/${chatId}/members/${userId}`, {
+          method: "DELETE",
+        }),
+      ),
+    onSuccess: (payload) => {
+      queryClient.setQueryData<GroupMembersResponse>(["group-members", chatId], payload);
+      setGroupPanelError(null);
+      setConfirmingMemberRemoval(null);
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+    },
+    onError: (error) => {
+      setGroupPanelError(
+        error instanceof Error ? error.message : "Не удалось удалить участника.",
+      );
+    },
+  });
+
+  const updateGroupMemberRoleMutation = useMutation({
+    mutationFn: async (payload: { userId: string; role: "admin" | "member" }) =>
+      readJson<GroupMembersResponse>(
+        await authorizedFetch(`/chats/${chatId}/members/${payload.userId}/role`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ role: payload.role }),
+        }),
+      ),
+    onSuccess: (payload) => {
+      queryClient.setQueryData<GroupMembersResponse>(["group-members", chatId], payload);
+      setGroupPanelError(null);
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+    },
+    onError: (error) => {
+      setGroupPanelError(
+        error instanceof Error ? error.message : "Не удалось изменить роль участника.",
+      );
+    },
+  });
+
+  const leaveGroupMutation = useMutation({
+    mutationFn: async () =>
+      readJson<{ success: boolean; chatId: string }>(
+        await authorizedFetch(`/chats/${chatId}/leave`, {
+          method: "POST",
+        }),
+      ),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ["group-members", chatId] });
+      queryClient.removeQueries({ queryKey: ["chat", chatId] });
+      queryClient.removeQueries({ queryKey: ["messages", chatId] });
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      startTransition(() => {
+        router.replace("/chat");
+      });
+    },
+    onError: (error) => {
+      setGroupPanelError(error instanceof Error ? error.message : "Не удалось выйти из группы.");
+    },
+    onSettled: () => {
+      setConfirmingGroupLeave(false);
+    },
+  });
+
   useEffect(() => {
     const element = textareaRef.current;
 
@@ -342,6 +478,14 @@ export function ConversationView({ chatId }: { chatId: string }) {
   useEffect(() => {
     setActiveMatchIndex(0);
   }, [chatId, normalizedMessageSearch]);
+
+  useEffect(() => {
+    setShowGroupMembersPanel(false);
+    setGroupMemberSearch("");
+    setGroupPanelError(null);
+    setConfirmingMemberRemoval(null);
+    setConfirmingGroupLeave(false);
+  }, [chatId]);
 
   useEffect(() => {
     if (activeMatchIndex < messageSearchMatches.length) {
@@ -419,10 +563,36 @@ export function ConversationView({ chatId }: { chatId: string }) {
     shouldScrollAfterSendRef.current = false;
   }, [messageItems, scrollToBottom, user?.id]);
 
+  const chatMembers = chatQuery.data?.members ?? [];
   const otherUser = useMemo(
-    () => chatQuery.data?.members.find((member) => member.id !== user?.id) ?? null,
-    [chatQuery.data?.members, user?.id],
+    () =>
+      chatQuery.data?.type === "direct"
+        ? chatMembers.find((member) => member.id !== user?.id) ?? null
+        : null,
+    [chatMembers, chatQuery.data?.type, user?.id],
   );
+  const conversationTitle = getChatTitle(chatMembers, user?.id, {
+    type: chatQuery.data?.type,
+    title: chatQuery.data?.title,
+  });
+  const existingGroupMemberIds = useMemo(
+    () =>
+      new Set(
+        (
+          groupMembersQuery.data?.members.map((member) => member.user.id) ??
+          chatMembers.map((member) => member.id)
+        ).filter(Boolean),
+      ),
+    [chatMembers, groupMembersQuery.data?.members],
+  );
+  const availableGroupUsers = useMemo(
+    () =>
+      (groupUsersSearchQuery.data ?? []).filter(
+        (candidate) => candidate.id !== user?.id && !existingGroupMemberIds.has(candidate.id),
+      ),
+    [existingGroupMemberIds, groupUsersSearchQuery.data, user?.id],
+  );
+  const groupMembersCount = groupMembersQuery.data?.members.length ?? chatMembers.length;
   const hasComposerContent = Boolean(draft.trim() || pendingFile);
   const showSendButton = hasComposerContent || sendMessageMutation.isPending;
   const showVoiceButton =
@@ -432,6 +602,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const activeSearchNumber = hasSearchMatches
     ? Math.min(activeMatchIndex + 1, messageSearchMatches.length)
     : 0;
+  const isGroupActionPending =
+    addGroupMemberMutation.isPending ||
+    removeGroupMemberMutation.isPending ||
+    updateGroupMemberRoleMutation.isPending ||
+    leaveGroupMutation.isPending;
 
   const stopMediaStream = useCallback(() => {
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -693,6 +868,34 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setConfirmingMessage(message);
   };
 
+  const handleToggleGroupMemberRole = (
+    targetUserId: string,
+    currentRole: ChatMemberRole,
+  ) => {
+    if (currentRole === "creator") {
+      return;
+    }
+
+    updateGroupMemberRoleMutation.mutate({
+      userId: targetUserId,
+      role: currentRole === "admin" ? "member" : "admin",
+    });
+  };
+
+  const canRemoveGroupMember = (member: GroupMembersResponse["members"][number]) => {
+    const permissions = groupMembersQuery.data?.permissions;
+
+    if (!permissions?.canRemoveMembers || member.isCurrentUser || member.role === "creator") {
+      return false;
+    }
+
+    if (permissions.isCreator) {
+      return true;
+    }
+
+    return member.role !== "admin";
+  };
+
   if (chatQuery.isLoading || messagesQuery.isLoading) {
     return <ConversationSkeleton />;
   }
@@ -715,8 +918,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
           <UserAvatar
             user={
               otherUser ?? {
-                displayName: getChatTitle(chatQuery.data.members, user?.id),
-                email: getChatTitle(chatQuery.data.members, user?.id),
+                displayName: conversationTitle,
+                email: conversationTitle,
                 avatarUrl: null,
               }
             }
@@ -729,10 +932,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
               className="truncate text-lg font-semibold tracking-tight text-[#171717]"
               data-testid="conversation-title"
             >
-              {getChatTitle(chatQuery.data.members, user?.id)}
+              {conversationTitle}
             </h2>
             <p className="truncate text-sm text-stone-500" data-testid="conversation-status">
-              {otherUser?.lastSeenAt
+              {isGroupChat
+                ? `${groupMembersCount} участников`
+                : otherUser?.lastSeenAt
                 ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
                 : "Личный чат"}
             </p>
@@ -743,6 +948,21 @@ export function ConversationView({ chatId }: { chatId: string }) {
             <div className="shrink-0 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-500">
               {chatQuery.data.unreadCount}
             </div>
+          ) : null}
+          {isGroupChat ? (
+            <button
+              type="button"
+              onClick={() => setShowGroupMembersPanel((prev) => !prev)}
+              data-testid="group-members-toggle"
+              className={clsx(
+                "shrink-0 rounded-full border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] transition",
+                showGroupMembersPanel
+                  ? "border-black bg-[#111111] text-white"
+                  : "border-black/12 bg-white text-stone-600 hover:border-black/25 hover:text-black",
+              )}
+            >
+              {showGroupMembersPanel ? "Скрыть участников" : "Участники"}
+            </button>
           ) : null}
           <div className="flex min-w-0 flex-1 items-center gap-2 sm:w-[290px] sm:flex-none">
             <input
@@ -818,6 +1038,154 @@ export function ConversationView({ chatId }: { chatId: string }) {
           {hasSearchMatches
             ? `Найдено ${messageSearchMatches.length}. Enter, ↑ и ↓ — переход по совпадениям.`
             : "Ничего не найдено в этом диалоге."}
+        </div>
+      ) : null}
+
+      {isGroupChat && showGroupMembersPanel ? (
+        <div
+          className="border-b border-black/8 bg-white/90 px-4 py-3 sm:px-6"
+          data-testid="group-members-panel"
+        >
+          {groupPanelError ? (
+            <p className="mb-2 rounded-[12px] border border-black/10 bg-black px-3 py-2 text-xs text-white">
+              {groupPanelError}
+            </p>
+          ) : null}
+
+          {groupMembersQuery.isLoading ? (
+            <p className="text-sm text-stone-500">Загружаем участников...</p>
+          ) : groupMembersQuery.isError || !groupMembersQuery.data ? (
+            <p className="text-sm text-stone-600">Не удалось загрузить список участников.</p>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-stone-400">Участники</p>
+                <span className="rounded-full border border-black/10 bg-white px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-stone-500">
+                  {groupMembersQuery.data.members.length}
+                </span>
+              </div>
+
+              {groupMembersQuery.data.permissions.canAddMembers ? (
+                <div className="space-y-2">
+                  <input
+                    value={groupMemberSearch}
+                    onChange={(event) => setGroupMemberSearch(event.target.value)}
+                    placeholder="Добавить участника в группу"
+                    className="w-full rounded-[14px] border border-black/8 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+                  />
+                  {normalizedGroupMemberSearch.length > 1 ? (
+                    <div className="scroll-region-y max-h-28 overflow-y-auto rounded-[14px] border border-black/8 bg-[#fafaf9] p-1.5">
+                      {groupUsersSearchQuery.isLoading ? (
+                        <p className="px-2 py-2 text-xs text-stone-500">Ищем пользователей...</p>
+                      ) : availableGroupUsers.length > 0 ? (
+                        <div className="space-y-1">
+                          {availableGroupUsers.map((candidate) => (
+                            <button
+                              key={candidate.id}
+                              type="button"
+                              onClick={() => addGroupMemberMutation.mutate(candidate.id)}
+                              disabled={isGroupActionPending}
+                              className="flex w-full items-center justify-between rounded-[10px] border border-transparent px-2 py-2 text-left transition hover:border-black/10 hover:bg-white disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              <span className="truncate text-xs font-medium text-[#171717]">
+                                {candidate.displayName}
+                              </span>
+                              <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-stone-500">
+                                Add
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="px-2 py-2 text-xs text-stone-500">Нет пользователей для добавления.</p>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-xs text-stone-500">
+                  У вас нет прав на добавление участников в эту группу.
+                </p>
+              )}
+
+              {groupMembersQuery.data.members.length > 0 ? (
+                <div className="space-y-2">
+                  {groupMembersQuery.data.members.map((member) => {
+                    const canToggleRole =
+                      groupMembersQuery.data.permissions.canManageRoles &&
+                      !member.isCurrentUser &&
+                      member.role !== "creator";
+
+                    return (
+                      <div
+                        key={member.user.id}
+                        className="flex items-center justify-between gap-3 rounded-[14px] border border-black/8 bg-white px-3 py-2"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-[#171717]">
+                            {member.user.displayName}
+                            {member.isCurrentUser ? " (Вы)" : ""}
+                          </p>
+                          <p className="truncate text-xs text-stone-500">{member.user.email}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <span className="rounded-full border border-black/12 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-500">
+                            {formatGroupRole(member.role)}
+                          </span>
+                          {canToggleRole ? (
+                            <button
+                              type="button"
+                              onClick={() => handleToggleGroupMemberRole(member.user.id, member.role)}
+                              disabled={isGroupActionPending}
+                              className="rounded-full border border-black/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              {member.role === "admin" ? "Снять admin" : "Сделать admin"}
+                            </button>
+                          ) : null}
+                          {canRemoveGroupMember(member) ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setConfirmingMemberRemoval({
+                                  userId: member.user.id,
+                                  displayName: member.user.displayName,
+                                })
+                              }
+                              disabled={isGroupActionPending}
+                              className="rounded-full border border-black/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              Удалить
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="rounded-[14px] border border-dashed border-black/12 bg-white px-3 py-2 text-xs text-stone-500">
+                  В группе пока нет участников.
+                </p>
+              )}
+
+              <div className="flex justify-end">
+                {groupMembersQuery.data.permissions.canLeaveGroup ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingGroupLeave(true)}
+                    disabled={isGroupActionPending}
+                    className="rounded-full border border-black/12 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-55"
+                  >
+                    Выйти из группы
+                  </button>
+                ) : (
+                  <p className="text-xs text-stone-500">
+                    Создатель может удалить группу, но не может выйти из неё.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -1153,6 +1521,43 @@ export function ConversationView({ chatId }: { chatId: string }) {
           }
         }}
       />
+
+      <ConfirmDialog
+        open={Boolean(confirmingMemberRemoval)}
+        title="Удалить участника из группы?"
+        description={
+          confirmingMemberRemoval
+            ? `${confirmingMemberRemoval.displayName} будет удален(а) из группы.`
+            : "Участник будет удален из группы."
+        }
+        isLoading={removeGroupMemberMutation.isPending}
+        onCancel={() => {
+          if (!removeGroupMemberMutation.isPending) {
+            setConfirmingMemberRemoval(null);
+          }
+        }}
+        onConfirm={() => {
+          if (confirmingMemberRemoval) {
+            removeGroupMemberMutation.mutate(confirmingMemberRemoval.userId);
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmingGroupLeave}
+        title="Выйти из группы?"
+        description="Вы потеряете доступ к сообщениям этой группы."
+        confirmLabel="Выйти"
+        isLoading={leaveGroupMutation.isPending}
+        onCancel={() => {
+          if (!leaveGroupMutation.isPending) {
+            setConfirmingGroupLeave(false);
+          }
+        }}
+        onConfirm={() => {
+          leaveGroupMutation.mutate();
+        }}
+      />
     </section>
   );
 }
@@ -1461,6 +1866,17 @@ function renderHighlightedMessageBody(body: string, query: string, highlightClas
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function formatGroupRole(role: ChatMemberRole) {
+  switch (role) {
+    case "creator":
+      return "creator";
+    case "admin":
+      return "admin";
+    default:
+      return "member";
+  }
 }
 
 function formatRecordingDuration(seconds: number) {
