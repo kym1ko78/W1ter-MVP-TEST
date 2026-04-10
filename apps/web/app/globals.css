@@ -76,6 +76,20 @@ textarea {
     linear-gradient(180deg, #f3efe8 0%, #ece7de 100%);
 }
 
+.auth-stage-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 16% 22%, rgba(16, 20, 27, 0.08), transparent 18%),
+    radial-gradient(circle at 84% 18%, rgba(16, 20, 27, 0.1), transparent 16%),
+    radial-gradient(circle at 78% 82%, rgba(16, 20, 27, 0.08), transparent 18%),
+    radial-gradient(circle at 10% 86%, rgba(16, 20, 27, 0.09), transparent 17%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.05));
+  opacity: 1;
+}
+
 .auth-dark-panel {
   background:
     radial-gradient(circle at 84% 24%, rgba(255, 255, 255, 0.06), transparent 18%),
