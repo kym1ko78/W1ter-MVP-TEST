@@ -646,6 +646,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           const normalizedBody = message.body?.trim() ?? "";
           const hasText = Boolean(normalizedBody);
           const hasAttachments = message.attachments.length > 0;
+          const attachmentOnlyBubble = hasAttachments && !hasText;
           const inlineMetaBubble = hasText && !hasAttachments;
           const compactBubble = inlineMetaBubble;
           const shortTextOnlyBubble =
@@ -682,6 +683,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       ? "rounded-[13px] px-2.5 py-0.5"
                       : compactBubble
                         ? "rounded-[17px] px-2.5 py-1"
+                        : attachmentOnlyBubble
+                          ? "rounded-[20px] px-3 py-[2px]"
                         : "rounded-[22px] px-4 py-2.5",
                     isMine
                       ? "bg-[#111111] text-white"
@@ -721,7 +724,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
                   {!inlineMetaBubble ? (
                     <p
                       className={clsx(
-                        hasText ? "mt-1 text-right text-[11px] leading-none" : "mt-1.5 text-right text-[11px] leading-none",
+                        hasText
+                          ? "mt-1 text-right text-[11px] leading-none"
+                          : attachmentOnlyBubble
+                            ? "mt-0 text-right text-[11px] leading-none"
+                            : "mt-1.5 text-right text-[11px] leading-none",
                         isMine ? "text-white/62" : "text-stone-400",
                       )}
                     >
@@ -929,7 +936,7 @@ function MessageAttachments({
   isMine: boolean;
 }) {
   return (
-    <div className={clsx("space-y-2", attachments.length > 0 && "mt-3")}>
+    <div className={clsx("space-y-2", attachments.length > 0 && "mt-1")}>
       {attachments.map((attachment) => {
         const downloadUrl = buildAttachmentUrl(attachment.downloadPath, accessToken);
         const isAudio = attachment.mimeType.startsWith("audio/");
@@ -965,43 +972,12 @@ function MessageAttachments({
 
         if (isAudio) {
           return (
-            <div
+            <VoiceMessageAttachment
               key={attachment.id}
-              className={clsx(
-                "min-w-[260px] max-w-full rounded-[18px] border px-3 py-3",
-                isMine
-                  ? "border-white/14 bg-white/8 text-white"
-                  : "border-black/8 bg-stone-50 text-[#171717]",
-              )}
-              data-testid="message-voice"
-            >
-              <div className="mb-2 flex items-center gap-2">
-                <span
-                  className={clsx(
-                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-                    isMine ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
-                  )}
-                >
-                  <MicIcon className="h-4 w-4" />
-                </span>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold">Голосовое сообщение</p>
-                  <p className={clsx("text-xs", isMine ? "text-white/70" : "text-stone-500")}>
-                    {formatFileSize(attachment.sizeBytes)}
-                  </p>
-                </div>
-              </div>
-              <audio
-                controls
-                preload="metadata"
-                src={downloadUrl}
-                className="h-9 w-full min-w-0"
-              >
-                <a href={downloadUrl} target="_blank" rel="noreferrer">
-                  Открыть голосовое сообщение
-                </a>
-              </audio>
-            </div>
+              attachment={attachment}
+              downloadUrl={downloadUrl}
+              isMine={isMine}
+            />
           );
         }
 
@@ -1033,6 +1009,183 @@ function MessageAttachments({
   );
 }
 
+function VoiceMessageAttachment({
+  attachment,
+  downloadUrl,
+  isMine,
+}: {
+  attachment: ChatAttachment;
+  downloadUrl: string;
+  isMine: boolean;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [durationSeconds, setDurationSeconds] = useState(0);
+  const [currentSeconds, setCurrentSeconds] = useState(0);
+  const [showTranscript, setShowTranscript] = useState(false);
+  const progress = durationSeconds > 0 ? Math.min(currentSeconds / durationSeconds, 1) : 0;
+  const waveform = useMemo(() => buildWaveformVariant(attachment.id, 34), [attachment.id]);
+  const pseudoTranscript = useMemo(
+    () => buildPseudoTranscript(attachment.id, durationSeconds || currentSeconds, attachment.sizeBytes),
+    [attachment.id, attachment.sizeBytes, currentSeconds, durationSeconds],
+  );
+
+  const togglePlayback = async () => {
+    const audio = audioRef.current;
+
+    if (!audio) {
+      return;
+    }
+
+    if (audio.paused) {
+      await audio.play().catch(() => undefined);
+      return;
+    }
+
+    audio.pause();
+  };
+
+  useEffect(() => {
+    if (!isPlaying) {
+      return;
+    }
+
+    let frameId = 0;
+    const updateProgress = () => {
+      const audio = audioRef.current;
+
+      if (!audio) {
+        return;
+      }
+
+      setCurrentSeconds(audio.currentTime);
+      frameId = window.requestAnimationFrame(updateProgress);
+    };
+
+    frameId = window.requestAnimationFrame(updateProgress);
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [isPlaying]);
+
+  return (
+    <div
+      className={clsx(
+        "w-[min(290px,52vw)] max-w-full",
+        isMine ? "text-white" : "text-[#171717]",
+      )}
+      data-testid="message-voice"
+    >
+      <audio
+        ref={audioRef}
+        preload="metadata"
+        src={downloadUrl}
+        className="hidden"
+        onLoadedMetadata={(event) => {
+          const duration = event.currentTarget.duration;
+          setDurationSeconds(Number.isFinite(duration) ? duration : 0);
+        }}
+        onTimeUpdate={(event) => {
+          setCurrentSeconds(event.currentTarget.currentTime);
+        }}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onEnded={() => {
+          setIsPlaying(false);
+          setCurrentSeconds(0);
+        }}
+      >
+        <a href={downloadUrl} target="_blank" rel="noreferrer">
+          Открыть голосовое сообщение
+        </a>
+      </audio>
+
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={togglePlayback}
+          className={clsx(
+            "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition hover:scale-[1.03]",
+            isMine ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
+          )}
+          aria-label={isPlaying ? "Пауза" : "Воспроизвести голосовое сообщение"}
+        >
+          {isPlaying ? <PauseIcon className="h-3.5 w-3.5" /> : <PlayIcon className="h-3.5 w-3.5 -ml-[1px]" />}
+        </button>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <div
+              className="grid h-3.5 min-w-0 flex-1 items-center gap-[2px]"
+              style={{ gridTemplateColumns: `repeat(${waveform.length}, minmax(0, 1fr))` }}
+              aria-hidden="true"
+            >
+              {waveform.map((height, index) => {
+                const barProgress = (index + 1) / waveform.length;
+                const isActive = barProgress <= progress;
+
+                return (
+                  <span
+                    key={`${height}-${index}`}
+                    className={clsx(
+                      "w-full rounded-full transition-colors",
+                      isMine
+                        ? isActive
+                          ? "bg-white"
+                          : "bg-white/35"
+                        : isActive
+                          ? "bg-[#111111]"
+                          : "bg-black/22",
+                    )}
+                    style={{ height: `${height}px` }}
+                  />
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowTranscript((prev) => !prev)}
+              className={clsx(
+                "flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border text-[12px] font-semibold transition",
+                isMine
+                  ? "border-white/30 bg-white/10 text-white hover:bg-white/20"
+                  : "border-black/15 bg-white text-[#111111] hover:border-black/30",
+              )}
+              data-testid="voice-transcript-button"
+              title="Псевдо-расшифровка"
+              aria-label="Псевдо-расшифровка"
+            >
+              A
+            </button>
+          </div>
+          <div className="mt-0.5 flex items-center gap-1.5 text-xs font-medium">
+            <span className={clsx(isMine ? "text-white/78" : "text-stone-500")}>
+              {formatRecordingDuration(durationSeconds || currentSeconds)}
+            </span>
+            <span className={clsx("h-1 w-1 rounded-full", isMine ? "bg-white/55" : "bg-black/30")} />
+            <span className={clsx(isMine ? "text-white/78" : "text-stone-500")}>
+              {formatFileSize(attachment.sizeBytes)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {showTranscript ? (
+        <div
+          className={clsx(
+            "mt-2 rounded-[12px] border px-2.5 py-2 text-[12px] leading-5",
+            isMine
+              ? "border-white/22 bg-white/10 text-white/90"
+              : "border-black/10 bg-white/75 text-stone-700",
+          )}
+          data-testid="voice-transcript-content"
+        >
+          {pseudoTranscript}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ConversationSkeleton() {
   return (
     <div className="chat-shell-panel flex h-full min-h-0 animate-pulse flex-col overflow-hidden rounded-none border-0 p-5">
@@ -1048,11 +1201,51 @@ function ConversationSkeleton() {
 }
 
 function formatRecordingDuration(seconds: number) {
-  const safeSeconds = Math.max(0, seconds);
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
   const minutes = Math.floor(safeSeconds / 60);
   const restSeconds = safeSeconds % 60;
 
   return `${minutes}:${String(restSeconds).padStart(2, "0")}`;
+}
+
+function buildWaveformVariant(seed: string, bars: number) {
+  const normalizedBars = Math.max(24, bars);
+  let hash = 0;
+
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+
+  const heights: number[] = [];
+  for (let index = 0; index < normalizedBars; index += 1) {
+    hash = (hash * 1664525 + 1013904223) >>> 0;
+    const normalized = hash / 0xffffffff;
+    const gaussianEnvelope = Math.exp(-Math.pow((index - normalizedBars * 0.34) / 7.2, 2));
+    const baseHeight = 2 + Math.round(normalized * 7);
+    const peakBoost = Math.round(gaussianEnvelope * 6);
+
+    heights.push(Math.max(2, Math.min(12, baseHeight + peakBoost)));
+  }
+
+  return heights;
+}
+
+function buildPseudoTranscript(seed: string, durationSeconds: number, sizeBytes: number) {
+  const variants = [
+    "Псевдо-расшифровка: короткая реплика про текущую задачу и следующий шаг.",
+    "Псевдо-расшифровка: подтверждение, что всё ок, продолжаем в том же потоке.",
+    "Псевдо-расшифровка: уточнение по дизайну и просьба сделать компактнее.",
+    "Псевдо-расшифровка: голосовое с быстрым фидбеком по интерфейсу.",
+    "Псевдо-расшифровка: обсуждение деталей перед финальным коммитом.",
+  ];
+  let hash = 0;
+
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 33 + seed.charCodeAt(index)) >>> 0;
+  }
+
+  const variant = variants[hash % variants.length];
+  return `${variant} (${formatRecordingDuration(durationSeconds)} · ${formatFileSize(sizeBytes)})`;
 }
 
 function PaperclipIcon({ className }: { className?: string }) {
@@ -1087,6 +1280,32 @@ function MicIcon({ className }: { className?: string }) {
       <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <path d="M12 19v3" />
+    </svg>
+  );
+}
+
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M8 5.75c0-1.2 1.32-1.94 2.35-1.32l10.02 6.01c1 .6 1 2.05 0 2.65L10.35 19.1C9.32 19.72 8 18.98 8 17.78V5.75Z" />
+    </svg>
+  );
+}
+
+function PauseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M8.4 5.25A1.4 1.4 0 0 0 7 6.65v10.7a1.4 1.4 0 0 0 2.8 0V6.65a1.4 1.4 0 0 0-1.4-1.4Zm7.2 0a1.4 1.4 0 0 0-1.4 1.4v10.7a1.4 1.4 0 0 0 2.8 0V6.65a1.4 1.4 0 0 0-1.4-1.4Z" />
     </svg>
   );
 }
