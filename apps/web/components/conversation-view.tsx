@@ -835,7 +835,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
               <PaperclipIcon className="h-5 w-5" />
             </button>
 
-            <div className="min-w-0 flex-1">
+            <div className="relative flex min-w-0 flex-1 items-center">
               <textarea
                 ref={textareaRef}
                 data-testid="message-input"
@@ -851,11 +851,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 maxLength={MESSAGE_MAX_LENGTH}
                 disabled={recordingState !== "idle"}
                 placeholder="Сообщение..."
-                className="h-[44px] min-h-[44px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 py-[9px] leading-[26px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
+                className="h-[42px] min-h-[42px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 pb-0 pt-[6px] leading-[28px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
               />
 
-              <div className="mt-0 flex justify-end px-1 pb-0">
-                <p data-testid="message-counter" className="shrink-0 text-[10px] text-stone-400">
+              <div className="pointer-events-none absolute bottom-0 right-1 flex justify-end">
+                <p data-testid="message-counter" className="shrink-0 text-[10px] leading-none text-stone-400">
                   {draft.length}/{MESSAGE_MAX_LENGTH}
                 </p>
               </div>
