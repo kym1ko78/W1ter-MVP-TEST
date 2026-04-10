@@ -24,6 +24,7 @@ import { CreateGroupChatDto } from "./dto/create-group-chat.dto";
 import { MarkReadDto } from "./dto/mark-read.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
 import { UpdateChatMemberRoleDto } from "./dto/update-chat-member-role.dto";
+import { UpdateMessageDto } from "./dto/update-message.dto";
 import { UploadAttachmentDto } from "./dto/upload-attachment.dto";
 
 type UploadedAttachmentFile = {
@@ -158,6 +159,16 @@ export class ChatController {
     return this.chatService.sendMessage(chatId, user.sub, dto);
   }
 
+  @Patch(":chatId/messages/:messageId")
+  async editMessage(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+    @Param("messageId") messageId: string,
+    @Body() dto: UpdateMessageDto,
+  ) {
+    return this.chatService.editMessage(chatId, messageId, user.sub, dto.body);
+  }
+
   @Delete(":chatId/messages/:messageId")
   async deleteMessage(
     @CurrentUser() user: JwtPayload,
@@ -182,7 +193,7 @@ export class ChatController {
     @UploadedFile() file: UploadedAttachmentFile | undefined,
     @Body() dto: UploadAttachmentDto,
   ) {
-    return this.chatService.sendAttachment(chatId, user.sub, file, dto.body);
+    return this.chatService.sendAttachment(chatId, user.sub, file, dto.body, dto.replyToMessageId);
   }
 
   @Post(":chatId/read")

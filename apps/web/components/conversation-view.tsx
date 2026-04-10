@@ -30,6 +30,7 @@ import {
   formatTime,
   getChatTitle,
   getConversationDayKey,
+  getLastMessagePreviewText,
 } from "../lib/utils";
 import type {
   ChatAttachment,
@@ -76,9 +77,15 @@ const SCROLL_BOTTOM_THRESHOLD = 180;
 type ComposerPayload = {
   body: string;
   file: File | null;
+  replyToMessageId?: string | null;
 };
 
 type RecordingState = "idle" | "recording" | "stopping";
+
+type EditMessagePayload = {
+  messageId: string;
+  body: string;
+};
 
 type ConversationRenderItem =
   | {
@@ -107,6 +114,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
     displayName: string;
   } | null>(null);
   const [confirmingGroupLeave, setConfirmingGroupLeave] = useState(false);
+  const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
+  const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [confirmingMessage, setConfirmingMessage] = useState<ChatMessage | null>(null);
@@ -279,12 +288,15 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, []);
 
   const sendMessageMutation = useMutation({
-    mutationFn: async ({ body, file }: ComposerPayload) => {
+    mutationFn: async ({ body, file, replyToMessageId }: ComposerPayload) => {
       if (file) {
         const formData = new FormData();
         formData.append("file", file);
         if (body) {
           formData.append("body", body);
+        }
+        if (replyToMessageId) {
+          formData.append("replyToMessageId", replyToMessageId);
         }
 
         return readJson<ChatMessage>(
@@ -301,7 +313,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ body }),
+          body: JSON.stringify({
+            body,
+            replyToMessageId: replyToMessageId ?? undefined,
+          }),
         }),
       );
     },
@@ -315,6 +330,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       setComposerError(null);
       setDraft("");
       setPendingFile(null);
+      setReplyingToMessage(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -325,6 +341,36 @@ export function ConversationView({ chatId }: { chatId: string }) {
         error instanceof Error
           ? error.message
           : "Не удалось отправить сообщение. Попробуйте еще раз.",
+      );
+    },
+  });
+
+  const editMessageMutation = useMutation({
+    mutationFn: async ({ messageId, body }: EditMessagePayload) =>
+      readJson<ChatMessage>(
+        await authorizedFetch(`/chats/${chatId}/messages/${messageId}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ body }),
+        }),
+      ),
+    onSuccess: (message) => {
+      queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
+        upsertMessage(old, message),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+      setComposerError(null);
+      setEditingMessage(null);
+      setDraft("");
+      setFocusedMessageId(message.id);
+      focusMessageById(message.id, "smooth");
+    },
+    onError: (error) => {
+      setComposerError(
+        error instanceof Error ? error.message : "Не удалось сохранить изменения сообщения.",
       );
     },
   });
@@ -485,6 +531,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setGroupPanelError(null);
     setConfirmingMemberRemoval(null);
     setConfirmingGroupLeave(false);
+    setReplyingToMessage(null);
+    setEditingMessage(null);
   }, [chatId]);
 
   useEffect(() => {
@@ -593,15 +641,21 @@ export function ConversationView({ chatId }: { chatId: string }) {
     [existingGroupMemberIds, groupUsersSearchQuery.data, user?.id],
   );
   const groupMembersCount = groupMembersQuery.data?.members.length ?? chatMembers.length;
-  const hasComposerContent = Boolean(draft.trim() || pendingFile);
-  const showSendButton = hasComposerContent || sendMessageMutation.isPending;
+  const isEditingMessage = Boolean(editingMessage);
+  const composerText = draft.trim();
+  const isComposerSubmitPending = sendMessageMutation.isPending || editMessageMutation.isPending;
+  const hasComposerContent = isEditingMessage
+    ? Boolean(composerText)
+    : Boolean(composerText || pendingFile);
+  const showSendButton = hasComposerContent || isComposerSubmitPending;
   const showVoiceButton =
-    !hasComposerContent && !sendMessageMutation.isPending && recordingState === "idle";
+    !isEditingMessage && !hasComposerContent && !isComposerSubmitPending && recordingState === "idle";
   const hasSearchInput = normalizedMessageSearch.length > 0;
   const hasSearchMatches = messageSearchMatches.length > 0;
   const activeSearchNumber = hasSearchMatches
     ? Math.min(activeMatchIndex + 1, messageSearchMatches.length)
     : 0;
+  const submitButtonLabel = isEditingMessage ? "Сохранить изменения" : "Отправить сообщение";
   const isGroupActionPending =
     addGroupMemberMutation.isPending ||
     removeGroupMemberMutation.isPending ||
@@ -629,7 +683,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   );
 
   const startVoiceRecording = useCallback(async () => {
-    if (recordingState !== "idle" || sendMessageMutation.isPending) {
+    if (recordingState !== "idle" || isComposerSubmitPending || isEditingMessage) {
       return;
     }
 
@@ -690,7 +744,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           : "Не удалось получить доступ к микрофону.",
       );
     }
-  }, [recordingState, sendMessageMutation.isPending, stopMediaStream]);
+  }, [isComposerSubmitPending, isEditingMessage, recordingState, stopMediaStream]);
 
   const finishVoiceRecording = useCallback(
     (shouldSend: boolean) => {
@@ -738,12 +792,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
         });
 
         shouldScrollAfterSendRef.current = true;
-        sendMessageMutation.mutate({ body: "", file: voiceFile });
+        sendMessageMutation.mutate({
+          body: "",
+          file: voiceFile,
+          replyToMessageId: replyingToMessage?.id ?? null,
+        });
       };
 
       recorder.stop();
     },
-    [sendMessageMutation, stopMediaStream],
+    [replyingToMessage?.id, sendMessageMutation, stopMediaStream],
   );
 
   useEffect(() => {
@@ -772,6 +830,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
   );
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (isEditingMessage) {
+      setComposerError("При редактировании вложения недоступны.");
+      event.target.value = "";
+      return;
+    }
+
     const selectedFile = event.target.files?.[0] ?? null;
 
     if (!selectedFile) {
@@ -803,8 +867,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
   };
 
   const submitComposer = () => {
-    const body = draft.trim();
-    if ((!body && !pendingFile) || sendMessageMutation.isPending || recordingState !== "idle") {
+    const body = composerText;
+    if (
+      (!body && !pendingFile) ||
+      isComposerSubmitPending ||
+      recordingState !== "idle"
+    ) {
       return;
     }
 
@@ -814,7 +882,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     setComposerError(null);
-    sendMessageMutation.mutate({ body, file: pendingFile });
+    if (editingMessage) {
+      editMessageMutation.mutate({ messageId: editingMessage.id, body });
+      return;
+    }
+
+    sendMessageMutation.mutate({
+      body,
+      file: pendingFile,
+      replyToMessageId: replyingToMessage?.id ?? null,
+    });
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -866,6 +943,60 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     setConfirmingMessage(message);
+  };
+
+  const handleReplyMessage = (message: ChatMessage) => {
+    if (recordingState !== "idle" || isComposerSubmitPending) {
+      return;
+    }
+
+    if (message.isDeleted) {
+      setComposerError("Нельзя ответить на удаленное сообщение.");
+      return;
+    }
+
+    setComposerError(null);
+    setEditingMessage(null);
+    setReplyingToMessage(message);
+    setPendingFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    textareaRef.current?.focus();
+  };
+
+  const handleStartEditingMessage = (message: ChatMessage) => {
+    if (recordingState !== "idle" || isComposerSubmitPending) {
+      return;
+    }
+
+    if (message.senderId !== user?.id || message.isDeleted) {
+      return;
+    }
+
+    setComposerError(null);
+    setReplyingToMessage(null);
+    setEditingMessage(message);
+    setDraft(message.body ?? "");
+    setPendingFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    queueMicrotask(() => textareaRef.current?.focus());
+  };
+
+  const cancelComposerContext = () => {
+    if (editingMessage) {
+      setEditingMessage(null);
+      setDraft("");
+    }
+
+    setReplyingToMessage(null);
+    setPendingFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    setComposerError(null);
   };
 
   const handleToggleGroupMemberRole = (
@@ -1219,6 +1350,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
             normalizedBody.toLocaleLowerCase().includes(normalizedMessageSearchLower);
           const isActiveSearchMatch = activeSearchMessage?.id === message.id;
           const isFocusedFromGlobalSearch = focusedMessageId === message.id;
+          const isEditedMessage = !message.isDeleted && message.updatedAt !== message.createdAt;
+          const messageMetaLabel = `${isEditedMessage ? "изм. " : ""}${formatTime(message.createdAt)}`;
+          const replyToMessage = message.replyTo;
+          const replyPreviewText = getReplyPreviewText(replyToMessage);
           const highlightClassName = isMine
             ? "rounded bg-white px-0.5 text-[#111111]"
             : "rounded bg-[#111111] px-0.5 text-white";
@@ -1246,14 +1381,36 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 )}
               >
                 {isMine ? (
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteMessage(message)}
-                    data-testid="delete-message-button"
-                    className="mt-1 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 opacity-0 transition hover:border-black/25 hover:text-black group-hover:opacity-100"
-                  >
-                    {deleteMessageMutation.isPending ? "..." : "Удалить"}
-                  </button>
+                  <div className="mt-1 flex flex-col gap-1 opacity-0 transition group-hover:opacity-100">
+                    {!message.isDeleted ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleReplyMessage(message)}
+                          data-testid="reply-message-button"
+                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                        >
+                          Ответ
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditingMessage(message)}
+                          data-testid="edit-message-button"
+                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                        >
+                          Изменить
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMessage(message)}
+                          data-testid="delete-message-button"
+                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                        >
+                          {deleteMessageMutation.isPending ? "..." : "Удалить"}
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
                 ) : null}
                 <div
                   className={clsx(
@@ -1280,6 +1437,29 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       : null,
                   )}
                 >
+                  {replyToMessage ? (
+                    <button
+                      type="button"
+                      onClick={() => focusMessageById(replyToMessage.id, "smooth")}
+                      className={clsx(
+                        "mb-1.5 block w-full rounded-[12px] border px-2.5 py-1.5 text-left transition hover:opacity-90",
+                        isMine
+                          ? "border-white/20 bg-white/10 text-white"
+                          : "border-black/10 bg-black/[0.03] text-stone-700",
+                      )}
+                      data-testid="message-reply-preview"
+                    >
+                      <p
+                        className={clsx(
+                          "truncate text-[10px] uppercase tracking-[0.12em]",
+                          isMine ? "text-white/70" : "text-stone-500",
+                        )}
+                      >
+                        {replyToMessage.sender.displayName}
+                      </p>
+                      <p className="mt-0.5 truncate text-xs">{replyPreviewText}</p>
+                    </button>
+                  ) : null}
                   {inlineMetaBubble && message.body ? (
                     <div
                       className={clsx(
@@ -1300,7 +1480,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                           isMine ? "text-white/62" : "text-stone-400",
                         )}
                       >
-                        {formatTime(message.createdAt)}
+                        {messageMetaLabel}
                       </p>
                     </div>
                   ) : null}
@@ -1331,10 +1511,20 @@ export function ConversationView({ chatId }: { chatId: string }) {
                         isMine ? "text-white/62" : "text-stone-400",
                       )}
                     >
-                      {formatTime(message.createdAt)}
+                      {messageMetaLabel}
                     </p>
                   ) : null}
                 </div>
+                {!isMine && !message.isDeleted ? (
+                  <button
+                    type="button"
+                    onClick={() => handleReplyMessage(message)}
+                    data-testid="reply-message-button"
+                    className="mt-1 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 opacity-0 transition hover:border-black/25 hover:text-black group-hover:opacity-100"
+                  >
+                    Ответ
+                  </button>
+                ) : null}
               </div>
             </div>
           );
@@ -1358,6 +1548,39 @@ export function ConversationView({ chatId }: { chatId: string }) {
             data-testid="composer-error"
           >
             {composerError}
+          </div>
+        ) : null}
+
+        {editingMessage || replyingToMessage ? (
+          <div
+            className="mb-3 flex items-start justify-between gap-3 rounded-[18px] border border-black/8 bg-white px-4 py-3"
+            data-testid={editingMessage ? "composer-edit-context" : "composer-reply-context"}
+          >
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-[0.14em] text-stone-500">
+                {editingMessage
+                  ? "Редактирование сообщения"
+                  : `Ответ: ${replyingToMessage?.sender.displayName ?? "Сообщение"}`}
+              </p>
+              <button
+                type="button"
+                onClick={() =>
+                  focusMessageById(editingMessage?.id ?? replyingToMessage?.id ?? "", "smooth")
+                }
+                className="mt-1 block max-w-full truncate text-left text-sm text-[#171717] hover:underline"
+              >
+                {editingMessage
+                  ? getReplyPreviewText(editingMessage)
+                  : getReplyPreviewText(replyingToMessage)}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={cancelComposerContext}
+              className="shrink-0 rounded-full border border-black/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-600 transition hover:border-black/25 hover:text-black"
+            >
+              Отмена
+            </button>
           </div>
         ) : null}
 
@@ -1425,7 +1648,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={recordingState !== "idle"}
+              disabled={recordingState !== "idle" || isEditingMessage || isComposerSubmitPending}
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-black/10 bg-[#f7f7f5] text-stone-500 transition hover:border-black/25 hover:bg-white hover:text-black"
               data-testid="attachment-picker-button"
               aria-label="Прикрепить файл"
@@ -1448,8 +1671,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 maxLength={MESSAGE_MAX_LENGTH}
-                disabled={recordingState !== "idle"}
-                placeholder="Сообщение..."
+                disabled={recordingState !== "idle" || isComposerSubmitPending}
+                placeholder={isEditingMessage ? "Измените сообщение..." : "Сообщение..."}
                 className="h-[44px] min-h-[44px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 py-[9px] leading-[26px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
               />
 
@@ -1470,13 +1693,13 @@ export function ConversationView({ chatId }: { chatId: string }) {
             <button
               data-testid="send-message-button"
               type="submit"
-              disabled={sendMessageMutation.isPending || !hasComposerContent}
+              disabled={isComposerSubmitPending || !hasComposerContent}
               tabIndex={showSendButton ? 0 : -1}
-              aria-label="Отправить сообщение"
-              title="Отправить сообщение"
+              aria-label={submitButtonLabel}
+              title={submitButtonLabel}
               className="flex h-11 w-11 items-center justify-center rounded-full bg-[#111111] text-white transition hover:translate-y-[-1px] hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
             >
-              {sendMessageMutation.isPending ? (
+              {isComposerSubmitPending ? (
                 <span className="text-sm font-semibold leading-none">...</span>
               ) : (
                 <SendIcon className="h-5 w-5" />
@@ -1877,6 +2100,20 @@ function formatGroupRole(role: ChatMemberRole) {
     default:
       return "member";
   }
+}
+
+function getReplyPreviewText(
+  message:
+    | {
+        body: string | null;
+        isDeleted?: boolean;
+        deletedAt?: string | null;
+        attachments?: Array<{ originalName: string; mimeType?: string | null }>;
+      }
+    | null
+    | undefined,
+) {
+  return getLastMessagePreviewText(message);
 }
 
 function formatRecordingDuration(seconds: number) {

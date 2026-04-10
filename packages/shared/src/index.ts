@@ -24,6 +24,14 @@ export interface MessageDto {
   body: string | null;
   createdAt: string;
   updatedAt: string;
+  replyTo: {
+    id: string;
+    senderId: string;
+    body: string | null;
+    isDeleted: boolean;
+    createdAt: string;
+    updatedAt: string;
+  } | null;
   attachments: AttachmentDto[];
 }
 

@@ -49,6 +49,17 @@ type MessageWithRelations = Prisma.MessageGetPayload<{
   include: {
     sender: true;
     attachments: true;
+    replyTo: {
+      include: {
+        sender: true;
+      };
+    };
+  };
+}>;
+
+type ReplyPreviewWithSender = Prisma.MessageGetPayload<{
+  include: {
+    sender: true;
   };
 }>;
 
@@ -544,6 +555,11 @@ export class ChatService {
       include: {
         sender: true,
         attachments: true,
+        replyTo: {
+          include: {
+            sender: true,
+          },
+        },
       },
       orderBy: {
         createdAt: "desc",
@@ -570,6 +586,7 @@ export class ChatService {
     if (!body) {
       throw new BadRequestException("Сообщение не должно быть пустым.");
     }
+    const replyToMessage = await this.resolveReplyTarget(chatId, dto.replyToMessageId);
 
     const message = await this.prisma.$transaction(async (transaction) => {
       const createdMessage = await transaction.message.create({
@@ -577,10 +594,16 @@ export class ChatService {
           chatId,
           senderId: currentUserId,
           body,
+          replyToMessageId: replyToMessage?.id ?? null,
         },
         include: {
           sender: true,
           attachments: true,
+          replyTo: {
+            include: {
+              sender: true,
+            },
+          },
         },
       });
 
@@ -604,6 +627,72 @@ export class ChatService {
     return payload;
   }
 
+  async editMessage(chatId: string, messageId: string, currentUserId: string, nextBody: string) {
+    await this.ensureMembership(chatId, currentUserId);
+
+    const body = nextBody.trim();
+    if (!body) {
+      throw new BadRequestException("Сообщение не должно быть пустым.");
+    }
+
+    const message = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        chatId,
+      },
+      include: {
+        sender: true,
+        attachments: true,
+        replyTo: {
+          include: {
+            sender: true,
+          },
+        },
+      },
+    });
+
+    if (!message) {
+      throw new NotFoundException("Message not found");
+    }
+
+    if (message.senderId !== currentUserId) {
+      throw new ForbiddenException("Вы можете редактировать только свои сообщения.");
+    }
+
+    if (message.deletedAt) {
+      throw new BadRequestException("Удаленное сообщение нельзя редактировать.");
+    }
+
+    if (message.body?.trim() === body) {
+      return this.toMessagePayload(message);
+    }
+
+    const updatedMessage = await this.prisma.message.update({
+      where: { id: messageId },
+      data: {
+        body,
+        updatedAt: new Date(),
+      },
+      include: {
+        sender: true,
+        attachments: true,
+        replyTo: {
+          include: {
+            sender: true,
+          },
+        },
+      },
+    });
+
+    const payload = this.toMessagePayload(updatedMessage);
+
+    this.realtimeGateway.emitMessageUpdated(chatId, payload);
+    this.realtimeGateway.emitChatUpdated(chatId);
+    this.logger.log(`Edited message ${messageId} in chat ${chatId} by user ${currentUserId}`);
+
+    return payload;
+  }
+
   async deleteMessage(chatId: string, messageId: string, currentUserId: string) {
     await this.ensureMembership(chatId, currentUserId);
 
@@ -616,6 +705,11 @@ export class ChatService {
         include: {
           sender: true,
           attachments: true,
+          replyTo: {
+            include: {
+              sender: true,
+            },
+          },
         },
       }),
       this.prisma.chat.findUnique({
@@ -655,6 +749,11 @@ export class ChatService {
         include: {
           sender: true,
           attachments: true,
+          replyTo: {
+            include: {
+              sender: true,
+            },
+          },
         },
       });
 
@@ -681,6 +780,7 @@ export class ChatService {
     currentUserId: string,
     uploadedFile: UploadedAttachmentFile | undefined,
     body?: string,
+    replyToMessageId?: string,
   ) {
     await this.ensureMembership(chatId, currentUserId);
 
@@ -689,6 +789,7 @@ export class ChatService {
     }
 
     const trimmedBody = body?.trim() ?? "";
+    const replyToMessage = await this.resolveReplyTarget(chatId, replyToMessageId);
     const mimeType = uploadedFile.mimetype || "application/octet-stream";
 
     if (!ATTACHMENT_ALLOWED_MIME_TYPES.has(mimeType)) {
@@ -716,6 +817,7 @@ export class ChatService {
             chatId,
             senderId: currentUserId,
             body: trimmedBody || null,
+            replyToMessageId: replyToMessage?.id ?? null,
             attachments: {
               create: {
                 uploaderId: currentUserId,
@@ -729,6 +831,11 @@ export class ChatService {
           include: {
             sender: true,
             attachments: true,
+            replyTo: {
+              include: {
+                sender: true,
+              },
+            },
           },
         });
 
@@ -813,6 +920,30 @@ export class ChatService {
     );
 
     return { success: true };
+  }
+
+  private async resolveReplyTarget(chatId: string, replyToMessageId?: string) {
+    const normalizedReplyToMessageId = replyToMessageId?.trim();
+
+    if (!normalizedReplyToMessageId) {
+      return null;
+    }
+
+    const replyToMessage = await this.prisma.message.findFirst({
+      where: {
+        id: normalizedReplyToMessageId,
+        chatId,
+      },
+      include: {
+        sender: true,
+      },
+    });
+
+    if (!replyToMessage) {
+      throw new NotFoundException("Исходное сообщение для ответа не найдено.");
+    }
+
+    return replyToMessage satisfies ReplyPreviewWithSender;
   }
 
   private async ensureMembership(chatId: string, currentUserId: string) {
@@ -965,6 +1096,24 @@ export class ChatService {
     return role.toLowerCase() as "creator" | "admin" | "member";
   }
 
+  private toReplyPreview(message: ReplyPreviewWithSender | null) {
+    if (!message) {
+      return null;
+    }
+
+    const isDeleted = Boolean(message.deletedAt);
+
+    return {
+      id: message.id,
+      senderId: message.senderId,
+      sender: this.toSafeUser(message.sender),
+      body: isDeleted ? null : message.body,
+      isDeleted,
+      createdAt: message.createdAt.toISOString(),
+      updatedAt: message.updatedAt.toISOString(),
+    };
+  }
+
   private toMessagePayload(message: MessageWithRelations) {
     const isDeleted = Boolean(message.deletedAt);
 
@@ -977,6 +1126,7 @@ export class ChatService {
       updatedAt: message.updatedAt.toISOString(),
       deletedAt: message.deletedAt?.toISOString() ?? null,
       isDeleted,
+      replyTo: this.toReplyPreview(message.replyTo),
       sender: this.toSafeUser(message.sender),
       attachments: isDeleted
         ? []
