@@ -2,7 +2,16 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { readJson, useAuth } from "../lib/auth-context";
 import {
   appendMessageUnique,
@@ -33,6 +42,10 @@ const ATTACHMENT_ACCEPT = [
   "image/webp",
   "application/pdf",
   "text/plain",
+  "audio/webm",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/mpeg",
 ].join(",");
 const ATTACHMENT_ALLOWED_TYPES = new Set([
   "image/png",
@@ -40,12 +53,21 @@ const ATTACHMENT_ALLOWED_TYPES = new Set([
   "image/webp",
   "application/pdf",
   "text/plain",
+  "audio/webm",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/mpeg",
 ]);
+const VOICE_RECORDER_MIME_TYPE = "audio/webm";
+const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
+const SCROLL_BOTTOM_THRESHOLD = 180;
 
 type ComposerPayload = {
   body: string;
   file: File | null;
 };
+
+type RecordingState = "idle" | "recording" | "stopping";
 
 type ConversationRenderItem =
   | {
@@ -66,11 +88,19 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [confirmingMessage, setConfirmingMessage] = useState<ChatMessage | null>(null);
+  const [recordingState, setRecordingState] = useState<RecordingState>("idle");
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const messageListEndRef = useRef<HTMLDivElement | null>(null);
   const shouldScrollAfterSendRef = useRef(false);
+  const shouldStickToBottomRef = useRef(true);
+  const lastMessageIdRef = useRef<string | null>(null);
+  const hasInitialScrollRef = useRef(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recordedChunksRef = useRef<BlobPart[]>([]);
 
   const chatQuery = useQuery({
     queryKey: ["chat", chatId],
@@ -119,6 +149,40 @@ export function ConversationView({ chatId }: { chatId: string }) {
     return items;
   }, [messageItems]);
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const listElement = messageListRef.current;
+
+    if (!listElement) {
+      return;
+    }
+
+    const runScroll = () => {
+      listElement.scrollTo({
+        top: listElement.scrollHeight,
+        behavior,
+      });
+    };
+
+    window.requestAnimationFrame(() => {
+      runScroll();
+      window.requestAnimationFrame(runScroll);
+    });
+  }, []);
+
+  const updateStickToBottomState = useCallback(() => {
+    const listElement = messageListRef.current;
+
+    if (!listElement) {
+      shouldStickToBottomRef.current = true;
+      return;
+    }
+
+    const distanceToBottom =
+      listElement.scrollHeight - listElement.scrollTop - listElement.clientHeight;
+
+    shouldStickToBottomRef.current = distanceToBottom <= SCROLL_BOTTOM_THRESHOLD;
+  }, []);
+
   const sendMessageMutation = useMutation({
     mutationFn: async ({ body, file }: ComposerPayload) => {
       if (file) {
@@ -159,6 +223,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+      scrollToBottom("smooth");
     },
     onError: (error) => {
       setComposerError(
@@ -222,27 +287,32 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, [authorizedFetch, chatId, messageItems, user?.id]);
 
   useEffect(() => {
-    if (!shouldScrollAfterSendRef.current || messageItems.length === 0) {
+    const lastMessage = messageItems[messageItems.length - 1] ?? null;
+
+    if (!lastMessage) {
+      lastMessageIdRef.current = null;
+      hasInitialScrollRef.current = false;
       return;
     }
 
-    const scrollToBottom = () => {
-      const endElement = messageListEndRef.current;
-      const listElement = messageListRef.current;
+    const isInitialRender = !hasInitialScrollRef.current;
+    const isNewLastMessage = lastMessage.id !== lastMessageIdRef.current;
+    const isOwnMessage = lastMessage.senderId === user?.id;
+    const shouldScroll =
+      isInitialRender ||
+      shouldScrollAfterSendRef.current ||
+      isOwnMessage ||
+      shouldStickToBottomRef.current;
 
-      if (endElement) {
-        endElement.scrollIntoView({ block: "end", behavior: "smooth" });
-      } else if (listElement) {
-        listElement.scrollTo({ top: listElement.scrollHeight, behavior: "smooth" });
-      }
+    lastMessageIdRef.current = lastMessage.id;
+    hasInitialScrollRef.current = true;
 
-      shouldScrollAfterSendRef.current = false;
-    };
+    if (isNewLastMessage && shouldScroll) {
+      scrollToBottom(isInitialRender ? "auto" : "smooth");
+    }
 
-    const frameId = window.requestAnimationFrame(scrollToBottom);
-
-    return () => window.cancelAnimationFrame(frameId);
-  }, [messageItems]);
+    shouldScrollAfterSendRef.current = false;
+  }, [messageItems, scrollToBottom, user?.id]);
 
   const otherUser = useMemo(
     () => chatQuery.data?.members.find((member) => member.id !== user?.id) ?? null,
@@ -250,6 +320,156 @@ export function ConversationView({ chatId }: { chatId: string }) {
   );
   const hasComposerContent = Boolean(draft.trim() || pendingFile);
   const showSendButton = hasComposerContent || sendMessageMutation.isPending;
+  const showVoiceButton =
+    !hasComposerContent && !sendMessageMutation.isPending && recordingState === "idle";
+
+  const stopMediaStream = useCallback(() => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+  }, []);
+
+  const startVoiceRecording = useCallback(async () => {
+    if (recordingState !== "idle" || sendMessageMutation.isPending) {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setComposerError("Запись голосовых сообщений не поддерживается в этом браузере.");
+      return;
+    }
+
+    try {
+      setComposerError(null);
+      setPendingFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      recordedChunksRef.current = [];
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const preferredMimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported(VOICE_RECORDER_MIME_TYPE)
+          ? VOICE_RECORDER_MIME_TYPE
+          : "";
+      const recorder = new MediaRecorder(
+        stream,
+        preferredMimeType ? { mimeType: preferredMimeType } : undefined,
+      );
+
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      setRecordingSeconds(0);
+      setRecordingState("recording");
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        stopMediaStream();
+        mediaRecorderRef.current = null;
+        recordedChunksRef.current = [];
+        setRecordingState("idle");
+        setRecordingSeconds(0);
+        setComposerError("Не удалось записать голосовое сообщение.");
+      };
+
+      recorder.start();
+    } catch (error) {
+      stopMediaStream();
+      mediaRecorderRef.current = null;
+      recordedChunksRef.current = [];
+      setRecordingState("idle");
+      setRecordingSeconds(0);
+      setComposerError(
+        error instanceof DOMException && error.name === "NotAllowedError"
+          ? "Разрешите доступ к микрофону, чтобы записывать голосовые."
+          : "Не удалось получить доступ к микрофону.",
+      );
+    }
+  }, [recordingState, sendMessageMutation.isPending, stopMediaStream]);
+
+  const finishVoiceRecording = useCallback(
+    (shouldSend: boolean) => {
+      const recorder = mediaRecorderRef.current;
+
+      if (!recorder || recorder.state === "inactive") {
+        stopMediaStream();
+        mediaRecorderRef.current = null;
+        recordedChunksRef.current = [];
+        setRecordingState("idle");
+        setRecordingSeconds(0);
+        return;
+      }
+
+      setRecordingState("stopping");
+
+      recorder.onstop = () => {
+        const mimeType = recorder.mimeType || VOICE_RECORDER_MIME_TYPE;
+        const normalizedMimeType = mimeType.includes("audio/ogg")
+          ? "audio/ogg"
+          : mimeType.includes("audio/webm")
+            ? VOICE_RECORDER_MIME_TYPE
+            : mimeType;
+        const chunks = recordedChunksRef.current;
+
+        stopMediaStream();
+        mediaRecorderRef.current = null;
+        recordedChunksRef.current = [];
+        setRecordingState("idle");
+        setRecordingSeconds(0);
+
+        if (!shouldSend) {
+          return;
+        }
+
+        const blob = new Blob(chunks, { type: normalizedMimeType });
+
+        if (blob.size <= 0) {
+          setComposerError("Голосовое сообщение получилось пустым. Попробуйте ещё раз.");
+          return;
+        }
+
+        const voiceFile = new File([blob], VOICE_RECORDING_FILE_NAME, {
+          type: normalizedMimeType,
+        });
+
+        shouldScrollAfterSendRef.current = true;
+        sendMessageMutation.mutate({ body: "", file: voiceFile });
+      };
+
+      recorder.stop();
+    },
+    [sendMessageMutation, stopMediaStream],
+  );
+
+  useEffect(() => {
+    if (recordingState !== "recording") {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setRecordingSeconds((seconds) => seconds + 1);
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [recordingState]);
+
+  useEffect(
+    () => () => {
+      const recorder = mediaRecorderRef.current;
+
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+
+      stopMediaStream();
+    },
+    [stopMediaStream],
+  );
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0] ?? null;
@@ -260,7 +480,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     if (!ATTACHMENT_ALLOWED_TYPES.has(selectedFile.type)) {
-      setComposerError("Поддерживаются только PNG, JPEG, WEBP, PDF и TXT файлы.");
+      setComposerError("Поддерживаются PNG, JPEG, WEBP, PDF, TXT и аудио WEBM/OGG/MP4/MP3.");
       event.target.value = "";
       return;
     }
@@ -284,7 +504,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   const submitComposer = () => {
     const body = draft.trim();
-    if ((!body && !pendingFile) || sendMessageMutation.isPending) {
+    if ((!body && !pendingFile) || sendMessageMutation.isPending || recordingState !== "idle") {
       return;
     }
 
@@ -402,6 +622,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
       <div
         ref={messageListRef}
+        onScroll={updateStickToBottomState}
         className="scroll-region-y relative z-10 flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
         data-testid="message-list"
       >
@@ -553,11 +774,52 @@ export function ConversationView({ chatId }: { chatId: string }) {
           </div>
         ) : null}
 
+        {recordingState !== "idle" ? (
+          <div
+            className="mb-3 flex flex-col gap-3 rounded-[22px] border border-black/8 bg-white px-4 py-3 shadow-[0_14px_26px_rgba(17,24,39,0.05)] sm:flex-row sm:items-center sm:justify-between"
+            data-testid="voice-recorder-panel"
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#111111] text-white">
+                <span className="absolute h-full w-full animate-ping rounded-full bg-black/20" />
+                <MicIcon className="relative h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-[#171717]">
+                  {recordingState === "stopping" ? "Готовим голосовое..." : "Идёт запись"}
+                </p>
+                <p className="text-xs text-stone-500">
+                  {formatRecordingDuration(recordingSeconds)} · как в Telegram, можно отменить или отправить
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <button
+                type="button"
+                onClick={() => finishVoiceRecording(false)}
+                disabled={recordingState === "stopping"}
+                className="rounded-full border border-black/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={() => finishVoiceRecording(true)}
+                disabled={recordingState === "stopping"}
+                className="rounded-full bg-[#111111] px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Отправить
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         <div className="flex items-center gap-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-2 rounded-[27px] border border-black/8 bg-white pl-2 pr-3 py-1.5 shadow-[0_14px_24px_rgba(17,24,39,0.045)]">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
+              disabled={recordingState !== "idle"}
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-black/10 bg-[#f7f7f5] text-stone-500 transition hover:border-black/25 hover:bg-white hover:text-black"
               data-testid="attachment-picker-button"
               aria-label="Прикрепить файл"
@@ -580,8 +842,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 maxLength={MESSAGE_MAX_LENGTH}
+                disabled={recordingState !== "idle"}
                 placeholder="Сообщение..."
-                className="h-[44px] min-h-[44px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 py-[9px] leading-[26px] text-[#171717] outline-none transition placeholder:text-stone-400"
+                className="h-[44px] min-h-[44px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 py-[9px] leading-[26px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
               />
 
               <div className="mt-0 flex justify-end px-1 pb-0">
@@ -612,6 +875,25 @@ export function ConversationView({ chatId }: { chatId: string }) {
               ) : (
                 <SendIcon className="h-5 w-5" />
               )}
+            </button>
+          </div>
+
+          <div
+            className={clsx(
+              "self-center overflow-hidden transition-all duration-200 ease-out",
+              showVoiceButton ? "w-12 opacity-100" : "pointer-events-none w-0 opacity-0",
+            )}
+          >
+            <button
+              data-testid="voice-message-button"
+              type="button"
+              onClick={startVoiceRecording}
+              tabIndex={showVoiceButton ? 0 : -1}
+              aria-label="Записать голосовое сообщение"
+              title="Записать голосовое сообщение"
+              className="flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-[#111111] transition hover:translate-y-[-1px] hover:border-black/25 hover:bg-[#111111] hover:text-white"
+            >
+              <MicIcon className="h-5 w-5" />
             </button>
           </div>
         </div>
@@ -650,6 +932,7 @@ function MessageAttachments({
     <div className={clsx("space-y-2", attachments.length > 0 && "mt-3")}>
       {attachments.map((attachment) => {
         const downloadUrl = buildAttachmentUrl(attachment.downloadPath, accessToken);
+        const isAudio = attachment.mimeType.startsWith("audio/");
 
         if (attachment.isImage) {
           return (
@@ -677,6 +960,48 @@ function MessageAttachments({
                 <span className="shrink-0">{formatFileSize(attachment.sizeBytes)}</span>
               </div>
             </a>
+          );
+        }
+
+        if (isAudio) {
+          return (
+            <div
+              key={attachment.id}
+              className={clsx(
+                "min-w-[260px] max-w-full rounded-[18px] border px-3 py-3",
+                isMine
+                  ? "border-white/14 bg-white/8 text-white"
+                  : "border-black/8 bg-stone-50 text-[#171717]",
+              )}
+              data-testid="message-voice"
+            >
+              <div className="mb-2 flex items-center gap-2">
+                <span
+                  className={clsx(
+                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
+                    isMine ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
+                  )}
+                >
+                  <MicIcon className="h-4 w-4" />
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">Голосовое сообщение</p>
+                  <p className={clsx("text-xs", isMine ? "text-white/70" : "text-stone-500")}>
+                    {formatFileSize(attachment.sizeBytes)}
+                  </p>
+                </div>
+              </div>
+              <audio
+                controls
+                preload="metadata"
+                src={downloadUrl}
+                className="h-9 w-full min-w-0"
+              >
+                <a href={downloadUrl} target="_blank" rel="noreferrer">
+                  Открыть голосовое сообщение
+                </a>
+              </audio>
+            </div>
           );
         }
 
@@ -722,6 +1047,14 @@ function ConversationSkeleton() {
   );
 }
 
+function formatRecordingDuration(seconds: number) {
+  const safeSeconds = Math.max(0, seconds);
+  const minutes = Math.floor(safeSeconds / 60);
+  const restSeconds = safeSeconds % 60;
+
+  return `${minutes}:${String(restSeconds).padStart(2, "0")}`;
+}
+
 function PaperclipIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -735,6 +1068,25 @@ function PaperclipIcon({ className }: { className?: string }) {
       aria-hidden="true"
     >
       <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
+function MicIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <path d="M12 19v3" />
     </svg>
   );
 }

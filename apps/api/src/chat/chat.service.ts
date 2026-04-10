@@ -23,6 +23,11 @@ const ATTACHMENT_ALLOWED_MIME_TYPES = new Set([
   "image/webp",
   "application/pdf",
   "text/plain",
+  "audio/webm",
+  "audio/ogg",
+  "audio/ogg;codecs=opus",
+  "audio/mp4",
+  "audio/mpeg",
 ]);
 
 type UploadedAttachmentFile = {
@@ -381,7 +386,7 @@ export class ChatService {
 
     if (!ATTACHMENT_ALLOWED_MIME_TYPES.has(mimeType)) {
       throw new BadRequestException(
-        "Поддерживаются только PNG, JPEG, WEBP, PDF и TXT файлы.",
+        "Поддерживаются PNG, JPEG, WEBP, PDF, TXT и аудиофайлы WEBM/OGG/MP4/MP3.",
       );
     }
 
