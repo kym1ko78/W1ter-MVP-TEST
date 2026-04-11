@@ -30,11 +30,16 @@ export interface ChatMessage {
   attachments: ChatAttachment[];
 }
 
+export type ChatType = "direct" | "group";
+export type ChatMemberRole = "creator" | "admin" | "member";
+
 export interface ChatListItem {
   id: string;
-  type: "direct";
+  type: ChatType;
+  title: string | null;
   updatedAt: string;
   unreadCount: number;
+  currentUserRole: ChatMemberRole;
   lastMessage: {
     id: string;
     chatId: string;
@@ -52,4 +57,25 @@ export interface ChatListItem {
 export interface MessagePage {
   items: ChatMessage[];
   nextCursor: string | null;
+}
+
+export interface GroupMemberItem {
+  user: SafeUser;
+  role: ChatMemberRole;
+  joinedAt: string;
+  isCurrentUser: boolean;
+}
+
+export interface GroupMembersResponse {
+  chatId: string;
+  title: string | null;
+  members: GroupMemberItem[];
+  permissions: {
+    isCreator: boolean;
+    isAdmin: boolean;
+    canAddMembers: boolean;
+    canRemoveMembers: boolean;
+    canManageRoles: boolean;
+    canLeaveGroup: boolean;
+  };
 }

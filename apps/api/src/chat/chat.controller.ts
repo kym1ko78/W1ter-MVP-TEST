@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Patch,
   Param,
   Post,
   Query,
@@ -17,9 +18,12 @@ import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { RateLimitGuard } from "../common/guards/rate-limit.guard";
 import type { JwtPayload } from "../common/types/jwt-payload";
 import { ChatService } from "./chat.service";
+import { AddChatMemberDto } from "./dto/add-chat-member.dto";
 import { CreateDirectChatDto } from "./dto/create-direct-chat.dto";
+import { CreateGroupChatDto } from "./dto/create-group-chat.dto";
 import { MarkReadDto } from "./dto/mark-read.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
+import { UpdateChatMemberRoleDto } from "./dto/update-chat-member-role.dto";
 import { UploadAttachmentDto } from "./dto/upload-attachment.dto";
 
 type UploadedAttachmentFile = {
@@ -54,12 +58,71 @@ export class ChatController {
     return this.chatService.createDirectChat(user.sub, dto);
   }
 
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-create-group",
+    limit: 10,
+    windowMs: 60 * 1000,
+    scope: "user",
+  })
+  @Post("group")
+  async createGroupChat(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CreateGroupChatDto,
+  ) {
+    return this.chatService.createGroupChat(user.sub, dto);
+  }
+
   @Get(":chatId")
   async getChat(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
   ) {
     return this.chatService.getChatById(chatId, user.sub);
+  }
+
+  @Get(":chatId/members")
+  async getGroupMembers(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+  ) {
+    return this.chatService.getGroupMembers(chatId, user.sub);
+  }
+
+  @Post(":chatId/members")
+  async addGroupMember(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+    @Body() dto: AddChatMemberDto,
+  ) {
+    return this.chatService.addGroupMember(chatId, user.sub, dto.userId);
+  }
+
+  @Delete(":chatId/members/:memberId")
+  async removeGroupMember(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+    @Param("memberId") memberId: string,
+  ) {
+    return this.chatService.removeGroupMember(chatId, user.sub, memberId);
+  }
+
+  @Patch(":chatId/members/:memberId/role")
+  async updateGroupMemberRole(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+    @Param("memberId") memberId: string,
+    @Body() dto: UpdateChatMemberRoleDto,
+  ) {
+    return this.chatService.updateGroupMemberRole(chatId, user.sub, memberId, dto.role);
+  }
+
+  @Post(":chatId/leave")
+  async leaveGroup(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+  ) {
+    return this.chatService.leaveGroup(chatId, user.sub);
   }
 
   @Delete(":chatId")

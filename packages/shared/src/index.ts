@@ -27,11 +27,16 @@ export interface MessageDto {
   attachments: AttachmentDto[];
 }
 
+export type ChatTypeDto = "direct" | "group";
+export type ChatMemberRoleDto = "creator" | "admin" | "member";
+
 export interface ChatListItemDto {
   id: string;
-  type: "direct";
+  type: ChatTypeDto;
+  title: string | null;
   updatedAt: string;
   unreadCount: number;
+  currentUserRole: ChatMemberRoleDto;
   lastMessage: MessageDto | null;
   members: SafeUser[];
 }
