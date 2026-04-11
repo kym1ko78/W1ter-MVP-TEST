@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Attachment, ChatType, Prisma, User } from "@prisma/client";
+import { Attachment, ChatMemberRole, ChatType, Prisma, User } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
@@ -14,6 +14,7 @@ import { basename, extname, join } from "node:path";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
 import { CreateDirectChatDto } from "./dto/create-direct-chat.dto";
+import { CreateGroupChatDto } from "./dto/create-group-chat.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
 
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
@@ -48,6 +49,12 @@ type MessageWithRelations = Prisma.MessageGetPayload<{
   include: {
     sender: true;
     attachments: true;
+  };
+}>;
+
+type MembershipWithChat = Prisma.ChatMemberGetPayload<{
+  include: {
+    chat: true;
   };
 }>;
 
@@ -114,6 +121,54 @@ export class ChatService {
     this.logger.log(
       `Created direct chat ${chat.id} for users ${currentUserId} and ${dto.targetUserId}`,
     );
+
+    return this.getChatById(chat.id, currentUserId);
+  }
+
+  async createGroupChat(currentUserId: string, dto: CreateGroupChatDto) {
+    const title = dto.title.trim();
+    if (!title) {
+      throw new BadRequestException("Название группы не должно быть пустым.");
+    }
+
+    const memberIds = Array.from(new Set(dto.memberIds ?? []))
+      .map((memberId) => memberId.trim())
+      .filter((memberId) => memberId && memberId !== currentUserId);
+
+    if (memberIds.length > 0) {
+      const users = await this.prisma.user.findMany({
+        where: {
+          id: {
+            in: memberIds,
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      const foundUserIds = new Set(users.map((item) => item.id));
+      const missingUserId = memberIds.find((memberId) => !foundUserIds.has(memberId));
+
+      if (missingUserId) {
+        throw new NotFoundException("Один из выбранных пользователей не найден.");
+      }
+    }
+
+    const chat = await this.prisma.chat.create({
+      data: {
+        type: ChatType.GROUP,
+        title,
+        members: {
+          create: [
+            { userId: currentUserId, role: ChatMemberRole.CREATOR },
+            ...memberIds.map((memberId) => ({ userId: memberId, role: ChatMemberRole.MEMBER })),
+          ],
+        },
+      },
+    });
+
+    this.logger.log(`Created group chat ${chat.id} by user ${currentUserId}`);
 
     return this.getChatById(chat.id, currentUserId);
   }
@@ -188,8 +243,256 @@ export class ChatService {
     return this.toChatListItem(chat, currentUserId);
   }
 
+  async getGroupMembers(chatId: string, currentUserId: string) {
+    const membership = await this.ensureGroupMembership(chatId, currentUserId);
+
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      include: {
+        members: {
+          include: {
+            user: true,
+          },
+          orderBy: {
+            joinedAt: "asc",
+          },
+        },
+      },
+    });
+
+    if (!chat) {
+      throw new NotFoundException("Chat not found");
+    }
+
+    return {
+      chatId: chat.id,
+      title: chat.title,
+      members: chat.members.map((member) => ({
+        user: this.toSafeUser(member.user),
+        role: this.toChatMemberRole(member.role),
+        joinedAt: member.joinedAt.toISOString(),
+        isCurrentUser: member.userId === currentUserId,
+      })),
+      permissions: this.getGroupPermissions(membership.role),
+    };
+  }
+
+  async addGroupMember(chatId: string, currentUserId: string, userId: string) {
+    const membership = await this.ensureGroupMembership(chatId, currentUserId);
+
+    if (!this.canManageGroupMembers(membership.role)) {
+      throw new ForbiddenException("Только creator и admin могут добавлять участников.");
+    }
+
+    if (userId === currentUserId) {
+      throw new BadRequestException("Вы уже состоите в этой группе.");
+    }
+
+    const [targetUser, existingMember] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true },
+      }),
+      this.prisma.chatMember.findUnique({
+        where: {
+          chatId_userId: {
+            chatId,
+            userId,
+          },
+        },
+      }),
+    ]);
+
+    if (!targetUser) {
+      throw new NotFoundException("Пользователь не найден.");
+    }
+
+    if (existingMember) {
+      throw new BadRequestException("Пользователь уже в группе.");
+    }
+
+    await this.prisma.$transaction(async (transaction) => {
+      await transaction.chatMember.create({
+        data: {
+          chatId,
+          userId,
+          role: ChatMemberRole.MEMBER,
+        },
+      });
+
+      await transaction.chat.update({
+        where: { id: chatId },
+        data: {
+          updatedAt: new Date(),
+        },
+      });
+    });
+
+    this.realtimeGateway.emitChatUpdated(chatId);
+    this.logger.log(`Added user ${userId} to group chat ${chatId} by ${currentUserId}`);
+
+    return this.getGroupMembers(chatId, currentUserId);
+  }
+
+  async removeGroupMember(chatId: string, currentUserId: string, memberId: string) {
+    const membership = await this.ensureGroupMembership(chatId, currentUserId);
+
+    if (!this.canManageGroupMembers(membership.role)) {
+      throw new ForbiddenException("Только creator и admin могут удалять участников.");
+    }
+
+    if (memberId === currentUserId) {
+      throw new BadRequestException("Чтобы выйти из группы, используйте отдельное действие.");
+    }
+
+    const targetMember = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId: memberId,
+        },
+      },
+    });
+
+    if (!targetMember) {
+      throw new NotFoundException("Участник не найден.");
+    }
+
+    if (targetMember.role === ChatMemberRole.CREATOR) {
+      throw new ForbiddenException("Нельзя удалить создателя группы.");
+    }
+
+    if (membership.role === ChatMemberRole.ADMIN && targetMember.role === ChatMemberRole.ADMIN) {
+      throw new ForbiddenException("Admin не может удалять другого admin.");
+    }
+
+    await this.prisma.$transaction(async (transaction) => {
+      await transaction.chatMember.delete({
+        where: {
+          chatId_userId: {
+            chatId,
+            userId: memberId,
+          },
+        },
+      });
+
+      await transaction.chat.update({
+        where: { id: chatId },
+        data: {
+          updatedAt: new Date(),
+        },
+      });
+    });
+
+    this.realtimeGateway.emitChatDeleted([memberId], { chatId });
+    this.realtimeGateway.emitChatUpdated(chatId);
+    this.logger.log(`Removed user ${memberId} from group chat ${chatId} by ${currentUserId}`);
+
+    return this.getGroupMembers(chatId, currentUserId);
+  }
+
+  async updateGroupMemberRole(
+    chatId: string,
+    currentUserId: string,
+    memberId: string,
+    role: "admin" | "member",
+  ) {
+    const membership = await this.ensureGroupMembership(chatId, currentUserId);
+
+    if (membership.role !== ChatMemberRole.CREATOR) {
+      throw new ForbiddenException("Только creator может управлять ролями.");
+    }
+
+    if (memberId === currentUserId) {
+      throw new BadRequestException("Нельзя изменить роль создателя.");
+    }
+
+    const targetMember = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId: memberId,
+        },
+      },
+    });
+
+    if (!targetMember) {
+      throw new NotFoundException("Участник не найден.");
+    }
+
+    if (targetMember.role === ChatMemberRole.CREATOR) {
+      throw new ForbiddenException("Нельзя изменить роль создателя.");
+    }
+
+    const nextRole = role === "admin" ? ChatMemberRole.ADMIN : ChatMemberRole.MEMBER;
+
+    if (targetMember.role !== nextRole) {
+      await this.prisma.$transaction(async (transaction) => {
+        await transaction.chatMember.update({
+          where: {
+            chatId_userId: {
+              chatId,
+              userId: memberId,
+            },
+          },
+          data: {
+            role: nextRole,
+          },
+        });
+
+        await transaction.chat.update({
+          where: { id: chatId },
+          data: {
+            updatedAt: new Date(),
+          },
+        });
+      });
+
+      this.realtimeGateway.emitChatUpdated(chatId);
+    }
+
+    this.logger.log(`Updated role for user ${memberId} in group chat ${chatId} by ${currentUserId}`);
+
+    return this.getGroupMembers(chatId, currentUserId);
+  }
+
+  async leaveGroup(chatId: string, currentUserId: string) {
+    const membership = await this.ensureGroupMembership(chatId, currentUserId);
+
+    if (membership.role === ChatMemberRole.CREATOR) {
+      throw new ForbiddenException("Создатель не может выйти из группы. Удалите группу или передайте роль.");
+    }
+
+    await this.prisma.$transaction(async (transaction) => {
+      await transaction.chatMember.delete({
+        where: {
+          chatId_userId: {
+            chatId,
+            userId: currentUserId,
+          },
+        },
+      });
+
+      await transaction.chat.update({
+        where: { id: chatId },
+        data: {
+          updatedAt: new Date(),
+        },
+      });
+    });
+
+    this.realtimeGateway.emitChatDeleted([currentUserId], { chatId });
+    this.realtimeGateway.emitChatUpdated(chatId);
+    this.logger.log(`User ${currentUserId} left group chat ${chatId}`);
+
+    return {
+      success: true,
+      chatId,
+    };
+  }
+
   async deleteChat(chatId: string, currentUserId: string) {
-    await this.ensureMembership(chatId, currentUserId);
+    const membership = await this.ensureMembership(chatId, currentUserId);
 
     const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
@@ -205,6 +508,10 @@ export class ChatService {
 
     if (!chat) {
       throw new NotFoundException("Chat not found");
+    }
+
+    if (chat.type === ChatType.GROUP && membership.role !== ChatMemberRole.CREATOR) {
+      throw new ForbiddenException("Только creator может удалить группу.");
     }
 
     const attachmentStorageKeys = chat.messages.flatMap((message) =>
@@ -525,6 +832,48 @@ export class ChatService {
     return membership;
   }
 
+  private async ensureGroupMembership(chatId: string, currentUserId: string) {
+    const membership = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId: currentUserId,
+        },
+      },
+      include: {
+        chat: true,
+      },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException("You are not a member of this chat");
+    }
+
+    if (membership.chat.type !== ChatType.GROUP) {
+      throw new BadRequestException("Управление участниками доступно только для групп.");
+    }
+
+    return membership satisfies MembershipWithChat;
+  }
+
+  private canManageGroupMembers(role: ChatMemberRole) {
+    return role === ChatMemberRole.CREATOR || role === ChatMemberRole.ADMIN;
+  }
+
+  private getGroupPermissions(role: ChatMemberRole) {
+    const isCreator = role === ChatMemberRole.CREATOR;
+    const isAdmin = isCreator || role === ChatMemberRole.ADMIN;
+
+    return {
+      isCreator,
+      isAdmin,
+      canAddMembers: isAdmin,
+      canRemoveMembers: isAdmin,
+      canManageRoles: isCreator,
+      canLeaveGroup: !isCreator,
+    };
+  }
+
   private async refreshChatLastMessageReference(
     transaction: Prisma.TransactionClient,
     chatId: string,
@@ -612,6 +961,10 @@ export class ChatService {
     };
   }
 
+  private toChatMemberRole(role: ChatMemberRole) {
+    return role.toLowerCase() as "creator" | "admin" | "member";
+  }
+
   private toMessagePayload(message: MessageWithRelations) {
     const isDeleted = Boolean(message.deletedAt);
 
@@ -664,9 +1017,11 @@ export class ChatService {
 
     return {
       id: chat.id,
-      type: "direct" as const,
+      type: chat.type === ChatType.GROUP ? ("group" as const) : ("direct" as const),
+      title: chat.type === ChatType.GROUP ? chat.title : null,
       updatedAt: chat.updatedAt.toISOString(),
       unreadCount,
+      currentUserRole: this.toChatMemberRole(currentMembership?.role ?? ChatMemberRole.MEMBER),
       members: chat.members.map((member) => this.toSafeUser(member.user)),
       lastMessage: latestVisibleMessage ? this.toMessagePreview(latestVisibleMessage) : null,
     };

@@ -1,0 +1,9 @@
+ALTER TYPE "ChatType" ADD VALUE 'GROUP';
+
+CREATE TYPE "ChatMemberRole" AS ENUM ('CREATOR', 'ADMIN', 'MEMBER');
+
+ALTER TABLE "chats"
+ADD COLUMN "title" TEXT;
+
+ALTER TABLE "chat_members"
+ADD COLUMN "role" "ChatMemberRole" NOT NULL DEFAULT 'MEMBER';

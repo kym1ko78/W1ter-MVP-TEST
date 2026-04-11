@@ -100,7 +100,29 @@ export function formatFileSize(sizeBytes: number) {
 export function getChatTitle(
   members: Array<{ id: string; displayName: string }>,
   currentUserId: string | undefined,
+  options?: {
+    type?: "direct" | "group";
+    title?: string | null;
+  },
 ) {
+  if (options?.type === "group") {
+    const explicitTitle = options.title?.trim();
+    if (explicitTitle) {
+      return explicitTitle;
+    }
+
+    const memberNames = members
+      .filter((member) => member.id !== currentUserId)
+      .map((member) => member.displayName)
+      .slice(0, 3);
+
+    if (memberNames.length > 0) {
+      return memberNames.join(", ");
+    }
+
+    return "Новая группа";
+  }
+
   const otherMember = members.find((member) => member.id !== currentUserId);
   return otherMember?.displayName ?? "Новый чат";
 }
