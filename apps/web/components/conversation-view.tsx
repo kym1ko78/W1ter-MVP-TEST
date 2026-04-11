@@ -1565,17 +1565,22 @@ export function ConversationView({ chatId }: { chatId: string }) {
             >
               <div
                 className={clsx(
-                  "flex items-start gap-2",
+                  "relative",
                   isMine ? "ml-auto max-w-[85%] sm:max-w-[70%]" : "max-w-[85%] sm:max-w-[70%]",
                 )}
               >
                 {!message.isDeleted ? (
-                  <div className="mt-1 flex flex-col gap-1 opacity-0 transition group-hover:opacity-100">
+                  <div
+                    className={clsx(
+                      "pointer-events-none absolute top-0 z-20 flex min-w-[120px] flex-col gap-1 rounded-[14px] border border-black/10 bg-white/95 p-1 shadow-[0_12px_28px_rgba(17,24,39,0.12)] backdrop-blur-sm opacity-0 transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+                      isMine ? "right-full mr-2" : "left-full ml-2",
+                    )}
+                  >
                     <button
                       type="button"
                       onClick={() => handleReplyMessage(message)}
                       data-testid="reply-message-button"
-                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
                     >
                       Ответ
                     </button>
@@ -1584,7 +1589,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       onClick={() => handleToggleReactionPicker(message.id)}
                       data-testid="reaction-message-button"
                       className={clsx(
-                        "rounded-full border px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] transition",
+                        "rounded-full border px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] transition",
                         isReactionPickerOpen || currentUserReaction
                           ? "border-black/25 bg-black text-white"
                           : "border-black/10 bg-white text-stone-500 hover:border-black/25 hover:text-black",
@@ -1596,7 +1601,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       type="button"
                       onClick={() => handleStartForwardMessage(message)}
                       data-testid="forward-message-button"
-                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
                     >
                       Переслать
                     </button>
@@ -1606,7 +1611,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                           type="button"
                           onClick={() => handleStartEditingMessage(message)}
                           data-testid="edit-message-button"
-                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
                         >
                           Изменить
                         </button>
@@ -1614,7 +1619,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                           type="button"
                           onClick={() => handleDeleteMessage(message)}
                           data-testid="delete-message-button"
-                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
                         >
                           {deleteMessageMutation.isPending ? "..." : "Удалить"}
                         </button>
@@ -1622,181 +1627,174 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     ) : null}
                   </div>
                 ) : null}
-                <div
-                  className={clsx(
-                    "w-fit max-w-full shadow-sm transition-[box-shadow]",
-                    shortTextOnlyBubble
-                      ? "rounded-[13px] px-2.5 py-0.5"
-                      : compactBubble
-                        ? "rounded-[17px] px-2.5 py-1"
-                        : attachmentOnlyBubble
-                          ? "rounded-[20px] px-3 py-[2px]"
-                        : "rounded-[22px] px-4 py-2.5",
-                    isMine
-                      ? "bg-[#111111] text-white"
-                      : "border border-black/8 bg-white text-[#171717]",
-                    isActiveSearchMatch
-                      ? isMine
-                        ? "ring-2 ring-white/75 ring-offset-2 ring-offset-[#111111]"
-                        : "ring-2 ring-black/35 ring-offset-2 ring-offset-white"
-                      : null,
-                    !isActiveSearchMatch && isFocusedFromGlobalSearch
-                      ? isMine
-                        ? "ring-2 ring-white/45 ring-offset-2 ring-offset-[#111111]"
-                        : "ring-2 ring-black/20 ring-offset-2 ring-offset-white"
-                      : null,
-                  )}
-                >
-                  {replyToMessage ? (
-                    <button
-                      type="button"
-                      onClick={() => focusMessageById(replyToMessage.id, "smooth")}
-                      className={clsx(
-                        "mb-1.5 block w-full rounded-[12px] border px-2.5 py-1.5 text-left transition hover:opacity-90",
-                        isMine
-                          ? "border-white/20 bg-white/10 text-white"
-                          : "border-black/10 bg-black/[0.03] text-stone-700",
-                      )}
-                      data-testid="message-reply-preview"
-                    >
-                      <p
+                <div className={clsx("flex max-w-full flex-col gap-1.5", isMine ? "items-end" : "items-start")}>
+                  <div
+                    className={clsx(
+                      "w-fit max-w-full shadow-sm transition-[box-shadow]",
+                      shortTextOnlyBubble
+                        ? "rounded-[13px] px-2.5 py-0.5"
+                        : compactBubble
+                          ? "rounded-[17px] px-2.5 py-1"
+                          : attachmentOnlyBubble
+                            ? "rounded-[20px] px-3 py-[2px]"
+                          : "rounded-[22px] px-4 py-2.5",
+                      isMine
+                        ? "bg-[#111111] text-white"
+                        : "border border-black/8 bg-white text-[#171717]",
+                      isActiveSearchMatch
+                        ? isMine
+                          ? "ring-2 ring-white/75 ring-offset-2 ring-offset-[#111111]"
+                          : "ring-2 ring-black/35 ring-offset-2 ring-offset-white"
+                        : null,
+                      !isActiveSearchMatch && isFocusedFromGlobalSearch
+                        ? isMine
+                          ? "ring-2 ring-white/45 ring-offset-2 ring-offset-[#111111]"
+                          : "ring-2 ring-black/20 ring-offset-2 ring-offset-white"
+                        : null,
+                    )}
+                  >
+                    {replyToMessage ? (
+                      <button
+                        type="button"
+                        onClick={() => focusMessageById(replyToMessage.id, "smooth")}
                         className={clsx(
-                          "truncate text-[10px] uppercase tracking-[0.12em]",
-                          isMine ? "text-white/70" : "text-stone-500",
+                          "mb-1.5 block w-full rounded-[12px] border px-2.5 py-1.5 text-left transition hover:opacity-90",
+                          isMine
+                            ? "border-white/20 bg-white/10 text-white"
+                            : "border-black/10 bg-black/[0.03] text-stone-700",
+                        )}
+                        data-testid="message-reply-preview"
+                      >
+                        <p
+                          className={clsx(
+                            "truncate text-[10px] uppercase tracking-[0.12em]",
+                            isMine ? "text-white/70" : "text-stone-500",
+                          )}
+                        >
+                          {replyToMessage.sender.displayName}
+                        </p>
+                        <p className="mt-0.5 truncate text-xs">{replyPreviewText}</p>
+                      </button>
+                    ) : null}
+                    {inlineMetaBubble && message.body ? (
+                      <div
+                        className={clsx(
+                          "grid grid-cols-[minmax(0,1fr)_auto] items-end",
+                          shortTextOnlyBubble ? "gap-x-1" : "gap-x-1.5",
                         )}
                       >
-                        {replyToMessage.sender.displayName}
-                      </p>
-                      <p className="mt-0.5 truncate text-xs">{replyPreviewText}</p>
-                    </button>
-                  ) : null}
-                  {inlineMetaBubble && message.body ? (
-                    <div
-                      className={clsx(
-                        "grid grid-cols-[minmax(0,1fr)_auto] items-end",
-                        shortTextOnlyBubble ? "gap-x-1" : "gap-x-1.5",
-                      )}
-                    >
-                      <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
+                        <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
+                          {renderHighlightedMessageBody(
+                            message.body,
+                            normalizedMessageSearch,
+                            highlightClassName,
+                          )}
+                        </p>
+                        <p
+                          className={clsx(
+                            "shrink-0 self-end pb-0 text-[11px] leading-none",
+                            isMine ? "text-white/62" : "text-stone-400",
+                          )}
+                        >
+                          {messageMetaLabel}
+                        </p>
+                      </div>
+                    ) : null}
+                    {message.body && !inlineMetaBubble ? (
+                      <p className="whitespace-pre-wrap break-words text-sm leading-5">
                         {renderHighlightedMessageBody(
                           message.body,
                           normalizedMessageSearch,
                           highlightClassName,
                         )}
                       </p>
+                    ) : null}
+                    {message.attachments.length > 0 ? (
+                      <MessageAttachments
+                        accessToken={accessToken}
+                        attachments={message.attachments}
+                        isMine={isMine}
+                      />
+                    ) : null}
+                    {!inlineMetaBubble ? (
                       <p
                         className={clsx(
-                          "shrink-0 self-end pb-0 text-[11px] leading-none",
+                          hasText
+                            ? "mt-1 text-right text-[11px] leading-none"
+                            : attachmentOnlyBubble
+                              ? "mt-0 text-right text-[11px] leading-none"
+                              : "mt-1.5 text-right text-[11px] leading-none",
                           isMine ? "text-white/62" : "text-stone-400",
                         )}
                       >
                         {messageMetaLabel}
                       </p>
+                    ) : null}
+                  </div>
+
+                  {message.reactions.length > 0 ? (
+                    <div className="flex max-w-full flex-wrap gap-1">
+                      {message.reactions.map((reaction) => {
+                        const reactedByCurrentUser =
+                          currentUserId ? reaction.userIds.includes(currentUserId) : false;
+                        const reactedByNames = reaction.userIds
+                          .map((userId) => memberNameById.get(userId))
+                          .filter((name): name is string => Boolean(name))
+                          .join(", ");
+
+                        return (
+                          <button
+                            key={`${message.id}-${reaction.emoji}`}
+                            type="button"
+                            onClick={() =>
+                              handleToggleMessageReaction(
+                                message,
+                                reaction.emoji as (typeof QUICK_REACTIONS)[number],
+                              )
+                            }
+                            className={clsx(
+                              "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
+                              reactedByCurrentUser
+                                ? "border-black bg-black text-white"
+                                : "border-black/10 bg-white text-stone-600 hover:border-black/25 hover:text-black",
+                            )}
+                            title={reactedByNames || "Реакция"}
+                            data-testid="message-reaction-chip"
+                          >
+                            <span>{reaction.emoji}</span>
+                            <span>{reaction.count}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   ) : null}
-                  {message.body && !inlineMetaBubble ? (
-                    <p className="whitespace-pre-wrap break-words text-sm leading-5">
-                      {renderHighlightedMessageBody(
-                        message.body,
-                        normalizedMessageSearch,
-                        highlightClassName,
-                      )}
-                    </p>
-                  ) : null}
-                  {message.attachments.length > 0 ? (
-                    <MessageAttachments
-                      accessToken={accessToken}
-                      attachments={message.attachments}
-                      isMine={isMine}
-                    />
-                  ) : null}
-                  {!inlineMetaBubble ? (
-                    <p
-                      className={clsx(
-                        hasText
-                          ? "mt-1 text-right text-[11px] leading-none"
-                          : attachmentOnlyBubble
-                            ? "mt-0 text-right text-[11px] leading-none"
-                            : "mt-1.5 text-right text-[11px] leading-none",
-                        isMine ? "text-white/62" : "text-stone-400",
-                      )}
+
+                  {isReactionPickerOpen && !message.isDeleted ? (
+                    <div
+                      className="flex max-w-full flex-wrap gap-1 rounded-[14px] border border-black/10 bg-white px-2 py-1.5 shadow-sm"
+                      data-testid="message-reaction-picker"
                     >
-                      {messageMetaLabel}
-                    </p>
+                      {QUICK_REACTIONS.map((emoji) => (
+                        <button
+                          key={`${message.id}-${emoji}-quick-reaction`}
+                          type="button"
+                          onClick={() => handleToggleMessageReaction(message, emoji)}
+                          disabled={toggleReactionMutation.isPending}
+                          className={clsx(
+                            "rounded-full border px-2 py-1 text-sm transition disabled:cursor-not-allowed disabled:opacity-50",
+                            currentUserReaction === emoji
+                              ? "border-black bg-black text-white"
+                              : "border-black/10 bg-white text-stone-700 hover:border-black/25 hover:text-black",
+                          )}
+                          data-testid="quick-reaction-button"
+                          aria-label={`Поставить реакцию ${emoji}`}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
                   ) : null}
                 </div>
-                {message.reactions.length > 0 ? (
-                  <div className="mt-1.5 flex w-full flex-wrap gap-1">
-                    {message.reactions.map((reaction) => {
-                      const reactedByCurrentUser =
-                        currentUserId ? reaction.userIds.includes(currentUserId) : false;
-                      const reactedByNames = reaction.userIds
-                        .map((userId) => memberNameById.get(userId))
-                        .filter((name): name is string => Boolean(name))
-                        .join(", ");
-
-                      return (
-                        <button
-                          key={`${message.id}-${reaction.emoji}`}
-                          type="button"
-                          onClick={() =>
-                            handleToggleMessageReaction(
-                              message,
-                              reaction.emoji as (typeof QUICK_REACTIONS)[number],
-                            )
-                          }
-                          className={clsx(
-                            "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
-                            reactedByCurrentUser
-                              ? isMine
-                                ? "border-white/25 bg-white text-[#111111]"
-                                : "border-black bg-black text-white"
-                              : isMine
-                                ? "border-white/28 bg-white/10 text-white hover:bg-white/20"
-                                : "border-black/10 bg-white text-stone-600 hover:border-black/25 hover:text-black",
-                          )}
-                          title={reactedByNames || "Реакция"}
-                          data-testid="message-reaction-chip"
-                        >
-                          <span>{reaction.emoji}</span>
-                          <span>{reaction.count}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                {isReactionPickerOpen && !message.isDeleted ? (
-                  <div
-                    className={clsx(
-                      "mt-1.5 flex w-full flex-wrap gap-1 rounded-[14px] border px-2 py-1.5",
-                      isMine ? "border-white/22 bg-white/10" : "border-black/10 bg-white",
-                    )}
-                    data-testid="message-reaction-picker"
-                  >
-                    {QUICK_REACTIONS.map((emoji) => (
-                      <button
-                        key={`${message.id}-${emoji}-quick-reaction`}
-                        type="button"
-                        onClick={() => handleToggleMessageReaction(message, emoji)}
-                        disabled={toggleReactionMutation.isPending}
-                        className={clsx(
-                          "rounded-full border px-2 py-1 text-sm transition disabled:cursor-not-allowed disabled:opacity-50",
-                          currentUserReaction === emoji
-                            ? isMine
-                              ? "border-white bg-white text-[#111111]"
-                              : "border-black bg-black text-white"
-                            : isMine
-                              ? "border-white/25 bg-white/10 text-white hover:bg-white/20"
-                              : "border-black/10 bg-white text-stone-700 hover:border-black/25 hover:text-black",
-                        )}
-                        data-testid="quick-reaction-button"
-                        aria-label={`Поставить реакцию ${emoji}`}
-                      >
-                        {emoji}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
               </div>
             </div>
           );
