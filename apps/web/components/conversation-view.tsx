@@ -133,7 +133,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
   const [forwardSearch, setForwardSearch] = useState("");
   const [forwardPanelError, setForwardPanelError] = useState<string | null>(null);
-  const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null);
+  const [recentlyReactedMessageId, setRecentlyReactedMessageId] = useState<string | null>(null);
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
@@ -464,10 +464,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
           body: JSON.stringify({ emoji }),
         }),
       ),
-    onSuccess: (message) => {
+    onSuccess: (message, variables) => {
       queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
         upsertMessage(old, message),
       );
+      setRecentlyReactedMessageId(variables.messageId);
       setComposerError(null);
       setForwardPanelError(null);
     },
@@ -620,7 +621,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setForwardingMessage(null);
     setForwardSearch("");
     setForwardPanelError(null);
-    setReactionPickerMessageId(null);
+    setRecentlyReactedMessageId(null);
   }, [chatId]);
 
   useEffect(() => {
@@ -1074,7 +1075,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    setReactionPickerMessageId(null);
     setConfirmingMessage(message);
   };
 
@@ -1088,7 +1088,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    setReactionPickerMessageId(null);
     setComposerError(null);
     setEditingMessage(null);
     setReplyingToMessage(message);
@@ -1108,7 +1107,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    setReactionPickerMessageId(null);
     setComposerError(null);
     setReplyingToMessage(null);
     setEditingMessage(message);
@@ -1134,7 +1132,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setComposerError(null);
     setForwardPanelError(null);
     setForwardSearch("");
-    setReactionPickerMessageId(null);
     setForwardingMessage(message);
   };
 
@@ -1147,10 +1144,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       messageId: forwardingMessage.id,
       targetChatId,
     });
-  };
-
-  const handleToggleReactionPicker = (messageId: string) => {
-    setReactionPickerMessageId((current) => (current === messageId ? null : messageId));
   };
 
   const handleToggleMessageReaction = (
@@ -1551,7 +1544,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
               ? message.reactions.find((reaction) => reaction.userIds.includes(currentUserId))?.emoji ??
                 null
               : null;
-          const isReactionPickerOpen = reactionPickerMessageId === message.id;
 
           return (
             <div
@@ -1561,6 +1553,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
               data-message-owner={isMine ? "self" : "other"}
               data-message-search-match={isSearchMatch ? "true" : "false"}
               data-message-search-active={isActiveSearchMatch ? "true" : "false"}
+              onMouseLeave={() => {
+                setRecentlyReactedMessageId((current) =>
+                  current === message.id ? null : current,
+                );
+              }}
               className={clsx("group flex w-full", isMine ? "justify-end" : "justify-start")}
             >
               <div
@@ -1583,19 +1580,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
                     >
                       Ответ
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleToggleReactionPicker(message.id)}
-                      data-testid="reaction-message-button"
-                      className={clsx(
-                        "rounded-full border px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] transition",
-                        isReactionPickerOpen || currentUserReaction
-                          ? "border-black/25 bg-black text-white"
-                          : "border-black/10 bg-white text-stone-500 hover:border-black/25 hover:text-black",
-                      )}
-                    >
-                      Реакция
                     </button>
                     <button
                       type="button"
@@ -1769,9 +1753,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     </div>
                   ) : null}
 
-                  {isReactionPickerOpen && !message.isDeleted ? (
+                  {!message.isDeleted && recentlyReactedMessageId !== message.id ? (
                     <div
-                      className="flex max-w-full flex-wrap gap-1 rounded-[14px] border border-black/10 bg-white px-2 py-1.5 shadow-sm"
+                      className="pointer-events-none flex max-h-0 max-w-full flex-wrap gap-1 overflow-hidden rounded-[14px] border border-black/10 bg-white px-2 py-0 opacity-0 shadow-sm -translate-y-1 transition-all duration-150 ease-out group-hover:pointer-events-auto group-hover:max-h-16 group-hover:translate-y-0 group-hover:py-1.5 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:max-h-16 group-focus-within:translate-y-0 group-focus-within:py-1.5 group-focus-within:opacity-100"
                       data-testid="message-reaction-picker"
                     >
                       {QUICK_REACTIONS.map((emoji) => (
