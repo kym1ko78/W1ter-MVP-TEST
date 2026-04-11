@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
@@ -597,6 +597,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const showSendButton = hasComposerContent || sendMessageMutation.isPending;
   const showVoiceButton =
     !hasComposerContent && !sendMessageMutation.isPending && recordingState === "idle";
+  const composerActionMode = showSendButton ? "send" : showVoiceButton ? "voice" : "hidden";
+  const showComposerAction = composerActionMode !== "hidden";
   const hasSearchInput = normalizedMessageSearch.length > 0;
   const hasSearchMatches = messageSearchMatches.length > 0;
   const activeSearchNumber = hasSearchMatches
@@ -938,8 +940,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
               {isGroupChat
                 ? `${groupMembersCount} участников`
                 : otherUser?.lastSeenAt
-                ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
-                : "Личный чат"}
+                  ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
+                  : "Личный чат"}
             </p>
           </div>
         </div>
@@ -1264,7 +1266,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                         ? "rounded-[17px] px-2.5 py-1"
                         : attachmentOnlyBubble
                           ? "rounded-[20px] px-3 py-[2px]"
-                        : "rounded-[22px] px-4 py-2.5",
+                          : "rounded-[22px] px-4 py-2.5",
                     isMine
                       ? "bg-[#111111] text-white"
                       : "border border-black/8 bg-white text-[#171717]",
@@ -1434,7 +1436,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
               <PaperclipIcon className="h-5 w-5" />
             </button>
 
-            <div className="min-w-0 flex-1">
+            <div className="relative flex min-w-0 flex-1 items-center">
               <textarea
                 ref={textareaRef}
                 data-testid="message-input"
@@ -1450,11 +1452,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 maxLength={MESSAGE_MAX_LENGTH}
                 disabled={recordingState !== "idle"}
                 placeholder="Сообщение..."
-                className="h-[44px] min-h-[44px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 py-[9px] leading-[26px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
+                className="h-[42px] min-h-[42px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 pb-0 pt-[6px] leading-[28px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
               />
 
-              <div className="mt-0 flex justify-end px-1 pb-0">
-                <p data-testid="message-counter" className="shrink-0 text-[10px] text-stone-400">
+              <div className="pointer-events-none absolute bottom-0 right-1 flex justify-end">
+                <p data-testid="message-counter" className="shrink-0 text-[10px] leading-none text-stone-400">
                   {draft.length}/{MESSAGE_MAX_LENGTH}
                 </p>
               </div>
@@ -1463,43 +1465,67 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
           <div
             className={clsx(
-              "self-center overflow-hidden transition-all duration-200 ease-out",
-              showSendButton ? "w-12 opacity-100" : "pointer-events-none w-0 opacity-0",
+              "self-center relative h-11 overflow-visible transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+              showComposerAction ? "w-11 opacity-100" : "pointer-events-none w-0 opacity-0",
             )}
           >
             <button
-              data-testid="send-message-button"
-              type="submit"
-              disabled={sendMessageMutation.isPending || !hasComposerContent}
-              tabIndex={showSendButton ? 0 : -1}
-              aria-label="Отправить сообщение"
-              title="Отправить сообщение"
-              className="flex h-11 w-11 items-center justify-center rounded-full bg-[#111111] text-white transition hover:translate-y-[-1px] hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
-            >
-              {sendMessageMutation.isPending ? (
-                <span className="text-sm font-semibold leading-none">...</span>
-              ) : (
-                <SendIcon className="h-5 w-5" />
+              data-testid={
+                composerActionMode === "voice" ? "voice-message-button" : "send-message-button"
+              }
+              type={composerActionMode === "send" ? "submit" : "button"}
+              onClick={composerActionMode === "voice" ? startVoiceRecording : undefined}
+              disabled={
+                composerActionMode === "send"
+                  ? sendMessageMutation.isPending || !hasComposerContent
+                  : recordingState !== "idle"
+              }
+              tabIndex={showComposerAction ? 0 : -1}
+              aria-label={
+                composerActionMode === "send"
+                  ? "Отправить сообщение"
+                  : "Записать голосовое сообщение"
+              }
+              title={
+                composerActionMode === "send"
+                  ? "Отправить сообщение"
+                  : "Записать голосовое сообщение"
+              }
+              className={clsx(
+                "absolute inset-0 flex h-11 w-11 items-center justify-center rounded-full transition-[background-color,color,border-color,transform,box-shadow] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                composerActionMode === "send"
+                  ? "border border-black/0 bg-[#111111] text-white hover:translate-y-[-1px] hover:bg-black"
+                  : "border border-black/10 bg-white text-[#111111] hover:border-black/25 hover:bg-[#111111] hover:text-white",
+                showComposerAction ? "scale-100 opacity-100" : "scale-75 opacity-0",
+                "disabled:cursor-not-allowed disabled:opacity-55",
               )}
-            </button>
-          </div>
-
-          <div
-            className={clsx(
-              "self-center overflow-hidden transition-all duration-200 ease-out",
-              showVoiceButton ? "w-12 opacity-100" : "pointer-events-none w-0 opacity-0",
-            )}
-          >
-            <button
-              data-testid="voice-message-button"
-              type="button"
-              onClick={startVoiceRecording}
-              tabIndex={showVoiceButton ? 0 : -1}
-              aria-label="Записать голосовое сообщение"
-              title="Записать голосовое сообщение"
-              className="flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-[#111111] transition hover:translate-y-[-1px] hover:border-black/25 hover:bg-[#111111] hover:text-white"
             >
-              <MicIcon className="h-5 w-5" />
+              <span className="relative h-5 w-5">
+                <span
+                  className={clsx(
+                    "absolute inset-0 flex items-center justify-center transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    composerActionMode === "voice"
+                      ? "opacity-100 scale-100 rotate-0"
+                      : "pointer-events-none opacity-0 scale-[0.52] rotate-[16deg]",
+                  )}
+                >
+                  <MicIcon className="h-5 w-5" />
+                </span>
+                <span
+                  className={clsx(
+                    "absolute inset-0 flex items-center justify-center transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    composerActionMode === "send"
+                      ? "opacity-100 scale-100 rotate-0 delay-[70ms]"
+                      : "pointer-events-none opacity-0 scale-[0.52] rotate-[-16deg]",
+                  )}
+                >
+                  {sendMessageMutation.isPending ? (
+                    <span className="text-sm font-semibold leading-none">...</span>
+                  ) : (
+                    <SendIcon className="h-5 w-5" />
+                  )}
+                </span>
+              </span>
             </button>
           </div>
         </div>
