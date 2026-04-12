@@ -17,6 +17,22 @@ export interface ChatAttachment {
   downloadPath: string;
 }
 
+export interface MessageReplyPreview {
+  id: string;
+  senderId: string;
+  sender: SafeUser;
+  body: string | null;
+  isDeleted: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MessageReactionSummary {
+  emoji: string;
+  count: number;
+  userIds: string[];
+}
+
 export interface ChatMessage {
   id: string;
   chatId: string;
@@ -26,8 +42,10 @@ export interface ChatMessage {
   updatedAt: string;
   deletedAt: string | null;
   isDeleted: boolean;
+  replyTo: MessageReplyPreview | null;
   sender: SafeUser;
   attachments: ChatAttachment[];
+  reactions: MessageReactionSummary[];
 }
 
 export type ChatType = "direct" | "group";
