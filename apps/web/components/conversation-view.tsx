@@ -114,12 +114,21 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
+  const [showMessageSearch, setShowMessageSearch] = useState(false);
+  const [showConversationMenu, setShowConversationMenu] = useState(false);
+  const [showConversationProfile, setShowConversationProfile] = useState(false);
+  const [headerStatusMessage, setHeaderStatusMessage] = useState<string | null>(null);
   const deferredMessageSearch = useDeferredValue(messageSearch);
   const deferredGroupMemberSearch = useDeferredValue(groupMemberSearch);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const messageSearchInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const messageListEndRef = useRef<HTMLDivElement | null>(null);
+  const conversationMenuRef = useRef<HTMLDivElement | null>(null);
+  const conversationMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const conversationProfileRef = useRef<HTMLDivElement | null>(null);
+  const conversationProfileButtonRef = useRef<HTMLButtonElement | null>(null);
   const shouldScrollAfterSendRef = useRef(false);
   const shouldStickToBottomRef = useRef(true);
   const lastMessageIdRef = useRef<string | null>(null);
@@ -481,6 +490,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   useEffect(() => {
     setShowGroupMembersPanel(false);
+    setShowMessageSearch(false);
+    setShowConversationMenu(false);
+    setShowConversationProfile(false);
+    setHeaderStatusMessage(null);
     setGroupMemberSearch("");
     setGroupPanelError(null);
     setConfirmingMemberRemoval(null);
@@ -508,6 +521,84 @@ export function ConversationView({ chatId }: { chatId: string }) {
     prefilledSearchQueryRef.current = searchKey;
     setMessageSearch((current) => current || searchParamQuery.slice(0, MESSAGE_MAX_LENGTH));
   }, [chatId, searchParamQuery]);
+
+  useEffect(() => {
+    if (!normalizedMessageSearch) {
+      return;
+    }
+
+    setShowMessageSearch(true);
+  }, [normalizedMessageSearch]);
+
+  useEffect(() => {
+    if (!showMessageSearch) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      messageSearchInputRef.current?.focus();
+      messageSearchInputRef.current?.select();
+    });
+  }, [showMessageSearch]);
+
+  useEffect(() => {
+    if (!headerStatusMessage) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setHeaderStatusMessage(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [headerStatusMessage]);
+
+  useEffect(() => {
+    if (!showConversationMenu && !showConversationProfile) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+
+      if (!target) {
+        return;
+      }
+
+      if (
+        showConversationMenu &&
+        !conversationMenuRef.current?.contains(target) &&
+        !conversationMenuButtonRef.current?.contains(target)
+      ) {
+        setShowConversationMenu(false);
+      }
+
+      if (
+        showConversationProfile &&
+        !conversationProfileRef.current?.contains(target) &&
+        !conversationProfileButtonRef.current?.contains(target)
+      ) {
+        setShowConversationProfile(false);
+      }
+    };
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      setShowConversationMenu(false);
+      setShowConversationProfile(false);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showConversationMenu, showConversationProfile]);
 
   useEffect(() => {
     if (!activeSearchMessage) {
@@ -609,6 +700,40 @@ export function ConversationView({ chatId }: { chatId: string }) {
     removeGroupMemberMutation.isPending ||
     updateGroupMemberRoleMutation.isPending ||
     leaveGroupMutation.isPending;
+  const conversationProfileUser: SafeUser = otherUser ?? {
+    id: chatId,
+    displayName: conversationTitle,
+    email: isGroupChat ? `${groupMembersCount} участников` : conversationTitle,
+    avatarUrl: null,
+    emailVerifiedAt: null,
+    emailVerificationSentAt: null,
+    lastSeenAt: null,
+  };
+  const profileDetailRows = isGroupChat
+    ? [
+        { label: "Тип", value: "Групповой чат" },
+        { label: "Участники", value: String(groupMembersCount) },
+        {
+          label: "Ваша роль",
+          value: formatGroupRole(chatQuery.data?.currentUserRole ?? "member"),
+        },
+      ]
+    : [
+        { label: "Email", value: conversationProfileUser.email },
+        {
+          label: "Статус",
+          value: otherUser?.lastSeenAt
+            ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
+            : "Личный чат",
+        },
+        {
+          label: "Последняя активность",
+          value: otherUser?.lastSeenAt
+            ? formatTime(otherUser.lastSeenAt)
+            : "Сейчас недоступно",
+        },
+      ];
+  const visibleGroupMembers = groupMembersQuery.data?.members ?? [];
 
   const stopMediaStream = useCallback(() => {
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -898,6 +1023,33 @@ export function ConversationView({ chatId }: { chatId: string }) {
     return member.role !== "admin";
   };
 
+  const profileSummaryStatus = isGroupChat
+    ? `${groupMembersCount} участников`
+    : otherUser?.lastSeenAt
+      ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
+      : "Личный чат";
+
+  const handleConversationCall = () => {
+    setHeaderStatusMessage("Звонки добавим следующим шагом.");
+    setShowConversationMenu(false);
+  };
+
+  const toggleMessageSearch = () => {
+    setShowConversationMenu(false);
+    setShowConversationProfile(false);
+    setShowMessageSearch((current) => {
+      const next = !current;
+
+      if (!next) {
+        setMessageSearch("");
+        setActiveMatchIndex(0);
+        setFocusedMessageId(null);
+      }
+
+      return next;
+    });
+  };
+
   if (chatQuery.isLoading || messagesQuery.isLoading) {
     return <ConversationSkeleton />;
   }
@@ -912,116 +1064,120 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   return (
     <section
-      className="chat-shell-panel chat-thread-surface flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0"
+      className="chat-shell-panel chat-thread-surface relative flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0"
       data-testid="conversation-view"
     >
-      <header className="relative z-10 flex flex-none flex-wrap items-center justify-between gap-3 border-b border-black/8 px-5 py-4 sm:flex-nowrap sm:gap-4 sm:px-6 sm:py-5">
-        <div className="flex min-w-0 items-center gap-4">
-          <UserAvatar
-            user={
-              otherUser ?? {
-                displayName: conversationTitle,
-                email: conversationTitle,
-                avatarUrl: null,
-              }
-            }
-            accessToken={accessToken}
-            className="h-12 w-12 shrink-0 rounded-[16px]"
-            fallbackClassName="text-sm"
-          />
-          <div className="min-w-0">
-            <h2
-              className="truncate text-lg font-semibold tracking-tight text-[#171717]"
-              data-testid="conversation-title"
-            >
-              {conversationTitle}
-            </h2>
-            <p className="truncate text-sm text-stone-500" data-testid="conversation-status">
-              {isGroupChat
-                ? `${groupMembersCount} участников`
-                : otherUser?.lastSeenAt
-                  ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
-                  : "Личный чат"}
-            </p>
-          </div>
+      <header className="relative z-20 flex flex-none items-start justify-between gap-4 border-b border-black/8 bg-white px-4 py-3 sm:px-5">
+        <div className="min-w-0 flex-1">
+          <h2
+            className="truncate text-[21px] font-semibold leading-none tracking-tight text-[#171717]"
+            data-testid="conversation-title"
+          >
+            {conversationTitle}
+          </h2>
+          <p
+            className="mt-2 truncate text-sm text-stone-500"
+            data-testid="conversation-status"
+          >
+            {profileSummaryStatus}
+          </p>
+          {headerStatusMessage ? (
+            <p className="mt-2 text-xs font-medium text-stone-500">{headerStatusMessage}</p>
+          ) : null}
         </div>
-        <div className="flex w-full min-w-0 items-center justify-end gap-2 sm:w-auto">
-          {chatQuery.data.unreadCount > 0 ? (
-            <div className="shrink-0 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-500">
-              {chatQuery.data.unreadCount}
-            </div>
-          ) : null}
-          {isGroupChat ? (
+        <div className="flex shrink-0 items-center gap-1 text-stone-400 sm:gap-2">
+          <button
+            type="button"
+            onClick={toggleMessageSearch}
+            className={clsx(
+              "flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black",
+              showMessageSearch || hasSearchInput ? "border-black/12 bg-[#111111] text-white hover:bg-black hover:text-white" : null,
+            )}
+            aria-label="Поиск по сообщениям"
+            title="Поиск по сообщениям"
+          >
+            <SearchIcon className="h-5 w-5" />
+          </button>
+          <button
+            ref={conversationProfileButtonRef}
+            type="button"
+            onClick={() => {
+              setShowConversationMenu(false);
+              setShowConversationProfile((current) => !current);
+            }}
+            className={clsx(
+              "flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black",
+              showConversationProfile ? "border-black/12 bg-[#111111] text-white hover:bg-black hover:text-white" : null,
+            )}
+            aria-label="Открыть профиль чата"
+            title="Открыть профиль чата"
+          >
+            <PanelRightIcon className="h-5 w-5" />
+          </button>
+          <button
+            type="button"
+            onClick={handleConversationCall}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black"
+            aria-label="Позвонить собеседнику"
+            title="Позвонить собеседнику"
+          >
+            <PhoneIcon className="h-5 w-5" />
+          </button>
+          <div className="relative">
             <button
+              ref={conversationMenuButtonRef}
               type="button"
-              onClick={() => setShowGroupMembersPanel((prev) => !prev)}
-              data-testid="group-members-toggle"
-              className={clsx(
-                "shrink-0 rounded-full border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] transition",
-                showGroupMembersPanel
-                  ? "border-black bg-[#111111] text-white"
-                  : "border-black/12 bg-white text-stone-600 hover:border-black/25 hover:text-black",
-              )}
-            >
-              {showGroupMembersPanel ? "Скрыть участников" : "Участники"}
-            </button>
-          ) : null}
-          <div className="flex min-w-0 flex-1 items-center gap-2 sm:w-[290px] sm:flex-none">
-            <input
-              data-testid="message-search-input"
-              value={messageSearch}
-              onChange={(event) => setMessageSearch(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter") {
-                  return;
-                }
-
-                event.preventDefault();
-                moveMessageSearch(event.shiftKey ? -1 : 1);
+              onClick={() => {
+                setShowConversationProfile(false);
+                setShowConversationMenu((current) => !current);
               }}
-              placeholder="Поиск по сообщениям"
-              className="w-full rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
-            />
-            {hasSearchInput ? (
-              <div className="flex shrink-0 items-center gap-1">
-                <span
-                  data-testid="message-search-counter"
-                  className="rounded-full border border-black/10 bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-stone-500"
-                >
-                  {activeSearchNumber}/{messageSearchMatches.length}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => moveMessageSearch(-1)}
-                  disabled={!hasSearchMatches}
-                  data-testid="message-search-prev"
-                  className="h-8 w-8 rounded-full border border-black/10 bg-white text-sm text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-45"
-                  aria-label="Предыдущее совпадение"
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  onClick={() => moveMessageSearch(1)}
-                  disabled={!hasSearchMatches}
-                  data-testid="message-search-next"
-                  className="h-8 w-8 rounded-full border border-black/10 bg-white text-sm text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-45"
-                  aria-label="Следующее совпадение"
-                >
-                  ↓
-                </button>
+              className={clsx(
+                "flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black",
+                showConversationMenu ? "border-black/12 bg-[#111111] text-white hover:bg-black hover:text-white" : null,
+              )}
+              aria-label="Дополнительные действия"
+              title="Дополнительные действия"
+            >
+              <DotsVerticalIcon className="h-5 w-5" />
+            </button>
+
+            {showConversationMenu ? (
+              <div
+                ref={conversationMenuRef}
+                className="absolute right-0 top-12 z-30 min-w-[220px] rounded-[22px] border border-black/8 bg-white p-2 text-sm text-[#171717] shadow-[0_24px_60px_rgba(17,24,39,0.14)]"
+              >
                 <button
                   type="button"
                   onClick={() => {
-                    setMessageSearch("");
-                    setActiveMatchIndex(0);
-                    setFocusedMessageId(null);
+                    setShowConversationMenu(false);
+                    setShowConversationProfile(true);
                   }}
-                  data-testid="message-search-clear"
-                  className="h-8 w-8 rounded-full border border-black/10 bg-white text-sm text-stone-600 transition hover:border-black/25 hover:text-black"
-                  aria-label="Очистить поиск по сообщениям"
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
                 >
-                  ×
+                  <PanelRightIcon className="h-4 w-4 text-stone-500" />
+                  <span>Открыть профиль</span>
+                </button>
+                {isGroupChat ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowConversationMenu(false);
+                      setShowGroupMembersPanel((current) => !current);
+                    }}
+                    data-testid="group-members-toggle"
+                    className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                  >
+                    <UsersIcon className="h-4 w-4 text-stone-500" />
+                    <span>{showGroupMembersPanel ? "Скрыть участников" : "Показать участников"}</span>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={toggleMessageSearch}
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                >
+                  <SearchIcon className="h-4 w-4 text-stone-500" />
+                  <span>{showMessageSearch || hasSearchInput ? "Скрыть поиск" : "Искать в чате"}</span>
                 </button>
               </div>
             ) : null}
@@ -1029,10 +1185,84 @@ export function ConversationView({ chatId }: { chatId: string }) {
         </div>
       </header>
 
-      {hasSearchInput ? (
+      {showMessageSearch ? (
+        <div className="relative z-10 border-b border-black/8 bg-white px-4 py-3 sm:px-6">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <input
+                ref={messageSearchInputRef}
+                data-testid="message-search-input"
+                value={messageSearch}
+                onChange={(event) => setMessageSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  moveMessageSearch(event.shiftKey ? -1 : 1);
+                }}
+                placeholder="Поиск по сообщениям"
+                className="w-full rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+              />
+              <button
+                type="button"
+                onClick={toggleMessageSearch}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-black/10 bg-white text-stone-500 transition hover:border-black/25 hover:text-black"
+                aria-label="Закрыть поиск по сообщениям"
+              >
+                <CloseIcon className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <span
+                data-testid="message-search-counter"
+                className="rounded-full border border-black/10 bg-white px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-stone-500"
+              >
+                {activeSearchNumber}/{messageSearchMatches.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => moveMessageSearch(-1)}
+                disabled={!hasSearchMatches}
+                data-testid="message-search-prev"
+                className="h-9 w-9 rounded-full border border-black/10 bg-white text-sm text-stone-500 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-45"
+                aria-label="Предыдущее совпадение"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                onClick={() => moveMessageSearch(1)}
+                disabled={!hasSearchMatches}
+                data-testid="message-search-next"
+                className="h-9 w-9 rounded-full border border-black/10 bg-white text-sm text-stone-500 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-45"
+                aria-label="Следующее совпадение"
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMessageSearch("");
+                  setActiveMatchIndex(0);
+                  setFocusedMessageId(null);
+                }}
+                data-testid="message-search-clear"
+                className="h-9 rounded-full border border-black/10 bg-white px-3 text-xs font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                aria-label="Очистить поиск по сообщениям"
+              >
+                Сброс
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showMessageSearch ? (
         <div
           className={clsx(
-            "border-b border-black/8 px-4 py-2 text-xs sm:px-6",
+            "border-b border-black/8 bg-white px-4 py-2 text-xs sm:px-6",
             hasSearchMatches ? "text-stone-500" : "text-stone-600",
           )}
           data-testid="message-search-state"
@@ -1041,6 +1271,162 @@ export function ConversationView({ chatId }: { chatId: string }) {
             ? `Найдено ${messageSearchMatches.length}. Enter, ↑ и ↓ — переход по совпадениям.`
             : "Ничего не найдено в этом диалоге."}
         </div>
+      ) : null}
+
+      {showConversationProfile ? (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowConversationProfile(false)}
+            className="absolute inset-0 z-20 bg-black/10"
+            aria-label="Закрыть профиль чата"
+          />
+          <aside
+            ref={conversationProfileRef}
+            className="absolute right-0 top-0 z-30 flex h-full w-full max-w-[380px] flex-col overflow-y-auto border-l border-black/8 bg-[#f7f7f5] text-[#171717] shadow-[-24px_0_60px_rgba(17,24,39,0.14)]"
+            data-testid="conversation-profile-panel"
+          >
+            <div className="border-b border-black/8 bg-white px-6 py-6">
+              <div className="flex items-start justify-between gap-4">
+                <UserAvatar
+                  user={conversationProfileUser}
+                  accessToken={accessToken}
+                  className="h-20 w-20 shrink-0 rounded-full"
+                  fallbackClassName="text-xl"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConversationProfile(false)}
+                  className="flex h-10 w-10 items-center justify-center rounded-full border border-transparent text-stone-500 transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black"
+                  aria-label="Закрыть профиль"
+                >
+                  <CloseIcon className="h-5 w-5" />
+                </button>
+              </div>
+              <h3 className="mt-5 text-[28px] font-semibold leading-none tracking-tight text-[#171717]">
+                {conversationTitle}
+              </h3>
+              <p className="mt-2 text-base text-stone-500">{profileSummaryStatus}</p>
+              <div className="mt-5 grid grid-cols-3 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowConversationProfile(false)}
+                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
+                >
+                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
+                    <ChatBubbleIcon className="h-4 w-4" />
+                  </span>
+                  <span className="mt-2 block text-sm">Чат</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConversationCall}
+                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
+                >
+                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
+                    <PhoneIcon className="h-4 w-4" />
+                  </span>
+                  <span className="mt-2 block text-sm">Звонок</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowConversationProfile(false);
+                    setShowMessageSearch(true);
+                  }}
+                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
+                >
+                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
+                    <SearchIcon className="h-4 w-4" />
+                  </span>
+                  <span className="mt-2 block text-sm">Поиск</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-6 px-6 py-6">
+              <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Информация</p>
+                <div className="mt-4 space-y-4">
+                  {profileDetailRows.map((row) => (
+                    <div key={row.label}>
+                      <p className="text-sm text-[#171717]">{row.value}</p>
+                      <p className="mt-1 text-sm text-stone-500">{row.label}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {isGroupChat ? (
+                <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">
+                      Участники
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowConversationProfile(false);
+                        setShowGroupMembersPanel(true);
+                      }}
+                      className="text-xs text-stone-500 transition hover:text-black"
+                    >
+                      Открыть список
+                    </button>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {visibleGroupMembers.length > 0 ? (
+                      visibleGroupMembers.slice(0, 5).map((member) => (
+                        <div key={member.user.id} className="flex items-center gap-3">
+                          <UserAvatar
+                            user={member.user}
+                            accessToken={accessToken}
+                            className="h-11 w-11 shrink-0 rounded-full"
+                            fallbackClassName="text-sm"
+                          />
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-[#171717]">
+                              {member.user.displayName}
+                            </p>
+                            <p className="truncate text-sm text-stone-500">
+                              {formatGroupRole(member.role)}
+                            </p>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-stone-500">
+                        Откройте список участников, чтобы загрузить состав группы.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
+                  <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">
+                    Контакт
+                  </p>
+                  <div className="mt-4 flex items-center gap-3">
+                    <UserAvatar
+                      user={conversationProfileUser}
+                      accessToken={accessToken}
+                      className="h-14 w-14 shrink-0 rounded-full"
+                      fallbackClassName="text-base"
+                    />
+                    <div className="min-w-0">
+                      <p className="truncate text-base font-medium text-[#171717]">
+                        {conversationProfileUser.displayName}
+                      </p>
+                      <p className="truncate text-sm text-stone-500">
+                        {conversationProfileUser.email}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </aside>
+        </>
       ) : null}
 
       {isGroupChat && showGroupMembersPanel ? (
@@ -1985,6 +2371,129 @@ function MicIcon({ className }: { className?: string }) {
       <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <path d="M12 19v3" />
+    </svg>
+  );
+}
+
+function SearchIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
+
+function PhoneIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M22 16.92v2a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 3.18 2 2 0 0 1 4.11 1h2a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.1 8.91a16 16 0 0 0 6 6l1.27-1.26a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
+    </svg>
+  );
+}
+
+function DotsVerticalIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="5" r="2.2" />
+      <circle cx="12" cy="12" r="2.2" />
+      <circle cx="12" cy="19" r="2.2" />
+    </svg>
+  );
+}
+
+function PanelRightIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <path d="M14 4v16" />
+    </svg>
+  );
+}
+
+function UsersIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2" />
+      <circle cx="9.5" cy="7" r="3.5" />
+      <path d="M20 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M14 4.13a3.5 3.5 0 0 1 0 5.74" />
+    </svg>
+  );
+}
+
+function ChatBubbleIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5A8.38 8.38 0 0 1 8 18.74L3 20l1.35-4.5A8.5 8.5 0 1 1 21 11.5Z" />
+    </svg>
+  );
+}
+
+function CloseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m18 6-12 12" />
+      <path d="m6 6 12 12" />
     </svg>
   );
 }
