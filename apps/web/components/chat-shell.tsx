@@ -76,8 +76,11 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const safePathname = pathname ?? "/";
   const queryClient = useQueryClient();
   const socketRef = useRef<Socket | null>(null);
+  const sidebarMenuRef = useRef<HTMLDivElement | null>(null);
+  const sidebarMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const { accessToken, authorizedFetch, isAuthenticated, isLoading, logout, user } = useAuth();
-  const [search, setSearch] = useState("");
+  const [isSidebarMenuOpen, setIsSidebarMenuOpen] = useState(false);
+  const [isGroupComposerOpen, setIsGroupComposerOpen] = useState(false);
   const [groupTitleDraft, setGroupTitleDraft] = useState("");
   const [groupSearch, setGroupSearch] = useState("");
   const [selectedGroupMembers, setSelectedGroupMembers] = useState<SafeUser[]>([]);
@@ -88,7 +91,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     chatId: string;
     mode: ChatActionMode;
   } | null>(null);
-  const deferredSearch = useDeferredValue(search);
   const deferredGroupSearch = useDeferredValue(groupSearch);
   const deferredGlobalSearch = useDeferredValue(globalSearch);
   const normalizedGroupSearch = deferredGroupSearch.trim();
@@ -102,20 +104,12 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
     return null;
   }, [safePathname]);
+  const currentChatIdRef = useRef<string | null>(currentChatId);
 
   const chatsQuery = useQuery({
     queryKey: ["chats"],
     enabled: isAuthenticated,
     queryFn: async () => readJson<ChatListItem[]>(await authorizedFetch("/chats")),
-  });
-
-  const searchUsersQuery = useQuery({
-    queryKey: ["user-search", deferredSearch],
-    enabled: isAuthenticated && deferredSearch.trim().length > 1,
-    queryFn: async () =>
-      readJson<SafeUser[]>(
-        await authorizedFetch(`/users/search?query=${encodeURIComponent(deferredSearch.trim())}`),
-      ),
   });
 
   const groupUserSearchQuery = useQuery({
@@ -227,11 +221,12 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
           body: JSON.stringify({ targetUserId }),
         }),
       ),
-    onSuccess: async () => {
+    onSuccess: async (chat) => {
       await queryClient.invalidateQueries({ queryKey: ["chats"] });
-      setSearch("");
+      setGlobalSearch("");
+      setIsSidebarMenuOpen(false);
       startTransition(() => {
-        router.replace("/chat");
+        router.replace(`/chat/${chat.id}`);
       });
     },
   });
@@ -256,6 +251,8 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       setGroupSearch("");
       setSelectedGroupMembers([]);
       setGroupCreateError(null);
+      setIsGroupComposerOpen(false);
+      setIsSidebarMenuOpen(false);
       startTransition(() => {
         router.replace(`/chat/${chat.id}`);
       });
@@ -347,6 +344,10 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    currentChatIdRef.current = currentChatId;
+  }, [currentChatId]);
+
+  useEffect(() => {
     if (!accessToken || socketRef.current) {
       return;
     }
@@ -359,67 +360,145 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       },
     });
 
-    socket.on("message:new", (message: ChatMessage) => {
+    const handleConnect = () => {
+      const chatId = currentChatIdRef.current;
+
+      if (!chatId) {
+        return;
+      }
+
+      socket.emit("join_chat_room", { chatId });
+    };
+
+    const handleMessageNew = (message: ChatMessage) => {
       queryClient.setQueryData<MessagePage>(["messages", message.chatId], (old) =>
         appendMessageUnique(old, message),
       );
 
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", message.chatId] });
-    });
+    };
 
-    socket.on("message:updated", (message: ChatMessage) => {
+    const handleMessageUpdated = (message: ChatMessage) => {
       queryClient.setQueryData<MessagePage>(["messages", message.chatId], (old) =>
         upsertMessage(old, message),
       );
 
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", message.chatId] });
-    });
+    };
 
-    socket.on("chat:updated", () => {
+    const handleChatUpdated = () => {
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
-    });
+    };
 
-    socket.on("chat:deleted", (payload: ChatDeletedPayload) => {
+    const handleChatDeleted = (payload: ChatDeletedPayload) => {
       queryClient.setQueryData<ChatListItem[] | undefined>(["chats"], (old) =>
         old?.filter((chat) => chat.id !== payload.chatId),
       );
       queryClient.removeQueries({ queryKey: ["chat", payload.chatId] });
       queryClient.removeQueries({ queryKey: ["messages", payload.chatId] });
-      if (currentChatId === payload.chatId) {
+      if (currentChatIdRef.current === payload.chatId) {
         startTransition(() => {
           router.replace("/chat");
         });
       }
-    });
+    };
 
-    socket.on("chat:read", () => {
+    const handleChatRead = () => {
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
-    });
+    };
 
-    socket.on("presence:changed", () => {
+    const handlePresenceChanged = () => {
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
-      if (currentChatId) {
-        void queryClient.invalidateQueries({ queryKey: ["chat", currentChatId] });
+      if (currentChatIdRef.current) {
+        void queryClient.invalidateQueries({ queryKey: ["chat", currentChatIdRef.current] });
       }
-    });
+    };
+
+    socket.on("connect", handleConnect);
+    socket.on("message:new", handleMessageNew);
+    socket.on("message:updated", handleMessageUpdated);
+    socket.on("chat:updated", handleChatUpdated);
+    socket.on("chat:deleted", handleChatDeleted);
+    socket.on("chat:read", handleChatRead);
+    socket.on("presence:changed", handlePresenceChanged);
 
     socketRef.current = socket;
 
     return () => {
-      socket.disconnect();
+      socket.off("connect", handleConnect);
+      socket.off("message:new", handleMessageNew);
+      socket.off("message:updated", handleMessageUpdated);
+      socket.off("chat:updated", handleChatUpdated);
+      socket.off("chat:deleted", handleChatDeleted);
+      socket.off("chat:read", handleChatRead);
+      socket.off("presence:changed", handlePresenceChanged);
+      socket.io.opts.reconnection = false;
+
+      if (socket.connected) {
+        socket.disconnect();
+      } else {
+        socket.once("connect", () => {
+          socket.disconnect();
+        });
+      }
+
       socketRef.current = null;
     };
-  }, [accessToken, currentChatId, queryClient, router]);
+  }, [accessToken, queryClient, router]);
 
   useEffect(() => {
-    if (!currentChatId || !socketRef.current) {
+    if (!currentChatId || !socketRef.current || !socketRef.current.connected) {
       return;
     }
 
     socketRef.current.emit("join_chat_room", { chatId: currentChatId });
   }, [currentChatId]);
+
+  useEffect(() => {
+    setIsSidebarMenuOpen(false);
+    setIsGroupComposerOpen(false);
+  }, [safePathname]);
+
+  useEffect(() => {
+    if (!isSidebarMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+
+      if (!target) {
+        return;
+      }
+
+      if (sidebarMenuRef.current?.contains(target) || sidebarMenuButtonRef.current?.contains(target)) {
+        return;
+      }
+
+      setIsSidebarMenuOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      setIsSidebarMenuOpen(false);
+      window.requestAnimationFrame(() => {
+        sidebarMenuButtonRef.current?.focus();
+      });
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isSidebarMenuOpen]);
 
   const handleChatDangerAction = (chat: ChatListItem) => {
     if (deleteChatMutation.isPending || leaveGroupMutation.isPending) {
@@ -469,209 +548,254 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <main className="chat-scene grain h-[100dvh] overflow-hidden" data-testid="chat-shell">
+    <main className="chat-scene grain relative h-[100dvh] overflow-hidden" data-testid="chat-shell">
+      <div
+        className={clsx(
+          "pointer-events-none absolute inset-0 z-20 bg-black/18 transition-opacity duration-300",
+          isSidebarMenuOpen ? "opacity-100" : "opacity-0",
+        )}
+        aria-hidden="true"
+      />
+
+      <div
+        ref={sidebarMenuRef}
+        className={clsx(
+          "pointer-events-auto absolute inset-y-0 left-0 z-30 flex w-[min(92vw,360px)] max-w-full flex-col border-r border-black/8 bg-white shadow-[0_28px_60px_rgba(17,24,39,0.12)] transition-transform duration-300 ease-out",
+          isSidebarMenuOpen ? "translate-x-0" : "-translate-x-[104%]",
+        )}
+        data-testid="chat-sidebar-drawer"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-black/8 px-5 py-5">
+          <Link
+            href="/profile"
+            data-testid="profile-link"
+            onClick={() => setIsSidebarMenuOpen(false)}
+            className="flex min-w-0 items-start gap-3 rounded-[24px] border border-transparent pr-2 transition hover:border-black/8 hover:bg-black/[0.02]"
+          >
+            <UserAvatar
+              user={user}
+              accessToken={accessToken}
+              className="h-14 w-14 shrink-0 rounded-[18px]"
+              fallbackClassName="text-base"
+            />
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-[0.28em] text-stone-400">Messenger</p>
+              <h1 className="mt-2 truncate text-[1.5rem] font-semibold leading-none tracking-tight text-[#171717]">
+                {user?.displayName}
+              </h1>
+              <p className="mt-2 truncate text-sm text-stone-500">{user?.email}</p>
+              <p className="mt-2 text-[11px] uppercase tracking-[0.2em] text-stone-400">
+                Открыть профиль
+              </p>
+            </div>
+          </Link>
+
+          <button
+            type="button"
+            onClick={() => setIsSidebarMenuOpen(false)}
+            className="shrink-0 rounded-full border border-black/10 bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.18em] text-stone-600 transition hover:border-black hover:bg-black hover:text-white"
+            aria-label="Закрыть меню"
+            title="Закрыть меню"
+          >
+            <CloseIcon className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="scroll-region-y min-h-0 flex-1 overflow-y-auto bg-white">
+          <div className="px-0 py-4">
+            {isGroupComposerOpen ? (
+              <div className="px-5">
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setIsGroupComposerOpen(false)}
+                    className="rounded-full border border-black/10 bg-white px-3 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                  >
+                    Назад
+                  </button>
+                </div>
+
+                <div className="mt-5">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] border border-black/10 bg-[#f7f7f5] text-stone-600">
+                      <GroupsIcon className="h-5 w-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-[#171717]">Создать группу</p>
+                      <p className="text-xs text-stone-500">
+                        Укажите название и при желании сразу добавьте участников.
+                      </p>
+                    </div>
+                  </div>
+
+                  <input
+                    data-testid="group-title-input"
+                    value={groupTitleDraft}
+                    onChange={(event) => {
+                      setGroupTitleDraft(event.target.value);
+                      if (groupCreateError) {
+                        setGroupCreateError(null);
+                      }
+                    }}
+                    placeholder="Название группы"
+                    maxLength={80}
+                    className="mt-4 w-full rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-2.5 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+                  />
+                  <input
+                    data-testid="group-members-search-input"
+                    value={groupSearch}
+                    onChange={(event) => setGroupSearch(event.target.value)}
+                    placeholder="Добавить участников"
+                    className="mt-2 w-full rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-2.5 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+                  />
+
+                  {selectedGroupMembers.length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-1.5" data-testid="group-selected-members">
+                      {selectedGroupMembers.map((selectedUser) => (
+                        <button
+                          key={selectedUser.id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedGroupMembers((current) =>
+                              current.filter((member) => member.id !== selectedUser.id),
+                            )
+                          }
+                          className="rounded-full border border-black/10 bg-white px-2.5 py-1 text-xs text-stone-600 transition hover:border-black/25 hover:text-black"
+                        >
+                          {selectedUser.displayName} ×
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {normalizedGroupSearch.length > 1 ? (
+                    <div
+                      className="scroll-region-y mt-2 max-h-40 overflow-y-auto rounded-[16px] border border-black/8 bg-white p-1.5"
+                      data-testid="group-members-search-results"
+                    >
+                      {groupUserSearchQuery.isLoading ? (
+                        <p className="px-2 py-3 text-xs text-stone-500">Ищем участников...</p>
+                      ) : availableGroupUserResults.length > 0 ? (
+                        <div className="space-y-1.5">
+                          {availableGroupUserResults.map((foundUser) => (
+                            <button
+                              key={foundUser.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedGroupMembers((current) => [...current, foundUser])
+                              }
+                              className="flex w-full items-center justify-between rounded-[12px] border border-transparent px-2 py-2 text-left transition hover:border-black/8 hover:bg-[#f7f7f5]"
+                            >
+                              <span className="truncate text-xs font-medium text-[#171717]">
+                                {foundUser.displayName}
+                              </span>
+                              <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-stone-500">
+                                Add
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="px-2 py-3 text-xs text-stone-500">
+                          Подходящих пользователей нет.
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {groupCreateError ? (
+                    <p className="mt-2 text-xs text-stone-600">{groupCreateError}</p>
+                  ) : (
+                    <p className="mt-2 text-[11px] text-stone-500">
+                      Можно создать пустую группу и добавить участников позже.
+                    </p>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleCreateGroup}
+                    disabled={!normalizedGroupTitle || createGroupChatMutation.isPending}
+                    data-testid="create-group-button"
+                    className="mt-4 w-full rounded-full bg-[#111111] px-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
+                  >
+                    {createGroupChatMutation.isPending ? "Создаём..." : "Создать группу"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <Link
+                  href="/profile"
+                  onClick={() => setIsSidebarMenuOpen(false)}
+                  className="flex items-center gap-3 px-5 py-4 text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
+                >
+                  <ProfileIcon className="h-5 w-5 text-stone-500" />
+                  <span className="font-medium">Мой профиль</span>
+                </Link>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsSidebarMenuOpen(false);
+                    void logout();
+                  }}
+                  data-testid="logout-button"
+                  className="flex w-full items-center gap-3 px-5 py-4 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
+                >
+                  <LogoutIcon className="h-5 w-5 text-stone-500" />
+                  <span className="font-medium">Выйти из аккаунта</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsGroupComposerOpen(true)}
+                  data-testid="open-group-composer-button"
+                  className="flex w-full items-center gap-3 px-5 py-4 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
+                >
+                  <GroupsIcon className="h-5 w-5 text-stone-500" />
+                  <span className="font-medium">Создать группу</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="grid h-full min-h-0 grid-rows-[360px_minmax(0,1fr)] gap-0 lg:grid-cols-[380px_minmax(0,1fr)] lg:grid-rows-1">
         <aside
           className="chat-shell-panel flex min-h-0 flex-col overflow-hidden rounded-none border-0 border-r border-black/8 p-4 sm:p-5"
           data-testid="chat-sidebar"
         >
-          <div className="relative z-10 mb-5 flex items-start justify-between gap-4">
-            <Link
-              href="/profile"
-              data-testid="profile-link"
-              className="flex min-w-0 items-start gap-3 rounded-[24px] border border-transparent pr-2 transition hover:border-black/8 hover:bg-black/[0.02]"
-            >
-              <UserAvatar
-                user={user}
-                accessToken={accessToken}
-                className="h-14 w-14 shrink-0 rounded-[18px]"
-                fallbackClassName="text-base"
-              />
-              <div className="min-w-0">
-                <p className="text-[11px] uppercase tracking-[0.28em] text-stone-400">Messenger</p>
-                <h1 className="mt-2 truncate text-[1.75rem] font-semibold leading-none tracking-tight text-[#171717]">
-                  {user?.displayName}
-                </h1>
-                <p className="mt-2 truncate text-sm text-stone-500">{user?.email}</p>
-                <p className="mt-2 text-[11px] uppercase tracking-[0.2em] text-stone-400">
-                  Открыть профиль
-                </p>
-              </div>
-            </Link>
+          <div className="relative z-10 mb-5 flex items-center gap-3">
             <button
-              data-testid="logout-button"
+              ref={sidebarMenuButtonRef}
               type="button"
-              onClick={() => void logout()}
-              className="shrink-0 rounded-full border border-black/10 bg-white px-4 py-2 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-600 transition hover:border-black hover:bg-black hover:text-white"
-            >
-              Exit
-            </button>
-          </div>
-
-          <div className="relative z-10 space-y-3">
-            <label className="block">
-              <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-stone-400">
-                Найти пользователя
-              </span>
-              <input
-                data-testid="user-search-input"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Имя или email"
-                className="w-full rounded-[20px] border border-black/8 bg-[#f7f7f5] px-4 py-3 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
-              />
-            </label>
-
-            {deferredSearch.trim().length > 1 ? (
-              <div
-                className="scroll-region-y max-h-52 overflow-y-auto rounded-[24px] border border-black/8 bg-white p-2 shadow-[0_18px_30px_rgba(17,24,39,0.06)]"
-                data-testid="user-search-results"
-              >
-                {searchUsersQuery.isLoading ? (
-                  <p className="px-3 py-4 text-sm text-stone-500">Ищем пользователей...</p>
-                ) : searchUsersQuery.data?.length ? (
-                  <div className="space-y-2">
-                    {searchUsersQuery.data.map((foundUser) => (
-                      <button
-                        key={foundUser.id}
-                        data-testid="user-search-result"
-                        type="button"
-                        onClick={() => createDirectChatMutation.mutate(foundUser.id)}
-                        className="flex w-full items-center justify-between gap-3 rounded-[18px] border border-transparent px-3 py-3 text-left transition hover:border-black/8 hover:bg-[#f7f7f5]"
-                      >
-                        <div className="flex min-w-0 items-center gap-3">
-                          <UserAvatar
-                            user={foundUser}
-                            accessToken={accessToken}
-                            className="h-11 w-11 shrink-0 rounded-[14px]"
-                            fallbackClassName="text-sm"
-                          />
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-[#171717]">
-                              {foundUser.displayName}
-                            </p>
-                            <p className="truncate text-xs text-stone-500">{foundUser.email}</p>
-                          </div>
-                        </div>
-                        <span className="rounded-full border border-black/10 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-stone-500">
-                          {createDirectChatMutation.isPending ? "..." : "Direct"}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="px-3 py-4 text-sm text-stone-500">Ничего не найдено.</p>
-                )}
-              </div>
-            ) : null}
-
-            <div className="rounded-[22px] border border-black/8 bg-white/90 p-3">
-              <p className="text-[11px] uppercase tracking-[0.2em] text-stone-400">Новая группа</p>
-              <input
-                data-testid="group-title-input"
-                value={groupTitleDraft}
-                onChange={(event) => {
-                  setGroupTitleDraft(event.target.value);
-                  if (groupCreateError) {
-                    setGroupCreateError(null);
-                  }
-                }}
-                placeholder="Название группы"
-                maxLength={80}
-                className="mt-2 w-full rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
-              />
-              <input
-                data-testid="group-members-search-input"
-                value={groupSearch}
-                onChange={(event) => setGroupSearch(event.target.value)}
-                placeholder="Добавить участников"
-                className="mt-2 w-full rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
-              />
-
-              {selectedGroupMembers.length > 0 ? (
-                <div className="mt-2 flex flex-wrap gap-1.5" data-testid="group-selected-members">
-                  {selectedGroupMembers.map((selectedUser) => (
-                    <button
-                      key={selectedUser.id}
-                      type="button"
-                      onClick={() =>
-                        setSelectedGroupMembers((current) =>
-                          current.filter((member) => member.id !== selectedUser.id),
-                        )
-                      }
-                      className="rounded-full border border-black/10 bg-white px-2.5 py-1 text-xs text-stone-600 transition hover:border-black/25 hover:text-black"
-                    >
-                      {selectedUser.displayName} ×
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-
-              {normalizedGroupSearch.length > 1 ? (
-                <div
-                  className="scroll-region-y mt-2 max-h-40 overflow-y-auto rounded-[16px] border border-black/8 bg-[#fafaf9] p-1.5"
-                  data-testid="group-members-search-results"
-                >
-                  {groupUserSearchQuery.isLoading ? (
-                    <p className="px-2 py-3 text-xs text-stone-500">Ищем участников...</p>
-                  ) : availableGroupUserResults.length > 0 ? (
-                    <div className="space-y-1.5">
-                      {availableGroupUserResults.map((foundUser) => (
-                        <button
-                          key={foundUser.id}
-                          type="button"
-                          onClick={() =>
-                            setSelectedGroupMembers((current) => [...current, foundUser])
-                          }
-                          className="flex w-full items-center justify-between rounded-[12px] border border-transparent px-2 py-2 text-left transition hover:border-black/8 hover:bg-white"
-                        >
-                          <span className="truncate text-xs font-medium text-[#171717]">
-                            {foundUser.displayName}
-                          </span>
-                          <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-stone-500">
-                            Add
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="px-2 py-3 text-xs text-stone-500">Подходящих пользователей нет.</p>
-                  )}
-                </div>
-              ) : null}
-
-              {groupCreateError ? (
-                <p className="mt-2 text-xs text-stone-600">{groupCreateError}</p>
-              ) : (
-                <p className="mt-2 text-[11px] text-stone-500">
-                  Можно создать пустую группу и добавить участников позже.
-                </p>
+              onClick={() => setIsSidebarMenuOpen((current) => !current)}
+              data-testid="chat-sidebar-menu-button"
+              className={clsx(
+                "flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] border transition",
+                isSidebarMenuOpen
+                  ? "border-black bg-[#111111] text-white"
+                  : "border-black/10 bg-white text-stone-600 hover:border-black hover:bg-black hover:text-white",
               )}
+              aria-label="Открыть меню"
+              title="Открыть меню"
+            >
+              <MenuIcon className="h-5 w-5" />
+            </button>
 
-              <button
-                type="button"
-                onClick={handleCreateGroup}
-                disabled={!normalizedGroupTitle || createGroupChatMutation.isPending}
-                data-testid="create-group-button"
-                className="mt-2 w-full rounded-full bg-[#111111] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
-              >
-                {createGroupChatMutation.isPending ? "Создаём..." : "Создать группу"}
-              </button>
-            </div>
-
-            <label className="block pt-1">
-              <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-stone-400">
-                Global search
-              </span>
+            <label className="relative block min-w-0 flex-1">
               <input
                 data-testid="global-search-input"
                 value={globalSearch}
                 onChange={(event) => setGlobalSearch(event.target.value)}
-                placeholder="Чаты, пользователи, сообщения"
+                placeholder="Поиск"
                 className="w-full rounded-[20px] border border-black/8 bg-[#f7f7f5] px-4 py-3 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
               />
             </label>
+          </div>
 
+          <div className="relative z-10 space-y-3">
             {normalizedGlobalSearch.length > 1 ? (
               <div
                 className="scroll-region-y max-h-72 overflow-y-auto rounded-[24px] border border-black/8 bg-white p-2 shadow-[0_18px_30px_rgba(17,24,39,0.06)]"
@@ -737,11 +861,19 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                               onClick={() => createDirectChatMutation.mutate(foundUser.id)}
                               className="flex w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-3 py-2 text-left transition hover:border-black/10 hover:bg-[#f7f7f5]"
                             >
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-semibold text-[#171717]">
-                                  {foundUser.displayName}
-                                </p>
-                                <p className="truncate text-xs text-stone-500">{foundUser.email}</p>
+                              <div className="flex min-w-0 items-center gap-3">
+                                <UserAvatar
+                                  user={foundUser}
+                                  accessToken={accessToken}
+                                  className="h-10 w-10 shrink-0 rounded-[14px]"
+                                  fallbackClassName="text-sm"
+                                />
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold text-[#171717]">
+                                    {foundUser.displayName}
+                                  </p>
+                                  <p className="truncate text-xs text-stone-500">{foundUser.email}</p>
+                                </div>
                               </div>
                               <span className="shrink-0 rounded-full border border-black/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.15em] text-stone-500">
                                 {createDirectChatMutation.isPending ? "..." : "Direct"}
@@ -803,7 +935,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
             </div>
 
             <div
-              className="scroll-region-y min-h-0 flex-1 space-y-2 overflow-y-auto pr-1"
+              className="scroll-region-y -mx-4 min-h-0 flex-1 overflow-y-auto sm:-mx-5"
               data-testid="chat-list"
             >
               {chatsQuery.isLoading ? (
@@ -813,136 +945,136 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                   <SidebarSkeleton />
                 </>
               ) : chatsQuery.data?.length ? (
-                chatsQuery.data.map((chat) => {
-                  const title = getChatTitle(chat.members, user?.id, {
-                    type: chat.type,
-                    title: chat.title,
-                  });
-                  const partner = chat.members.find((member) => member.id !== user?.id);
-                  const isGroup = chat.type === "group";
-                  const actionMode: ChatActionMode =
-                    isGroup && chat.currentUserRole !== "creator" ? "leave" : "delete";
-                  const isActive = currentChatId === chat.id;
-                  const isDeleting = deletingChatId === chat.id;
+                <div className="overflow-hidden bg-white/92">
+                  {chatsQuery.data.map((chat) => {
+                    const title = getChatTitle(chat.members, user?.id, {
+                      type: chat.type,
+                      title: chat.title,
+                    });
+                    const partner = chat.members.find((member) => member.id !== user?.id);
+                    const isGroup = chat.type === "group";
+                    const actionMode: ChatActionMode =
+                      isGroup && chat.currentUserRole !== "creator" ? "leave" : "delete";
+                    const isActive = currentChatId === chat.id;
+                    const isDeleting = deletingChatId === chat.id;
 
-                  return (
-                    <div
-                      key={chat.id}
-                      data-testid="chat-list-entry"
-                      className={clsx(
-                        "group rounded-[26px] border px-4 py-3 transition",
-                        isActive
-                          ? "border-black bg-[#151515] text-white shadow-[0_22px_34px_rgba(17,24,39,0.14)]"
-                          : "border-black/6 bg-white/92 hover:border-black/14 hover:bg-white",
-                      )}
-                    >
-                      <div className="flex items-start gap-3">
-                        <UserAvatar
-                          user={
-                            isGroup
-                              ? { displayName: title, email: title, avatarUrl: null }
-                              : partner ?? { displayName: title, email: title, avatarUrl: null }
-                          }
-                          accessToken={accessToken}
-                          className="h-12 w-12 shrink-0 rounded-[16px]"
-                          fallbackClassName={clsx(
-                            "text-sm",
-                            isActive ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
-                          )}
-                        />
+                    return (
+                      <div
+                        key={chat.id}
+                        data-testid="chat-list-entry"
+                        className={clsx(
+                          "group px-4 py-3 transition",
+                          isActive ? "bg-[#151515] text-white" : "bg-white/92 hover:bg-white",
+                        )}
+                      >
+                        <div className="flex items-start gap-3">
+                          <UserAvatar
+                            user={
+                              isGroup
+                                ? { displayName: title, email: title, avatarUrl: null }
+                                : partner ?? { displayName: title, email: title, avatarUrl: null }
+                            }
+                            accessToken={accessToken}
+                            className="h-12 w-12 shrink-0 rounded-[16px]"
+                            fallbackClassName={clsx(
+                              "text-sm",
+                              isActive ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
+                            )}
+                          />
 
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-start justify-between gap-3">
-                            <Link
-                              data-testid="chat-list-item"
-                              href={`/chat/${chat.id}`}
-                              className="min-w-0 flex-1"
-                            >
-                              <p
-                                className={clsx(
-                                  "truncate text-sm font-semibold",
-                                  isActive ? "text-white" : "text-[#171717]",
-                                )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-3">
+                              <Link
+                                data-testid="chat-list-item"
+                                href={`/chat/${chat.id}`}
+                                className="min-w-0 flex-1"
                               >
-                                {title}
-                              </p>
-                              <p
-                                className={clsx(
-                                  "mt-1 truncate text-xs",
-                                  isActive ? "text-white/60" : "text-stone-500",
-                                )}
-                              >
-                                {isGroup
-                                  ? `${chat.members.length} участников`
-                                  : partner?.lastSeenAt
-                                    ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
-                                    : "Личный чат"}
-                              </p>
-                            </Link>
-
-                            <div className="shrink-0 text-right">
-                              <p
-                                className={clsx(
-                                  "text-[10px] uppercase tracking-[0.16em]",
-                                  isActive ? "text-white/45" : "text-stone-400",
-                                )}
-                              >
-                                {chat.lastMessage ? formatTime(chat.lastMessage.createdAt) : "New"}
-                              </p>
-                              {chat.unreadCount > 0 ? (
-                                <span
-                                  data-testid="chat-unread-badge"
+                                <p
                                   className={clsx(
-                                    "mt-2 inline-flex min-w-6 items-center justify-center rounded-full px-2 py-1 text-[11px] font-semibold",
-                                    isActive ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
+                                    "truncate text-sm font-semibold",
+                                    isActive ? "text-white" : "text-[#171717]",
                                   )}
                                 >
-                                  {chat.unreadCount}
-                                </span>
-                              ) : null}
-                              <button
-                                type="button"
-                                onClick={() => handleChatDangerAction(chat)}
-                                disabled={deleteChatMutation.isPending || leaveGroupMutation.isPending}
-                                data-testid="chat-list-delete-button"
-                                className={clsx(
-                                  "mt-2 block rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] transition disabled:cursor-not-allowed disabled:opacity-60",
-                                  isActive
-                                    ? "border-white/15 bg-white/5 text-white/70 hover:border-white/25 hover:text-white"
-                                    : "border-black/10 bg-white text-stone-500 hover:border-black/20 hover:text-black",
-                                )}
-                              >
-                                {isDeleting
-                                  ? actionMode === "leave"
-                                    ? "Выход..."
-                                    : "Удаление..."
-                                  : actionMode === "leave"
-                                    ? "Выйти"
-                                    : "Удалить"}
-                              </button>
-                            </div>
-                          </div>
+                                  {title}
+                                </p>
+                                <p
+                                  className={clsx(
+                                    "mt-1 truncate text-xs",
+                                    isActive ? "text-white/60" : "text-stone-500",
+                                  )}
+                                >
+                                  {isGroup
+                                    ? `${chat.members.length} участников`
+                                    : partner?.lastSeenAt
+                                      ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
+                                      : "Личный чат"}
+                                </p>
+                              </Link>
 
-                          <Link
-                            href={`/chat/${chat.id}`}
-                            className={clsx(
-                              "mt-3 block truncate text-sm",
-                              isActive ? "text-white/76" : "text-stone-600",
-                            )}
-                          >
-                            {getLastMessagePreviewText(chat.lastMessage)}
-                          </Link>
+                              <div className="shrink-0 text-right">
+                                <p
+                                  className={clsx(
+                                    "text-[10px] uppercase tracking-[0.16em]",
+                                    isActive ? "text-white/45" : "text-stone-400",
+                                  )}
+                                >
+                                  {chat.lastMessage ? formatTime(chat.lastMessage.createdAt) : "New"}
+                                </p>
+                                {chat.unreadCount > 0 ? (
+                                  <span
+                                    data-testid="chat-unread-badge"
+                                    className={clsx(
+                                      "mt-2 inline-flex min-w-6 items-center justify-center rounded-full px-2 py-1 text-[11px] font-semibold",
+                                      isActive ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
+                                    )}
+                                  >
+                                    {chat.unreadCount}
+                                  </span>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  onClick={() => handleChatDangerAction(chat)}
+                                  disabled={deleteChatMutation.isPending || leaveGroupMutation.isPending}
+                                  data-testid="chat-list-delete-button"
+                                  className={clsx(
+                                    "mt-2 block rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] transition disabled:cursor-not-allowed disabled:opacity-60",
+                                    isActive
+                                      ? "border-white/15 bg-white/5 text-white/70 hover:border-white/25 hover:text-white"
+                                      : "border-black/10 bg-white text-stone-500 hover:border-black/20 hover:text-black",
+                                  )}
+                                >
+                                  {isDeleting
+                                    ? actionMode === "leave"
+                                      ? "Выход..."
+                                      : "Удаление..."
+                                    : actionMode === "leave"
+                                      ? "Выйти"
+                                      : "Удалить"}
+                                </button>
+                              </div>
+                            </div>
+
+                            <Link
+                              href={`/chat/${chat.id}`}
+                              className={clsx(
+                                "mt-3 block truncate text-sm",
+                                isActive ? "text-white/76" : "text-stone-600",
+                              )}
+                            >
+                              {getLastMessagePreviewText(chat.lastMessage)}
+                            </Link>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })
+                    );
+                  })}
+                </div>
               ) : (
                 <div
                   className="rounded-[26px] border border-dashed border-black/12 bg-white/80 px-4 py-6 text-sm leading-6 text-stone-600"
                   data-testid="chat-list-empty"
                 >
-                  Пока нет чатов. Найдите пользователя для direct-диалога или создайте первую группу.
+                  Пока нет чатов. Используйте общий поиск сверху или откройте меню, чтобы создать первую группу.
                 </div>
               )}
             </div>
@@ -998,4 +1130,116 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
 function SidebarSkeleton() {
   return <div className="h-24 animate-pulse rounded-[24px] border border-black/6 bg-white/80" />;
+}
+
+function MenuIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M4 7h12" />
+      <path d="M4 12h16" />
+      <path d="M4 17h10" />
+    </svg>
+  );
+}
+
+function CloseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M6 6 18 18" />
+      <path d="m18 6-12 12" />
+    </svg>
+  );
+}
+
+function SearchIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
+
+function ProfileIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="8" r="4" />
+      <path d="M5 20a7 7 0 0 1 14 0" />
+    </svg>
+  );
+}
+
+function LogoutIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M14 16l4-4-4-4" />
+      <path d="M18 12H9" />
+      <path d="M10 20H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4" />
+    </svg>
+  );
+}
+
+function GroupsIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="10" cy="7" r="3" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
 }
