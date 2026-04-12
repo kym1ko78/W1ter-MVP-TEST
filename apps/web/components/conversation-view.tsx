@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
@@ -30,7 +30,6 @@ import {
   formatTime,
   getChatTitle,
   getConversationDayKey,
-  getLastMessagePreviewText,
 } from "../lib/utils";
 import type {
   ChatAttachment,
@@ -73,30 +72,13 @@ const ATTACHMENT_ALLOWED_TYPES = new Set([
 const VOICE_RECORDER_MIME_TYPE = "audio/webm";
 const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
 const SCROLL_BOTTOM_THRESHOLD = 180;
-const QUICK_REACTIONS = ["👍", "❤️", "😂", "🔥", "😮", "😢"] as const;
 
 type ComposerPayload = {
   body: string;
   file: File | null;
-  replyToMessageId?: string | null;
 };
 
 type RecordingState = "idle" | "recording" | "stopping";
-
-type EditMessagePayload = {
-  messageId: string;
-  body: string;
-};
-
-type ForwardMessagePayload = {
-  messageId: string;
-  targetChatId: string;
-};
-
-type ToggleReactionPayload = {
-  messageId: string;
-  emoji: (typeof QUICK_REACTIONS)[number];
-};
 
 type ConversationRenderItem =
   | {
@@ -125,26 +107,28 @@ export function ConversationView({ chatId }: { chatId: string }) {
     displayName: string;
   } | null>(null);
   const [confirmingGroupLeave, setConfirmingGroupLeave] = useState(false);
-  const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
-  const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [confirmingMessage, setConfirmingMessage] = useState<ChatMessage | null>(null);
-  const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
-  const [forwardSearch, setForwardSearch] = useState("");
-  const [forwardPanelError, setForwardPanelError] = useState<string | null>(null);
-  const [recentlyReactedMessageId, setRecentlyReactedMessageId] = useState<string | null>(null);
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
+  const [showMessageSearch, setShowMessageSearch] = useState(false);
+  const [showConversationMenu, setShowConversationMenu] = useState(false);
+  const [showConversationProfile, setShowConversationProfile] = useState(false);
+  const [headerStatusMessage, setHeaderStatusMessage] = useState<string | null>(null);
   const deferredMessageSearch = useDeferredValue(messageSearch);
   const deferredGroupMemberSearch = useDeferredValue(groupMemberSearch);
-  const deferredForwardSearch = useDeferredValue(forwardSearch);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const messageSearchInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const messageListEndRef = useRef<HTMLDivElement | null>(null);
+  const conversationMenuRef = useRef<HTMLDivElement | null>(null);
+  const conversationMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const conversationProfileRef = useRef<HTMLDivElement | null>(null);
+  const conversationProfileButtonRef = useRef<HTMLButtonElement | null>(null);
   const shouldScrollAfterSendRef = useRef(false);
   const shouldStickToBottomRef = useRef(true);
   const lastMessageIdRef = useRef<string | null>(null);
@@ -171,12 +155,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       )!,
   });
 
-  const chatsQuery = useQuery({
-    queryKey: ["chats"],
-    enabled: isAuthenticated,
-    queryFn: async () => readJson<ChatListItem[]>(await authorizedFetch("/chats")),
-  });
-
   const messageItems = useMemo(
     () => dedupeMessages(messagesQuery.data?.items ?? []),
     [messagesQuery.data?.items],
@@ -199,7 +177,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const searchParamMessageId = searchParams?.get("message") ?? null;
   const searchParamQuery = searchParams?.get("q") ?? null;
   const normalizedGroupMemberSearch = deferredGroupMemberSearch.trim();
-  const normalizedForwardSearch = deferredForwardSearch.trim().toLocaleLowerCase();
   const isGroupChat = chatQuery.data?.type === "group";
 
   const groupMembersQuery = useQuery({
@@ -311,15 +288,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, []);
 
   const sendMessageMutation = useMutation({
-    mutationFn: async ({ body, file, replyToMessageId }: ComposerPayload) => {
+    mutationFn: async ({ body, file }: ComposerPayload) => {
       if (file) {
         const formData = new FormData();
         formData.append("file", file);
         if (body) {
           formData.append("body", body);
-        }
-        if (replyToMessageId) {
-          formData.append("replyToMessageId", replyToMessageId);
         }
 
         return readJson<ChatMessage>(
@@ -336,10 +310,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            body,
-            replyToMessageId: replyToMessageId ?? undefined,
-          }),
+          body: JSON.stringify({ body }),
         }),
       );
     },
@@ -353,7 +324,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       setComposerError(null);
       setDraft("");
       setPendingFile(null);
-      setReplyingToMessage(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -364,36 +334,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
         error instanceof Error
           ? error.message
           : "Не удалось отправить сообщение. Попробуйте еще раз.",
-      );
-    },
-  });
-
-  const editMessageMutation = useMutation({
-    mutationFn: async ({ messageId, body }: EditMessagePayload) =>
-      readJson<ChatMessage>(
-        await authorizedFetch(`/chats/${chatId}/messages/${messageId}`, {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ body }),
-        }),
-      ),
-    onSuccess: (message) => {
-      queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
-        upsertMessage(old, message),
-      );
-      void queryClient.invalidateQueries({ queryKey: ["chats"] });
-      void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
-      setComposerError(null);
-      setEditingMessage(null);
-      setDraft("");
-      setFocusedMessageId(message.id);
-      focusMessageById(message.id, "smooth");
-    },
-    onError: (error) => {
-      setComposerError(
-        error instanceof Error ? error.message : "Не удалось сохранить изменения сообщения.",
       );
     },
   });
@@ -414,68 +354,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
     onSettled: () => {
       setConfirmingMessage(null);
-    },
-  });
-
-  const forwardMessageMutation = useMutation({
-    mutationFn: async ({ messageId, targetChatId }: ForwardMessagePayload) =>
-      readJson<ChatMessage>(
-        await authorizedFetch(`/chats/${chatId}/messages/${messageId}/forward`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            targetChatId,
-          }),
-        }),
-      ),
-    onSuccess: (forwardedMessage) => {
-      queryClient.setQueryData<MessagePage>(["messages", forwardedMessage.chatId], (old) =>
-        appendMessageUnique(old, forwardedMessage),
-      );
-
-      if (forwardedMessage.chatId === chatId) {
-        shouldScrollAfterSendRef.current = true;
-        scrollToBottom("smooth");
-      }
-
-      void queryClient.invalidateQueries({ queryKey: ["chats"] });
-      void queryClient.invalidateQueries({ queryKey: ["chat", forwardedMessage.chatId] });
-      setForwardPanelError(null);
-      setForwardingMessage(null);
-      setForwardSearch("");
-    },
-    onError: (error) => {
-      setForwardPanelError(
-        error instanceof Error ? error.message : "Не удалось переслать сообщение.",
-      );
-    },
-  });
-
-  const toggleReactionMutation = useMutation({
-    mutationFn: async ({ messageId, emoji }: ToggleReactionPayload) =>
-      readJson<ChatMessage>(
-        await authorizedFetch(`/chats/${chatId}/messages/${messageId}/reaction`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ emoji }),
-        }),
-      ),
-    onSuccess: (message, variables) => {
-      queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
-        upsertMessage(old, message),
-      );
-      setRecentlyReactedMessageId(variables.messageId);
-      setComposerError(null);
-      setForwardPanelError(null);
-    },
-    onError: (error) => {
-      setComposerError(
-        error instanceof Error ? error.message : "Не удалось обновить реакцию. Попробуйте еще раз.",
-      );
     },
   });
 
@@ -612,16 +490,14 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   useEffect(() => {
     setShowGroupMembersPanel(false);
+    setShowMessageSearch(false);
+    setShowConversationMenu(false);
+    setShowConversationProfile(false);
+    setHeaderStatusMessage(null);
     setGroupMemberSearch("");
     setGroupPanelError(null);
     setConfirmingMemberRemoval(null);
     setConfirmingGroupLeave(false);
-    setReplyingToMessage(null);
-    setEditingMessage(null);
-    setForwardingMessage(null);
-    setForwardSearch("");
-    setForwardPanelError(null);
-    setRecentlyReactedMessageId(null);
   }, [chatId]);
 
   useEffect(() => {
@@ -645,6 +521,84 @@ export function ConversationView({ chatId }: { chatId: string }) {
     prefilledSearchQueryRef.current = searchKey;
     setMessageSearch((current) => current || searchParamQuery.slice(0, MESSAGE_MAX_LENGTH));
   }, [chatId, searchParamQuery]);
+
+  useEffect(() => {
+    if (!normalizedMessageSearch) {
+      return;
+    }
+
+    setShowMessageSearch(true);
+  }, [normalizedMessageSearch]);
+
+  useEffect(() => {
+    if (!showMessageSearch) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      messageSearchInputRef.current?.focus();
+      messageSearchInputRef.current?.select();
+    });
+  }, [showMessageSearch]);
+
+  useEffect(() => {
+    if (!headerStatusMessage) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setHeaderStatusMessage(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [headerStatusMessage]);
+
+  useEffect(() => {
+    if (!showConversationMenu && !showConversationProfile) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+
+      if (!target) {
+        return;
+      }
+
+      if (
+        showConversationMenu &&
+        !conversationMenuRef.current?.contains(target) &&
+        !conversationMenuButtonRef.current?.contains(target)
+      ) {
+        setShowConversationMenu(false);
+      }
+
+      if (
+        showConversationProfile &&
+        !conversationProfileRef.current?.contains(target) &&
+        !conversationProfileButtonRef.current?.contains(target)
+      ) {
+        setShowConversationProfile(false);
+      }
+    };
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      setShowConversationMenu(false);
+      setShowConversationProfile(false);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showConversationMenu, showConversationProfile]);
 
   useEffect(() => {
     if (!activeSearchMessage) {
@@ -712,50 +666,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     type: chatQuery.data?.type,
     title: chatQuery.data?.title,
   });
-  const memberNameById = useMemo(
-    () =>
-      new Map(
-        chatMembers.map((member) => [member.id, member.displayName] as const),
-      ),
-    [chatMembers],
-  );
-  const forwardCandidates = useMemo(() => {
-    const candidates = chatsQuery.data ?? [];
-
-    return candidates
-      .map((chat) => {
-        const title = getChatTitle(chat.members, user?.id, {
-          type: chat.type,
-          title: chat.title,
-        });
-        const lastMessagePreview = getLastMessagePreviewText(chat.lastMessage);
-        const searchableContent = `${title} ${lastMessagePreview}`.toLocaleLowerCase();
-
-        return {
-          ...chat,
-          title,
-          lastMessagePreview,
-          isCurrentChat: chat.id === chatId,
-          searchableContent,
-        };
-      })
-      .filter((chat) =>
-        normalizedForwardSearch ? chat.searchableContent.includes(normalizedForwardSearch) : true,
-      )
-      .sort((left, right) => {
-        if (left.isCurrentChat && !right.isCurrentChat) {
-          return -1;
-        }
-
-        if (!left.isCurrentChat && right.isCurrentChat) {
-          return 1;
-        }
-
-        return (
-          new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
-        );
-      });
-  }, [chatId, chatsQuery.data, normalizedForwardSearch, user?.id]);
   const existingGroupMemberIds = useMemo(
     () =>
       new Set(
@@ -774,26 +684,56 @@ export function ConversationView({ chatId }: { chatId: string }) {
     [existingGroupMemberIds, groupUsersSearchQuery.data, user?.id],
   );
   const groupMembersCount = groupMembersQuery.data?.members.length ?? chatMembers.length;
-  const isEditingMessage = Boolean(editingMessage);
-  const composerText = draft.trim();
-  const isComposerSubmitPending = sendMessageMutation.isPending || editMessageMutation.isPending;
-  const hasComposerContent = isEditingMessage
-    ? Boolean(composerText)
-    : Boolean(composerText || pendingFile);
-  const showSendButton = hasComposerContent || isComposerSubmitPending;
+  const hasComposerContent = Boolean(draft.trim() || pendingFile);
+  const showSendButton = hasComposerContent || sendMessageMutation.isPending;
   const showVoiceButton =
-    !isEditingMessage && !hasComposerContent && !isComposerSubmitPending && recordingState === "idle";
+    !hasComposerContent && !sendMessageMutation.isPending && recordingState === "idle";
+  const composerActionMode = showSendButton ? "send" : showVoiceButton ? "voice" : "hidden";
+  const showComposerAction = composerActionMode !== "hidden";
   const hasSearchInput = normalizedMessageSearch.length > 0;
   const hasSearchMatches = messageSearchMatches.length > 0;
   const activeSearchNumber = hasSearchMatches
     ? Math.min(activeMatchIndex + 1, messageSearchMatches.length)
     : 0;
-  const submitButtonLabel = isEditingMessage ? "Сохранить изменения" : "Отправить сообщение";
   const isGroupActionPending =
     addGroupMemberMutation.isPending ||
     removeGroupMemberMutation.isPending ||
     updateGroupMemberRoleMutation.isPending ||
     leaveGroupMutation.isPending;
+  const conversationProfileUser: SafeUser = otherUser ?? {
+    id: chatId,
+    displayName: conversationTitle,
+    email: isGroupChat ? `${groupMembersCount} участников` : conversationTitle,
+    avatarUrl: null,
+    emailVerifiedAt: null,
+    emailVerificationSentAt: null,
+    lastSeenAt: null,
+  };
+  const profileDetailRows = isGroupChat
+    ? [
+        { label: "Тип", value: "Групповой чат" },
+        { label: "Участники", value: String(groupMembersCount) },
+        {
+          label: "Ваша роль",
+          value: formatGroupRole(chatQuery.data?.currentUserRole ?? "member"),
+        },
+      ]
+    : [
+        { label: "Email", value: conversationProfileUser.email },
+        {
+          label: "Статус",
+          value: otherUser?.lastSeenAt
+            ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
+            : "Личный чат",
+        },
+        {
+          label: "Последняя активность",
+          value: otherUser?.lastSeenAt
+            ? formatTime(otherUser.lastSeenAt)
+            : "Сейчас недоступно",
+        },
+      ];
+  const visibleGroupMembers = groupMembersQuery.data?.members ?? [];
 
   const stopMediaStream = useCallback(() => {
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -816,7 +756,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   );
 
   const startVoiceRecording = useCallback(async () => {
-    if (recordingState !== "idle" || isComposerSubmitPending || isEditingMessage) {
+    if (recordingState !== "idle" || sendMessageMutation.isPending) {
       return;
     }
 
@@ -877,7 +817,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           : "Не удалось получить доступ к микрофону.",
       );
     }
-  }, [isComposerSubmitPending, isEditingMessage, recordingState, stopMediaStream]);
+  }, [recordingState, sendMessageMutation.isPending, stopMediaStream]);
 
   const finishVoiceRecording = useCallback(
     (shouldSend: boolean) => {
@@ -925,16 +865,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
         });
 
         shouldScrollAfterSendRef.current = true;
-        sendMessageMutation.mutate({
-          body: "",
-          file: voiceFile,
-          replyToMessageId: replyingToMessage?.id ?? null,
-        });
+        sendMessageMutation.mutate({ body: "", file: voiceFile });
       };
 
       recorder.stop();
     },
-    [replyingToMessage?.id, sendMessageMutation, stopMediaStream],
+    [sendMessageMutation, stopMediaStream],
   );
 
   useEffect(() => {
@@ -963,12 +899,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
   );
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    if (isEditingMessage) {
-      setComposerError("При редактировании вложения недоступны.");
-      event.target.value = "";
-      return;
-    }
-
     const selectedFile = event.target.files?.[0] ?? null;
 
     if (!selectedFile) {
@@ -1000,12 +930,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
   };
 
   const submitComposer = () => {
-    const body = composerText;
-    if (
-      (!body && !pendingFile) ||
-      isComposerSubmitPending ||
-      recordingState !== "idle"
-    ) {
+    const body = draft.trim();
+    if ((!body && !pendingFile) || sendMessageMutation.isPending || recordingState !== "idle") {
       return;
     }
 
@@ -1015,16 +941,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     setComposerError(null);
-    if (editingMessage) {
-      editMessageMutation.mutate({ messageId: editingMessage.id, body });
-      return;
-    }
-
-    sendMessageMutation.mutate({
-      body,
-      file: pendingFile,
-      replyToMessageId: replyingToMessage?.id ?? null,
-    });
+    sendMessageMutation.mutate({ body, file: pendingFile });
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -1078,102 +995,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setConfirmingMessage(message);
   };
 
-  const handleReplyMessage = (message: ChatMessage) => {
-    if (recordingState !== "idle" || isComposerSubmitPending) {
-      return;
-    }
-
-    if (message.isDeleted) {
-      setComposerError("Нельзя ответить на удаленное сообщение.");
-      return;
-    }
-
-    setComposerError(null);
-    setEditingMessage(null);
-    setReplyingToMessage(message);
-    setPendingFile(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-    textareaRef.current?.focus();
-  };
-
-  const handleStartEditingMessage = (message: ChatMessage) => {
-    if (recordingState !== "idle" || isComposerSubmitPending) {
-      return;
-    }
-
-    if (message.senderId !== user?.id || message.isDeleted) {
-      return;
-    }
-
-    setComposerError(null);
-    setReplyingToMessage(null);
-    setEditingMessage(message);
-    setDraft(message.body ?? "");
-    setPendingFile(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-    queueMicrotask(() => textareaRef.current?.focus());
-  };
-
-  const handleStartForwardMessage = (message: ChatMessage) => {
-    if (message.isDeleted) {
-      setComposerError("Удаленное сообщение нельзя переслать.");
-      return;
-    }
-
-    if (!message.body?.trim() && message.attachments.length === 0) {
-      setComposerError("В этом сообщении нечего пересылать.");
-      return;
-    }
-
-    setComposerError(null);
-    setForwardPanelError(null);
-    setForwardSearch("");
-    setForwardingMessage(message);
-  };
-
-  const handleForwardToChat = (targetChatId: string) => {
-    if (!forwardingMessage || forwardMessageMutation.isPending) {
-      return;
-    }
-
-    forwardMessageMutation.mutate({
-      messageId: forwardingMessage.id,
-      targetChatId,
-    });
-  };
-
-  const handleToggleMessageReaction = (
-    message: ChatMessage,
-    emoji: (typeof QUICK_REACTIONS)[number],
-  ) => {
-    if (message.isDeleted || toggleReactionMutation.isPending) {
-      return;
-    }
-
-    toggleReactionMutation.mutate({
-      messageId: message.id,
-      emoji,
-    });
-  };
-
-  const cancelComposerContext = () => {
-    if (editingMessage) {
-      setEditingMessage(null);
-      setDraft("");
-    }
-
-    setReplyingToMessage(null);
-    setPendingFile(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-    setComposerError(null);
-  };
-
   const handleToggleGroupMemberRole = (
     targetUserId: string,
     currentRole: ChatMemberRole,
@@ -1202,6 +1023,33 @@ export function ConversationView({ chatId }: { chatId: string }) {
     return member.role !== "admin";
   };
 
+  const profileSummaryStatus = isGroupChat
+    ? `${groupMembersCount} участников`
+    : otherUser?.lastSeenAt
+      ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
+      : "Личный чат";
+
+  const handleConversationCall = () => {
+    setHeaderStatusMessage("Звонки добавим следующим шагом.");
+    setShowConversationMenu(false);
+  };
+
+  const toggleMessageSearch = () => {
+    setShowConversationMenu(false);
+    setShowConversationProfile(false);
+    setShowMessageSearch((current) => {
+      const next = !current;
+
+      if (!next) {
+        setMessageSearch("");
+        setActiveMatchIndex(0);
+        setFocusedMessageId(null);
+      }
+
+      return next;
+    });
+  };
+
   if (chatQuery.isLoading || messagesQuery.isLoading) {
     return <ConversationSkeleton />;
   }
@@ -1216,116 +1064,120 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   return (
     <section
-      className="chat-shell-panel chat-thread-surface flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0"
+      className="chat-shell-panel chat-thread-surface relative flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0"
       data-testid="conversation-view"
     >
-      <header className="relative z-10 flex flex-none flex-wrap items-center justify-between gap-3 border-b border-black/8 px-5 py-4 sm:flex-nowrap sm:gap-4 sm:px-6 sm:py-5">
-        <div className="flex min-w-0 items-center gap-4">
-          <UserAvatar
-            user={
-              otherUser ?? {
-                displayName: conversationTitle,
-                email: conversationTitle,
-                avatarUrl: null,
-              }
-            }
-            accessToken={accessToken}
-            className="h-12 w-12 shrink-0 rounded-[16px]"
-            fallbackClassName="text-sm"
-          />
-          <div className="min-w-0">
-            <h2
-              className="truncate text-lg font-semibold tracking-tight text-[#171717]"
-              data-testid="conversation-title"
-            >
-              {conversationTitle}
-            </h2>
-            <p className="truncate text-sm text-stone-500" data-testid="conversation-status">
-              {isGroupChat
-                ? `${groupMembersCount} участников`
-                : otherUser?.lastSeenAt
-                ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
-                : "Личный чат"}
-            </p>
-          </div>
+      <header className="relative z-20 flex flex-none items-start justify-between gap-4 border-b border-black/8 bg-white px-4 py-3 sm:px-5">
+        <div className="min-w-0 flex-1">
+          <h2
+            className="truncate text-[21px] font-semibold leading-none tracking-tight text-[#171717]"
+            data-testid="conversation-title"
+          >
+            {conversationTitle}
+          </h2>
+          <p
+            className="mt-2 truncate text-sm text-stone-500"
+            data-testid="conversation-status"
+          >
+            {profileSummaryStatus}
+          </p>
+          {headerStatusMessage ? (
+            <p className="mt-2 text-xs font-medium text-stone-500">{headerStatusMessage}</p>
+          ) : null}
         </div>
-        <div className="flex w-full min-w-0 items-center justify-end gap-2 sm:w-auto">
-          {chatQuery.data.unreadCount > 0 ? (
-            <div className="shrink-0 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-500">
-              {chatQuery.data.unreadCount}
-            </div>
-          ) : null}
-          {isGroupChat ? (
+        <div className="flex shrink-0 items-center gap-1 text-stone-400 sm:gap-2">
+          <button
+            type="button"
+            onClick={toggleMessageSearch}
+            className={clsx(
+              "flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black",
+              showMessageSearch || hasSearchInput ? "border-black/12 bg-[#111111] text-white hover:bg-black hover:text-white" : null,
+            )}
+            aria-label="Поиск по сообщениям"
+            title="Поиск по сообщениям"
+          >
+            <SearchIcon className="h-5 w-5" />
+          </button>
+          <button
+            ref={conversationProfileButtonRef}
+            type="button"
+            onClick={() => {
+              setShowConversationMenu(false);
+              setShowConversationProfile((current) => !current);
+            }}
+            className={clsx(
+              "flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black",
+              showConversationProfile ? "border-black/12 bg-[#111111] text-white hover:bg-black hover:text-white" : null,
+            )}
+            aria-label="Открыть профиль чата"
+            title="Открыть профиль чата"
+          >
+            <PanelRightIcon className="h-5 w-5" />
+          </button>
+          <button
+            type="button"
+            onClick={handleConversationCall}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black"
+            aria-label="Позвонить собеседнику"
+            title="Позвонить собеседнику"
+          >
+            <PhoneIcon className="h-5 w-5" />
+          </button>
+          <div className="relative">
             <button
+              ref={conversationMenuButtonRef}
               type="button"
-              onClick={() => setShowGroupMembersPanel((prev) => !prev)}
-              data-testid="group-members-toggle"
-              className={clsx(
-                "shrink-0 rounded-full border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] transition",
-                showGroupMembersPanel
-                  ? "border-black bg-[#111111] text-white"
-                  : "border-black/12 bg-white text-stone-600 hover:border-black/25 hover:text-black",
-              )}
-            >
-              {showGroupMembersPanel ? "Скрыть участников" : "Участники"}
-            </button>
-          ) : null}
-          <div className="flex min-w-0 flex-1 items-center gap-2 sm:w-[290px] sm:flex-none">
-            <input
-              data-testid="message-search-input"
-              value={messageSearch}
-              onChange={(event) => setMessageSearch(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter") {
-                  return;
-                }
-
-                event.preventDefault();
-                moveMessageSearch(event.shiftKey ? -1 : 1);
+              onClick={() => {
+                setShowConversationProfile(false);
+                setShowConversationMenu((current) => !current);
               }}
-              placeholder="Поиск по сообщениям"
-              className="w-full rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
-            />
-            {hasSearchInput ? (
-              <div className="flex shrink-0 items-center gap-1">
-                <span
-                  data-testid="message-search-counter"
-                  className="rounded-full border border-black/10 bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-stone-500"
-                >
-                  {activeSearchNumber}/{messageSearchMatches.length}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => moveMessageSearch(-1)}
-                  disabled={!hasSearchMatches}
-                  data-testid="message-search-prev"
-                  className="h-8 w-8 rounded-full border border-black/10 bg-white text-sm text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-45"
-                  aria-label="Предыдущее совпадение"
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  onClick={() => moveMessageSearch(1)}
-                  disabled={!hasSearchMatches}
-                  data-testid="message-search-next"
-                  className="h-8 w-8 rounded-full border border-black/10 bg-white text-sm text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-45"
-                  aria-label="Следующее совпадение"
-                >
-                  ↓
-                </button>
+              className={clsx(
+                "flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black",
+                showConversationMenu ? "border-black/12 bg-[#111111] text-white hover:bg-black hover:text-white" : null,
+              )}
+              aria-label="Дополнительные действия"
+              title="Дополнительные действия"
+            >
+              <DotsVerticalIcon className="h-5 w-5" />
+            </button>
+
+            {showConversationMenu ? (
+              <div
+                ref={conversationMenuRef}
+                className="absolute right-0 top-12 z-30 min-w-[220px] rounded-[22px] border border-black/8 bg-white p-2 text-sm text-[#171717] shadow-[0_24px_60px_rgba(17,24,39,0.14)]"
+              >
                 <button
                   type="button"
                   onClick={() => {
-                    setMessageSearch("");
-                    setActiveMatchIndex(0);
-                    setFocusedMessageId(null);
+                    setShowConversationMenu(false);
+                    setShowConversationProfile(true);
                   }}
-                  data-testid="message-search-clear"
-                  className="h-8 w-8 rounded-full border border-black/10 bg-white text-sm text-stone-600 transition hover:border-black/25 hover:text-black"
-                  aria-label="Очистить поиск по сообщениям"
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
                 >
-                  ×
+                  <PanelRightIcon className="h-4 w-4 text-stone-500" />
+                  <span>Открыть профиль</span>
+                </button>
+                {isGroupChat ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowConversationMenu(false);
+                      setShowGroupMembersPanel((current) => !current);
+                    }}
+                    data-testid="group-members-toggle"
+                    className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                  >
+                    <UsersIcon className="h-4 w-4 text-stone-500" />
+                    <span>{showGroupMembersPanel ? "Скрыть участников" : "Показать участников"}</span>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={toggleMessageSearch}
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                >
+                  <SearchIcon className="h-4 w-4 text-stone-500" />
+                  <span>{showMessageSearch || hasSearchInput ? "Скрыть поиск" : "Искать в чате"}</span>
                 </button>
               </div>
             ) : null}
@@ -1333,10 +1185,84 @@ export function ConversationView({ chatId }: { chatId: string }) {
         </div>
       </header>
 
-      {hasSearchInput ? (
+      {showMessageSearch ? (
+        <div className="relative z-10 border-b border-black/8 bg-white px-4 py-3 sm:px-6">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <input
+                ref={messageSearchInputRef}
+                data-testid="message-search-input"
+                value={messageSearch}
+                onChange={(event) => setMessageSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  moveMessageSearch(event.shiftKey ? -1 : 1);
+                }}
+                placeholder="Поиск по сообщениям"
+                className="w-full rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+              />
+              <button
+                type="button"
+                onClick={toggleMessageSearch}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-black/10 bg-white text-stone-500 transition hover:border-black/25 hover:text-black"
+                aria-label="Закрыть поиск по сообщениям"
+              >
+                <CloseIcon className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <span
+                data-testid="message-search-counter"
+                className="rounded-full border border-black/10 bg-white px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-stone-500"
+              >
+                {activeSearchNumber}/{messageSearchMatches.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => moveMessageSearch(-1)}
+                disabled={!hasSearchMatches}
+                data-testid="message-search-prev"
+                className="h-9 w-9 rounded-full border border-black/10 bg-white text-sm text-stone-500 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-45"
+                aria-label="Предыдущее совпадение"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                onClick={() => moveMessageSearch(1)}
+                disabled={!hasSearchMatches}
+                data-testid="message-search-next"
+                className="h-9 w-9 rounded-full border border-black/10 bg-white text-sm text-stone-500 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-45"
+                aria-label="Следующее совпадение"
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMessageSearch("");
+                  setActiveMatchIndex(0);
+                  setFocusedMessageId(null);
+                }}
+                data-testid="message-search-clear"
+                className="h-9 rounded-full border border-black/10 bg-white px-3 text-xs font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                aria-label="Очистить поиск по сообщениям"
+              >
+                Сброс
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showMessageSearch ? (
         <div
           className={clsx(
-            "border-b border-black/8 px-4 py-2 text-xs sm:px-6",
+            "border-b border-black/8 bg-white px-4 py-2 text-xs sm:px-6",
             hasSearchMatches ? "text-stone-500" : "text-stone-600",
           )}
           data-testid="message-search-state"
@@ -1345,6 +1271,162 @@ export function ConversationView({ chatId }: { chatId: string }) {
             ? `Найдено ${messageSearchMatches.length}. Enter, ↑ и ↓ — переход по совпадениям.`
             : "Ничего не найдено в этом диалоге."}
         </div>
+      ) : null}
+
+      {showConversationProfile ? (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowConversationProfile(false)}
+            className="absolute inset-0 z-20 bg-black/10"
+            aria-label="Закрыть профиль чата"
+          />
+          <aside
+            ref={conversationProfileRef}
+            className="absolute right-0 top-0 z-30 flex h-full w-full max-w-[380px] flex-col overflow-y-auto border-l border-black/8 bg-[#f7f7f5] text-[#171717] shadow-[-24px_0_60px_rgba(17,24,39,0.14)]"
+            data-testid="conversation-profile-panel"
+          >
+            <div className="border-b border-black/8 bg-white px-6 py-6">
+              <div className="flex items-start justify-between gap-4">
+                <UserAvatar
+                  user={conversationProfileUser}
+                  accessToken={accessToken}
+                  className="h-20 w-20 shrink-0 rounded-full"
+                  fallbackClassName="text-xl"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConversationProfile(false)}
+                  className="flex h-10 w-10 items-center justify-center rounded-full border border-transparent text-stone-500 transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black"
+                  aria-label="Закрыть профиль"
+                >
+                  <CloseIcon className="h-5 w-5" />
+                </button>
+              </div>
+              <h3 className="mt-5 text-[28px] font-semibold leading-none tracking-tight text-[#171717]">
+                {conversationTitle}
+              </h3>
+              <p className="mt-2 text-base text-stone-500">{profileSummaryStatus}</p>
+              <div className="mt-5 grid grid-cols-3 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowConversationProfile(false)}
+                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
+                >
+                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
+                    <ChatBubbleIcon className="h-4 w-4" />
+                  </span>
+                  <span className="mt-2 block text-sm">Чат</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConversationCall}
+                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
+                >
+                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
+                    <PhoneIcon className="h-4 w-4" />
+                  </span>
+                  <span className="mt-2 block text-sm">Звонок</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowConversationProfile(false);
+                    setShowMessageSearch(true);
+                  }}
+                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
+                >
+                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
+                    <SearchIcon className="h-4 w-4" />
+                  </span>
+                  <span className="mt-2 block text-sm">Поиск</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-6 px-6 py-6">
+              <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Информация</p>
+                <div className="mt-4 space-y-4">
+                  {profileDetailRows.map((row) => (
+                    <div key={row.label}>
+                      <p className="text-sm text-[#171717]">{row.value}</p>
+                      <p className="mt-1 text-sm text-stone-500">{row.label}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {isGroupChat ? (
+                <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">
+                      Участники
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowConversationProfile(false);
+                        setShowGroupMembersPanel(true);
+                      }}
+                      className="text-xs text-stone-500 transition hover:text-black"
+                    >
+                      Открыть список
+                    </button>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {visibleGroupMembers.length > 0 ? (
+                      visibleGroupMembers.slice(0, 5).map((member) => (
+                        <div key={member.user.id} className="flex items-center gap-3">
+                          <UserAvatar
+                            user={member.user}
+                            accessToken={accessToken}
+                            className="h-11 w-11 shrink-0 rounded-full"
+                            fallbackClassName="text-sm"
+                          />
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-[#171717]">
+                              {member.user.displayName}
+                            </p>
+                            <p className="truncate text-sm text-stone-500">
+                              {formatGroupRole(member.role)}
+                            </p>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-stone-500">
+                        Откройте список участников, чтобы загрузить состав группы.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
+                  <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">
+                    Контакт
+                  </p>
+                  <div className="mt-4 flex items-center gap-3">
+                    <UserAvatar
+                      user={conversationProfileUser}
+                      accessToken={accessToken}
+                      className="h-14 w-14 shrink-0 rounded-full"
+                      fallbackClassName="text-base"
+                    />
+                    <div className="min-w-0">
+                      <p className="truncate text-base font-medium text-[#171717]">
+                        {conversationProfileUser.displayName}
+                      </p>
+                      <p className="truncate text-sm text-stone-500">
+                        {conversationProfileUser.email}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </aside>
+        </>
       ) : null}
 
       {isGroupChat && showGroupMembersPanel ? (
@@ -1525,10 +1607,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
             normalizedBody.toLocaleLowerCase().includes(normalizedMessageSearchLower);
           const isActiveSearchMatch = activeSearchMessage?.id === message.id;
           const isFocusedFromGlobalSearch = focusedMessageId === message.id;
-          const isEditedMessage = !message.isDeleted && message.updatedAt !== message.createdAt;
-          const messageMetaLabel = `${isEditedMessage ? "изм. " : ""}${formatTime(message.createdAt)}`;
-          const replyToMessage = message.replyTo;
-          const replyPreviewText = getReplyPreviewText(replyToMessage);
           const highlightClassName = isMine
             ? "rounded bg-white px-0.5 text-[#111111]"
             : "rounded bg-[#111111] px-0.5 text-white";
@@ -1538,12 +1616,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
           const compactBubble = inlineMetaBubble;
           const shortTextOnlyBubble =
             inlineMetaBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
-          const currentUserId = user?.id ?? null;
-          const currentUserReaction =
-            currentUserId
-              ? message.reactions.find((reaction) => reaction.userIds.includes(currentUserId))?.emoji ??
-                null
-              : null;
 
           return (
             <div
@@ -1553,230 +1625,102 @@ export function ConversationView({ chatId }: { chatId: string }) {
               data-message-owner={isMine ? "self" : "other"}
               data-message-search-match={isSearchMatch ? "true" : "false"}
               data-message-search-active={isActiveSearchMatch ? "true" : "false"}
-              onMouseLeave={() => {
-                setRecentlyReactedMessageId((current) =>
-                  current === message.id ? null : current,
-                );
-              }}
               className={clsx("group flex w-full", isMine ? "justify-end" : "justify-start")}
             >
               <div
                 className={clsx(
-                  "relative",
+                  "flex items-start gap-2",
                   isMine ? "ml-auto max-w-[85%] sm:max-w-[70%]" : "max-w-[85%] sm:max-w-[70%]",
                 )}
               >
-                {!message.isDeleted ? (
-                  <div
-                    className={clsx(
-                      "pointer-events-none absolute top-0 z-20 flex min-w-[120px] flex-col gap-1 rounded-[14px] border border-black/10 bg-white/95 p-1 shadow-[0_12px_28px_rgba(17,24,39,0.12)] backdrop-blur-sm opacity-0 transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
-                      isMine ? "right-full mr-2" : "left-full ml-2",
-                    )}
+                {isMine ? (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteMessage(message)}
+                    data-testid="delete-message-button"
+                    className="mt-1 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 opacity-0 transition hover:border-black/25 hover:text-black group-hover:opacity-100"
                   >
-                    <button
-                      type="button"
-                      onClick={() => handleReplyMessage(message)}
-                      data-testid="reply-message-button"
-                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
-                    >
-                      Ответ
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleStartForwardMessage(message)}
-                      data-testid="forward-message-button"
-                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
-                    >
-                      Переслать
-                    </button>
-                    {isMine ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleStartEditingMessage(message)}
-                          data-testid="edit-message-button"
-                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
-                        >
-                          Изменить
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteMessage(message)}
-                          data-testid="delete-message-button"
-                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
-                        >
-                          {deleteMessageMutation.isPending ? "..." : "Удалить"}
-                        </button>
-                      </>
-                    ) : null}
-                  </div>
+                    {deleteMessageMutation.isPending ? "..." : "Удалить"}
+                  </button>
                 ) : null}
-                <div className={clsx("flex max-w-full flex-col gap-1.5", isMine ? "items-end" : "items-start")}>
-                  <div
-                    className={clsx(
-                      "w-fit max-w-full shadow-sm transition-[box-shadow]",
-                      shortTextOnlyBubble
-                        ? "rounded-[13px] px-2.5 py-0.5"
-                        : compactBubble
-                          ? "rounded-[17px] px-2.5 py-1"
-                          : attachmentOnlyBubble
-                            ? "rounded-[20px] px-3 py-[2px]"
+                <div
+                  className={clsx(
+                    "w-fit max-w-full shadow-sm transition-[box-shadow]",
+                    shortTextOnlyBubble
+                      ? "rounded-[13px] px-2.5 py-0.5"
+                      : compactBubble
+                        ? "rounded-[17px] px-2.5 py-1"
+                        : attachmentOnlyBubble
+                          ? "rounded-[20px] px-3 py-[2px]"
                           : "rounded-[22px] px-4 py-2.5",
-                      isMine
-                        ? "bg-[#111111] text-white"
-                        : "border border-black/8 bg-white text-[#171717]",
-                      isActiveSearchMatch
-                        ? isMine
-                          ? "ring-2 ring-white/75 ring-offset-2 ring-offset-[#111111]"
-                          : "ring-2 ring-black/35 ring-offset-2 ring-offset-white"
-                        : null,
-                      !isActiveSearchMatch && isFocusedFromGlobalSearch
-                        ? isMine
-                          ? "ring-2 ring-white/45 ring-offset-2 ring-offset-[#111111]"
-                          : "ring-2 ring-black/20 ring-offset-2 ring-offset-white"
-                        : null,
-                    )}
-                  >
-                    {replyToMessage ? (
-                      <button
-                        type="button"
-                        onClick={() => focusMessageById(replyToMessage.id, "smooth")}
-                        className={clsx(
-                          "mb-1.5 block w-full rounded-[12px] border px-2.5 py-1.5 text-left transition hover:opacity-90",
-                          isMine
-                            ? "border-white/20 bg-white/10 text-white"
-                            : "border-black/10 bg-black/[0.03] text-stone-700",
-                        )}
-                        data-testid="message-reply-preview"
-                      >
-                        <p
-                          className={clsx(
-                            "truncate text-[10px] uppercase tracking-[0.12em]",
-                            isMine ? "text-white/70" : "text-stone-500",
-                          )}
-                        >
-                          {replyToMessage.sender.displayName}
-                        </p>
-                        <p className="mt-0.5 truncate text-xs">{replyPreviewText}</p>
-                      </button>
-                    ) : null}
-                    {inlineMetaBubble && message.body ? (
-                      <div
-                        className={clsx(
-                          "grid grid-cols-[minmax(0,1fr)_auto] items-end",
-                          shortTextOnlyBubble ? "gap-x-1" : "gap-x-1.5",
-                        )}
-                      >
-                        <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
-                          {renderHighlightedMessageBody(
-                            message.body,
-                            normalizedMessageSearch,
-                            highlightClassName,
-                          )}
-                        </p>
-                        <p
-                          className={clsx(
-                            "shrink-0 self-end pb-0 text-[11px] leading-none",
-                            isMine ? "text-white/62" : "text-stone-400",
-                          )}
-                        >
-                          {messageMetaLabel}
-                        </p>
-                      </div>
-                    ) : null}
-                    {message.body && !inlineMetaBubble ? (
-                      <p className="whitespace-pre-wrap break-words text-sm leading-5">
+                    isMine
+                      ? "bg-[#111111] text-white"
+                      : "border border-black/8 bg-white text-[#171717]",
+                    isActiveSearchMatch
+                      ? isMine
+                        ? "ring-2 ring-white/75 ring-offset-2 ring-offset-[#111111]"
+                        : "ring-2 ring-black/35 ring-offset-2 ring-offset-white"
+                      : null,
+                    !isActiveSearchMatch && isFocusedFromGlobalSearch
+                      ? isMine
+                        ? "ring-2 ring-white/45 ring-offset-2 ring-offset-[#111111]"
+                        : "ring-2 ring-black/20 ring-offset-2 ring-offset-white"
+                      : null,
+                  )}
+                >
+                  {inlineMetaBubble && message.body ? (
+                    <div
+                      className={clsx(
+                        "grid grid-cols-[minmax(0,1fr)_auto] items-end",
+                        shortTextOnlyBubble ? "gap-x-1" : "gap-x-1.5",
+                      )}
+                    >
+                      <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
                         {renderHighlightedMessageBody(
                           message.body,
                           normalizedMessageSearch,
                           highlightClassName,
                         )}
                       </p>
-                    ) : null}
-                    {message.attachments.length > 0 ? (
-                      <MessageAttachments
-                        accessToken={accessToken}
-                        attachments={message.attachments}
-                        isMine={isMine}
-                      />
-                    ) : null}
-                    {!inlineMetaBubble ? (
                       <p
                         className={clsx(
-                          hasText
-                            ? "mt-1 text-right text-[11px] leading-none"
-                            : attachmentOnlyBubble
-                              ? "mt-0 text-right text-[11px] leading-none"
-                              : "mt-1.5 text-right text-[11px] leading-none",
+                          "shrink-0 self-end pb-0 text-[11px] leading-none",
                           isMine ? "text-white/62" : "text-stone-400",
                         )}
                       >
-                        {messageMetaLabel}
+                        {formatTime(message.createdAt)}
                       </p>
-                    ) : null}
-                  </div>
-
-                  {message.reactions.length > 0 ? (
-                    <div className="flex max-w-full flex-wrap gap-1">
-                      {message.reactions.map((reaction) => {
-                        const reactedByCurrentUser =
-                          currentUserId ? reaction.userIds.includes(currentUserId) : false;
-                        const reactedByNames = reaction.userIds
-                          .map((userId) => memberNameById.get(userId))
-                          .filter((name): name is string => Boolean(name))
-                          .join(", ");
-
-                        return (
-                          <button
-                            key={`${message.id}-${reaction.emoji}`}
-                            type="button"
-                            onClick={() =>
-                              handleToggleMessageReaction(
-                                message,
-                                reaction.emoji as (typeof QUICK_REACTIONS)[number],
-                              )
-                            }
-                            className={clsx(
-                              "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
-                              reactedByCurrentUser
-                                ? "border-black bg-black text-white"
-                                : "border-black/10 bg-white text-stone-600 hover:border-black/25 hover:text-black",
-                            )}
-                            title={reactedByNames || "Реакция"}
-                            data-testid="message-reaction-chip"
-                          >
-                            <span>{reaction.emoji}</span>
-                            <span>{reaction.count}</span>
-                          </button>
-                        );
-                      })}
                     </div>
                   ) : null}
-
-                  {!message.isDeleted && recentlyReactedMessageId !== message.id ? (
-                    <div
-                      className="pointer-events-none flex max-h-0 max-w-full flex-wrap gap-1 overflow-hidden rounded-[14px] border border-black/10 bg-white px-2 py-0 opacity-0 shadow-sm -translate-y-1 transition-all duration-150 ease-out group-hover:pointer-events-auto group-hover:max-h-16 group-hover:translate-y-0 group-hover:py-1.5 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:max-h-16 group-focus-within:translate-y-0 group-focus-within:py-1.5 group-focus-within:opacity-100"
-                      data-testid="message-reaction-picker"
+                  {message.body && !inlineMetaBubble ? (
+                    <p className="whitespace-pre-wrap break-words text-sm leading-5">
+                      {renderHighlightedMessageBody(
+                        message.body,
+                        normalizedMessageSearch,
+                        highlightClassName,
+                      )}
+                    </p>
+                  ) : null}
+                  {message.attachments.length > 0 ? (
+                    <MessageAttachments
+                      accessToken={accessToken}
+                      attachments={message.attachments}
+                      isMine={isMine}
+                    />
+                  ) : null}
+                  {!inlineMetaBubble ? (
+                    <p
+                      className={clsx(
+                        hasText
+                          ? "mt-1 text-right text-[11px] leading-none"
+                          : attachmentOnlyBubble
+                            ? "mt-0 text-right text-[11px] leading-none"
+                            : "mt-1.5 text-right text-[11px] leading-none",
+                        isMine ? "text-white/62" : "text-stone-400",
+                      )}
                     >
-                      {QUICK_REACTIONS.map((emoji) => (
-                        <button
-                          key={`${message.id}-${emoji}-quick-reaction`}
-                          type="button"
-                          onClick={() => handleToggleMessageReaction(message, emoji)}
-                          disabled={toggleReactionMutation.isPending}
-                          className={clsx(
-                            "rounded-full border px-2 py-1 text-sm transition disabled:cursor-not-allowed disabled:opacity-50",
-                            currentUserReaction === emoji
-                              ? "border-black bg-black text-white"
-                              : "border-black/10 bg-white text-stone-700 hover:border-black/25 hover:text-black",
-                          )}
-                          data-testid="quick-reaction-button"
-                          aria-label={`Поставить реакцию ${emoji}`}
-                        >
-                          {emoji}
-                        </button>
-                      ))}
-                    </div>
+                      {formatTime(message.createdAt)}
+                    </p>
                   ) : null}
                 </div>
               </div>
@@ -1802,39 +1746,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
             data-testid="composer-error"
           >
             {composerError}
-          </div>
-        ) : null}
-
-        {editingMessage || replyingToMessage ? (
-          <div
-            className="mb-3 flex items-start justify-between gap-3 rounded-[18px] border border-black/8 bg-white px-4 py-3"
-            data-testid={editingMessage ? "composer-edit-context" : "composer-reply-context"}
-          >
-            <div className="min-w-0">
-              <p className="text-[10px] uppercase tracking-[0.14em] text-stone-500">
-                {editingMessage
-                  ? "Редактирование сообщения"
-                  : `Ответ: ${replyingToMessage?.sender.displayName ?? "Сообщение"}`}
-              </p>
-              <button
-                type="button"
-                onClick={() =>
-                  focusMessageById(editingMessage?.id ?? replyingToMessage?.id ?? "", "smooth")
-                }
-                className="mt-1 block max-w-full truncate text-left text-sm text-[#171717] hover:underline"
-              >
-                {editingMessage
-                  ? getReplyPreviewText(editingMessage)
-                  : getReplyPreviewText(replyingToMessage)}
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={cancelComposerContext}
-              className="shrink-0 rounded-full border border-black/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-600 transition hover:border-black/25 hover:text-black"
-            >
-              Отмена
-            </button>
           </div>
         ) : null}
 
@@ -1902,7 +1813,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={recordingState !== "idle" || isEditingMessage || isComposerSubmitPending}
+              disabled={recordingState !== "idle"}
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-black/10 bg-[#f7f7f5] text-stone-500 transition hover:border-black/25 hover:bg-white hover:text-black"
               data-testid="attachment-picker-button"
               aria-label="Прикрепить файл"
@@ -1911,7 +1822,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
               <PaperclipIcon className="h-5 w-5" />
             </button>
 
-            <div className="min-w-0 flex-1">
+            <div className="relative flex min-w-0 flex-1 items-center">
               <textarea
                 ref={textareaRef}
                 data-testid="message-input"
@@ -1925,13 +1836,13 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 maxLength={MESSAGE_MAX_LENGTH}
-                disabled={recordingState !== "idle" || isComposerSubmitPending}
-                placeholder={isEditingMessage ? "Измените сообщение..." : "Сообщение..."}
-                className="h-[44px] min-h-[44px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 py-[9px] leading-[26px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={recordingState !== "idle"}
+                placeholder="Сообщение..."
+                className="h-[42px] min-h-[42px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 pb-0 pt-[6px] leading-[28px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
               />
 
-              <div className="mt-0 flex justify-end px-1 pb-0">
-                <p data-testid="message-counter" className="shrink-0 text-[10px] text-stone-400">
+              <div className="pointer-events-none absolute bottom-0 right-1 flex justify-end">
+                <p data-testid="message-counter" className="shrink-0 text-[10px] leading-none text-stone-400">
                   {draft.length}/{MESSAGE_MAX_LENGTH}
                 </p>
               </div>
@@ -1940,132 +1851,71 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
           <div
             className={clsx(
-              "self-center overflow-hidden transition-all duration-200 ease-out",
-              showSendButton ? "w-12 opacity-100" : "pointer-events-none w-0 opacity-0",
+              "self-center relative h-11 overflow-visible transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+              showComposerAction ? "w-11 opacity-100" : "pointer-events-none w-0 opacity-0",
             )}
           >
             <button
-              data-testid="send-message-button"
-              type="submit"
-              disabled={isComposerSubmitPending || !hasComposerContent}
-              tabIndex={showSendButton ? 0 : -1}
-              aria-label={submitButtonLabel}
-              title={submitButtonLabel}
-              className="flex h-11 w-11 items-center justify-center rounded-full bg-[#111111] text-white transition hover:translate-y-[-1px] hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
-            >
-              {isComposerSubmitPending ? (
-                <span className="text-sm font-semibold leading-none">...</span>
-              ) : (
-                <SendIcon className="h-5 w-5" />
+              data-testid={
+                composerActionMode === "voice" ? "voice-message-button" : "send-message-button"
+              }
+              type={composerActionMode === "send" ? "submit" : "button"}
+              onClick={composerActionMode === "voice" ? startVoiceRecording : undefined}
+              disabled={
+                composerActionMode === "send"
+                  ? sendMessageMutation.isPending || !hasComposerContent
+                  : recordingState !== "idle"
+              }
+              tabIndex={showComposerAction ? 0 : -1}
+              aria-label={
+                composerActionMode === "send"
+                  ? "Отправить сообщение"
+                  : "Записать голосовое сообщение"
+              }
+              title={
+                composerActionMode === "send"
+                  ? "Отправить сообщение"
+                  : "Записать голосовое сообщение"
+              }
+              className={clsx(
+                "absolute inset-0 flex h-11 w-11 items-center justify-center rounded-full transition-[background-color,color,border-color,transform,box-shadow] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                composerActionMode === "send"
+                  ? "border border-black/0 bg-[#111111] text-white hover:translate-y-[-1px] hover:bg-black"
+                  : "border border-black/10 bg-white text-[#111111] hover:border-black/25 hover:bg-[#111111] hover:text-white",
+                showComposerAction ? "scale-100 opacity-100" : "scale-75 opacity-0",
+                "disabled:cursor-not-allowed disabled:opacity-55",
               )}
-            </button>
-          </div>
-
-          <div
-            className={clsx(
-              "self-center overflow-hidden transition-all duration-200 ease-out",
-              showVoiceButton ? "w-12 opacity-100" : "pointer-events-none w-0 opacity-0",
-            )}
-          >
-            <button
-              data-testid="voice-message-button"
-              type="button"
-              onClick={startVoiceRecording}
-              tabIndex={showVoiceButton ? 0 : -1}
-              aria-label="Записать голосовое сообщение"
-              title="Записать голосовое сообщение"
-              className="flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-[#111111] transition hover:translate-y-[-1px] hover:border-black/25 hover:bg-[#111111] hover:text-white"
             >
-              <MicIcon className="h-5 w-5" />
+              <span className="relative h-5 w-5">
+                <span
+                  className={clsx(
+                    "absolute inset-0 flex items-center justify-center transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    composerActionMode === "voice"
+                      ? "opacity-100 scale-100 rotate-0"
+                      : "pointer-events-none opacity-0 scale-[0.52] rotate-[16deg]",
+                  )}
+                >
+                  <MicIcon className="h-5 w-5" />
+                </span>
+                <span
+                  className={clsx(
+                    "absolute inset-0 flex items-center justify-center transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    composerActionMode === "send"
+                      ? "opacity-100 scale-100 rotate-0 delay-[70ms]"
+                      : "pointer-events-none opacity-0 scale-[0.52] rotate-[-16deg]",
+                  )}
+                >
+                  {sendMessageMutation.isPending ? (
+                    <span className="text-sm font-semibold leading-none">...</span>
+                  ) : (
+                    <SendIcon className="h-5 w-5" />
+                  )}
+                </span>
+              </span>
             </button>
           </div>
         </div>
       </form>
-
-      {forwardingMessage ? (
-        <div
-          className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[3px]"
-          onClick={() => {
-            if (!forwardMessageMutation.isPending) {
-              setForwardingMessage(null);
-              setForwardPanelError(null);
-            }
-          }}
-          data-testid="forward-message-modal"
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="forward-message-title"
-            className="w-full max-w-[470px] rounded-[22px] border border-black/10 bg-white p-4 shadow-[0_22px_52px_rgba(17,24,39,0.22)] sm:p-5"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h3 id="forward-message-title" className="text-lg font-semibold tracking-tight text-[#171717]">
-              Переслать сообщение
-            </h3>
-            <p className="mt-1 text-sm text-stone-500">
-              {getReplyPreviewText(forwardingMessage)}
-            </p>
-
-            <input
-              value={forwardSearch}
-              onChange={(event) => setForwardSearch(event.target.value)}
-              placeholder="Поиск чата для пересылки"
-              className="mt-3 w-full rounded-[14px] border border-black/10 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
-              data-testid="forward-search-input"
-            />
-
-            {forwardPanelError ? (
-              <p className="mt-3 rounded-[12px] border border-black/10 bg-black px-3 py-2 text-xs text-white">
-                {forwardPanelError}
-              </p>
-            ) : null}
-
-            <div className="scroll-region-y mt-3 max-h-64 space-y-1.5 overflow-y-auto rounded-[14px] border border-black/8 bg-[#fafaf9] p-1.5">
-              {chatsQuery.isLoading ? (
-                <p className="px-2 py-2 text-sm text-stone-500">Загружаем чаты...</p>
-              ) : forwardCandidates.length > 0 ? (
-                forwardCandidates.map((candidate) => (
-                  <button
-                    key={candidate.id}
-                    type="button"
-                    onClick={() => handleForwardToChat(candidate.id)}
-                    disabled={forwardMessageMutation.isPending}
-                    className="flex w-full items-center justify-between gap-3 rounded-[12px] border border-transparent px-3 py-2.5 text-left transition hover:border-black/10 hover:bg-white disabled:cursor-not-allowed disabled:opacity-55"
-                    data-testid="forward-target-chat"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-[#171717]">{candidate.title}</p>
-                      <p className="truncate text-xs text-stone-500">{candidate.lastMessagePreview}</p>
-                    </div>
-                    <span className="shrink-0 rounded-full border border-black/10 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-500">
-                      {candidate.isCurrentChat ? "Текущий" : candidate.type === "group" ? "Группа" : "Личный"}
-                    </span>
-                  </button>
-                ))
-              ) : (
-                <p className="px-2 py-2 text-sm text-stone-500">Подходящих чатов не найдено.</p>
-              )}
-            </div>
-
-            <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                onClick={() => {
-                  if (!forwardMessageMutation.isPending) {
-                    setForwardingMessage(null);
-                    setForwardPanelError(null);
-                  }
-                }}
-                disabled={forwardMessageMutation.isPending}
-                className="rounded-full border border-black/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Закрыть
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       <ConfirmDialog
         open={Boolean(confirmingMessage)}
@@ -2441,20 +2291,6 @@ function formatGroupRole(role: ChatMemberRole) {
   }
 }
 
-function getReplyPreviewText(
-  message:
-    | {
-        body: string | null;
-        isDeleted?: boolean;
-        deletedAt?: string | null;
-        attachments?: Array<{ originalName: string; mimeType?: string | null }>;
-      }
-    | null
-    | undefined,
-) {
-  return getLastMessagePreviewText(message);
-}
-
 function formatRecordingDuration(seconds: number) {
   const safeSeconds = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
   const minutes = Math.floor(safeSeconds / 60);
@@ -2535,6 +2371,129 @@ function MicIcon({ className }: { className?: string }) {
       <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <path d="M12 19v3" />
+    </svg>
+  );
+}
+
+function SearchIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
+
+function PhoneIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M22 16.92v2a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 3.18 2 2 0 0 1 4.11 1h2a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.1 8.91a16 16 0 0 0 6 6l1.27-1.26a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
+    </svg>
+  );
+}
+
+function DotsVerticalIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="5" r="2.2" />
+      <circle cx="12" cy="12" r="2.2" />
+      <circle cx="12" cy="19" r="2.2" />
+    </svg>
+  );
+}
+
+function PanelRightIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <path d="M14 4v16" />
+    </svg>
+  );
+}
+
+function UsersIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2" />
+      <circle cx="9.5" cy="7" r="3.5" />
+      <path d="M20 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M14 4.13a3.5 3.5 0 0 1 0 5.74" />
+    </svg>
+  );
+}
+
+function ChatBubbleIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5A8.38 8.38 0 0 1 8 18.74L3 20l1.35-4.5A8.5 8.5 0 1 1 21 11.5Z" />
+    </svg>
+  );
+}
+
+function CloseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m18 6-12 12" />
+      <path d="m6 6 12 12" />
     </svg>
   );
 }
