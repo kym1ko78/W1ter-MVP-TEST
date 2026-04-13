@@ -2106,7 +2106,7 @@ function MessageAttachments({
               href={downloadUrl}
               target="_blank"
               rel="noreferrer"
-              className="block overflow-hidden rounded-[18px] border border-black/10 bg-black/5"
+              className="group/image relative block overflow-hidden rounded-[18px] border border-black/10 bg-black/5"
               data-testid="message-attachment"
             >
               <img
@@ -2117,8 +2117,10 @@ function MessageAttachments({
               />
               <div
                 className={clsx(
-                  "flex items-center justify-between gap-3 px-3 py-2 text-xs",
-                  isMine ? "bg-white/8 text-white/85" : "bg-stone-50 text-stone-600",
+                  "pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 px-3 py-2 text-xs opacity-0 transition duration-200 group-hover/image:opacity-100 group-focus-visible/image:opacity-100",
+                  isMine
+                    ? "bg-gradient-to-t from-black/70 to-black/20 text-white"
+                    : "bg-gradient-to-t from-black/62 to-black/18 text-white",
                 )}
               >
                 <span className="truncate">{attachment.originalName}</span>
