@@ -16,6 +16,13 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { readJson, useAuth } from "../lib/auth-context";
+import {
+  ATTACHMENT_ACCEPT,
+  ATTACHMENT_MAX_MB,
+  getAttachmentKind,
+  getAttachmentTypeLabel,
+  validateAttachmentFile,
+} from "../lib/attachment-rules";
 import { useRealtime } from "../lib/realtime-context";
 import {
   appendMessageUnique,
@@ -47,29 +54,6 @@ import { UserAvatar } from "./user-avatar";
 const MESSAGE_MAX_LENGTH = 4000;
 const COMPOSER_MIN_HEIGHT = 56;
 const COMPOSER_MAX_HEIGHT = 200;
-const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
-const ATTACHMENT_ACCEPT = [
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "application/pdf",
-  "text/plain",
-  "audio/webm",
-  "audio/ogg",
-  "audio/mp4",
-  "audio/mpeg",
-].join(",");
-const ATTACHMENT_ALLOWED_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "application/pdf",
-  "text/plain",
-  "audio/webm",
-  "audio/ogg",
-  "audio/mp4",
-  "audio/mpeg",
-]);
 const VOICE_RECORDER_MIME_TYPE = "audio/webm";
 const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
 const SCROLL_BOTTOM_THRESHOLD = 180;
@@ -793,6 +777,13 @@ export function ConversationView({ chatId }: { chatId: string }) {
     : isDirectUserTyping
       ? `${otherUser?.displayName ?? "Собеседник"} печатает...`
       : null;
+  const pendingAttachmentTypeLabel = pendingFile
+    ? getAttachmentTypeLabel({
+        mimeType: pendingFile.type,
+        isImage: pendingFile.type.startsWith("image/"),
+        originalName: pendingFile.name,
+      })
+    : null;
   const hasComposerContent = Boolean(draft.trim() || pendingFile);
   const showSendButton = hasComposerContent || sendMessageMutation.isPending;
   const showVoiceButton =
@@ -1019,14 +1010,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    if (!ATTACHMENT_ALLOWED_TYPES.has(selectedFile.type)) {
-      setComposerError("Поддерживаются PNG, JPEG, WEBP, PDF, TXT и аудио WEBM/OGG/MP4/MP3.");
-      event.target.value = "";
-      return;
-    }
-
-    if (selectedFile.size > ATTACHMENT_MAX_BYTES) {
-      setComposerError("Размер файла не должен превышать 10 MB.");
+    const validation = validateAttachmentFile(selectedFile);
+    if (!validation.isValid) {
+      setComposerError(validation.error);
       event.target.value = "";
       return;
     }
@@ -1877,7 +1863,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
           >
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-[#171717]">{pendingFile.name}</p>
-              <p className="text-xs text-stone-500">{formatFileSize(pendingFile.size)}</p>
+              <p className="text-xs text-stone-500">
+                {pendingAttachmentTypeLabel ?? "Файл"} · {formatFileSize(pendingFile.size)} · до {ATTACHMENT_MAX_MB} MB
+              </p>
             </div>
             <button
               type="button"
@@ -2109,9 +2097,9 @@ function MessageAttachments({
     <div className={clsx("space-y-2", attachments.length > 0 && "mt-1")}>
       {attachments.map((attachment) => {
         const downloadUrl = buildAttachmentUrl(attachment.downloadPath, accessToken);
-        const isAudio = attachment.mimeType.startsWith("audio/");
+        const kind = getAttachmentKind(attachment);
 
-        if (attachment.isImage) {
+        if (kind === "image") {
           return (
             <a
               key={attachment.id}
@@ -2140,9 +2128,31 @@ function MessageAttachments({
           );
         }
 
-        if (isAudio) {
+        if (kind === "audio") {
           return (
             <VoiceMessageAttachment
+              key={attachment.id}
+              attachment={attachment}
+              downloadUrl={downloadUrl}
+              isMine={isMine}
+            />
+          );
+        }
+
+        if (kind === "video") {
+          return (
+            <VideoMessageAttachment
+              key={attachment.id}
+              attachment={attachment}
+              downloadUrl={downloadUrl}
+              isMine={isMine}
+            />
+          );
+        }
+
+        if (kind === "pdf") {
+          return (
+            <PdfMessageAttachment
               key={attachment.id}
               attachment={attachment}
               downloadUrl={downloadUrl}
@@ -2168,13 +2178,97 @@ function MessageAttachments({
             <div className="min-w-0">
               <p className="truncate font-semibold">{attachment.originalName}</p>
               <p className={clsx("text-xs", isMine ? "text-white/75" : "text-stone-500")}>
-                {attachment.mimeType} · {formatFileSize(attachment.sizeBytes)}
+                {getAttachmentTypeLabel(attachment)} · {formatFileSize(attachment.sizeBytes)}
               </p>
             </div>
             <span className="shrink-0 text-xs uppercase tracking-[0.16em]">Open</span>
           </a>
         );
       })}
+    </div>
+  );
+}
+
+function VideoMessageAttachment({
+  attachment,
+  downloadUrl,
+  isMine,
+}: {
+  attachment: ChatAttachment;
+  downloadUrl: string;
+  isMine: boolean;
+}) {
+  return (
+    <div
+      className={clsx(
+        "overflow-hidden rounded-[18px] border",
+        isMine ? "border-white/12 bg-black/30 text-white" : "border-black/10 bg-white text-[#171717]",
+      )}
+      data-testid="message-attachment"
+    >
+      <video
+        controls
+        preload="metadata"
+        src={downloadUrl}
+        className="max-h-80 w-full bg-black object-contain"
+      >
+        <a href={downloadUrl} target="_blank" rel="noreferrer">
+          Открыть видео
+        </a>
+      </video>
+      <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+        <span className="min-w-0 truncate">{attachment.originalName}</span>
+        <span className={clsx("shrink-0", isMine ? "text-white/80" : "text-stone-500")}>
+          {formatFileSize(attachment.sizeBytes)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function PdfMessageAttachment({
+  attachment,
+  downloadUrl,
+  isMine,
+}: {
+  attachment: ChatAttachment;
+  downloadUrl: string;
+  isMine: boolean;
+}) {
+  return (
+    <div
+      className={clsx(
+        "overflow-hidden rounded-[18px] border",
+        isMine ? "border-white/12 bg-black/30 text-white" : "border-black/10 bg-white text-[#171717]",
+      )}
+      data-testid="message-attachment"
+    >
+      <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{attachment.originalName}</p>
+          <p className={clsx("mt-0.5", isMine ? "text-white/75" : "text-stone-500")}>
+            PDF · {formatFileSize(attachment.sizeBytes)}
+          </p>
+        </div>
+        <a
+          href={downloadUrl}
+          target="_blank"
+          rel="noreferrer"
+          className={clsx(
+            "shrink-0 rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] transition",
+            isMine
+              ? "border-white/25 text-white hover:border-white/45"
+              : "border-black/15 text-stone-600 hover:border-black/35 hover:text-black",
+          )}
+        >
+          Open
+        </a>
+      </div>
+      <iframe
+        src={`${downloadUrl}#toolbar=0&navpanes=0`}
+        title={attachment.originalName}
+        className="h-56 w-full bg-white"
+      />
     </div>
   );
 }

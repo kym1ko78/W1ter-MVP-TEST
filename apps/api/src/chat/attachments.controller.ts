@@ -11,6 +11,7 @@ import type { Response } from "express";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import type { JwtPayload } from "../common/types/jwt-payload";
+import { isInlineAttachmentMimeType } from "./attachment-rules";
 import { ChatService } from "./chat.service";
 
 @UseGuards(AccessTokenGuard)
@@ -29,16 +30,18 @@ export class AttachmentsController {
       user.sub,
     );
     const disposition =
-      attachment.mimeType.startsWith("image/") || attachment.mimeType.startsWith("audio/")
-      ? "inline"
-      : "attachment";
-    const fileName = attachment.originalName.replace(/[\r\n\"]/g, "_");
+      isInlineAttachmentMimeType(attachment.mimeType) ? "inline" : "attachment";
+    const fileName = attachment.originalName.replace(/[\r\n\"]/g, "_") || "attachment";
+    const encodedFileName = encodeURIComponent(fileName);
 
     response.setHeader("Content-Type", attachment.mimeType);
     response.setHeader("Content-Length", String(attachment.sizeBytes));
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Accept-Ranges", "bytes");
+    response.setHeader("Cache-Control", "private, max-age=86400");
     response.setHeader(
       "Content-Disposition",
-      `${disposition}; filename="${fileName}"`,
+      `${disposition}; filename="${fileName}"; filename*=UTF-8''${encodedFileName}`,
     );
 
     return new StreamableFile(createReadStream(absolutePath));
