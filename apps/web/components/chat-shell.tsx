@@ -8,6 +8,7 @@ import {
 import clsx from "clsx";
 import Link from "next/link";
 import {
+  useCallback,
   startTransition,
   useDeferredValue,
   useEffect,
@@ -31,13 +32,37 @@ import {
   getChatTitle,
   getLastMessagePreviewText,
 } from "../lib/utils";
+import {
+  RealtimeContext,
+  type NotificationPermissionState,
+  type RealtimeConnectionState,
+} from "../lib/realtime-context";
 import type { ChatListItem, ChatMessage, MessagePage, SafeUser } from "../types/api";
 import { UserAvatar } from "./user-avatar";
 
 const CHAT_PAGE_LOCK_CLASS = "chat-page-locked";
+const TYPING_TTL_MS = 6_000;
+const NOTIFICATIONS_PREFERENCE_KEY = "w1ter.notifications.enabled";
+const MAX_NOTIFIED_MESSAGE_IDS = 200;
 
 type ChatDeletedPayload = {
   chatId: string;
+};
+
+type PresenceChangedPayload = {
+  userId: string;
+  isOnline: boolean;
+};
+
+type TypingChangedPayload = {
+  chatId: string;
+  userId: string;
+  isTyping: boolean;
+};
+
+type PresenceSyncResponse = {
+  ok: boolean;
+  statuses: Array<{ userId: string; isOnline: boolean }>;
 };
 
 type DeleteChatResponse = {
@@ -88,6 +113,16 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     chatId: string;
     mode: ChatActionMode;
   } | null>(null);
+  const [connectionState, setConnectionState] = useState<RealtimeConnectionState>("disconnected");
+  const [isOffline, setIsOffline] = useState(false);
+  const [onlineUserIds, setOnlineUserIds] = useState<Record<string, true>>({});
+  const [typingByChat, setTypingByChat] = useState<Record<string, Record<string, number>>>({});
+  const [notificationPermission, setNotificationPermission] =
+    useState<NotificationPermissionState>("unsupported");
+  const [notificationsEnabled, setNotificationsEnabledState] = useState(false);
+  const notifiedMessageIdsRef = useRef<string[]>([]);
+  const currentChatIdRef = useRef<string | null>(null);
+  const localTypingByChatRef = useRef<Map<string, boolean>>(new Map());
   const deferredSearch = useDeferredValue(search);
   const deferredGroupSearch = useDeferredValue(groupSearch);
   const deferredGlobalSearch = useDeferredValue(globalSearch);
@@ -102,6 +137,113 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
     return null;
   }, [safePathname]);
+  const notificationsSupported =
+    typeof window !== "undefined" && typeof window.Notification !== "undefined";
+  const statusesMayBeStale = connectionState !== "connected";
+  const updateOnlineUsers = useCallback((userId: string, isOnline: boolean) => {
+    setOnlineUserIds((current) => {
+      const hasUser = Boolean(current[userId]);
+      if (isOnline && hasUser) {
+        return current;
+      }
+
+      if (!isOnline && !hasUser) {
+        return current;
+      }
+
+      if (isOnline) {
+        return {
+          ...current,
+          [userId]: true,
+        };
+      }
+
+      const next = { ...current };
+      delete next[userId];
+      return next;
+    });
+  }, []);
+  const isUserOnline = useCallback(
+    (userId: string | null | undefined) => (userId ? Boolean(onlineUserIds[userId]) : false),
+    [onlineUserIds],
+  );
+  const isUserTyping = useCallback(
+    (chatId: string, userId: string | null | undefined) => {
+      if (!userId) {
+        return false;
+      }
+
+      const updatedAt = typingByChat[chatId]?.[userId];
+      if (!updatedAt) {
+        return false;
+      }
+
+      return Date.now() - updatedAt < TYPING_TTL_MS;
+    },
+    [typingByChat],
+  );
+  const setNotificationsEnabled = useCallback((value: boolean) => {
+    setNotificationsEnabledState(value);
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(NOTIFICATIONS_PREFERENCE_KEY, value ? "1" : "0");
+  }, []);
+  const requestNotificationPermission = useCallback(async () => {
+    if (typeof window === "undefined" || typeof window.Notification === "undefined") {
+      setNotificationPermission("unsupported");
+      setNotificationsEnabled(false);
+      return;
+    }
+
+    try {
+      const permission = await window.Notification.requestPermission();
+      setNotificationPermission(permission);
+
+      if (permission === "granted") {
+        setNotificationsEnabled(true);
+        return;
+      }
+
+      setNotificationsEnabled(false);
+    } catch {
+      setNotificationPermission("denied");
+      setNotificationsEnabled(false);
+    }
+  }, [setNotificationsEnabled]);
+  const markMessageAsNotified = useCallback((messageId: string) => {
+    const knownMessageIds = notifiedMessageIdsRef.current;
+    if (knownMessageIds.includes(messageId)) {
+      return false;
+    }
+
+    knownMessageIds.push(messageId);
+    if (knownMessageIds.length > MAX_NOTIFIED_MESSAGE_IDS) {
+      knownMessageIds.splice(0, knownMessageIds.length - MAX_NOTIFIED_MESSAGE_IDS);
+    }
+
+    return true;
+  }, []);
+  const updateTyping = useCallback((chatId: string, isTyping: boolean) => {
+    if (!chatId) {
+      return;
+    }
+
+    const nextValue = Boolean(isTyping);
+    const currentValue = localTypingByChatRef.current.get(chatId) ?? false;
+
+    if (currentValue === nextValue) {
+      return;
+    }
+
+    if (nextValue) {
+      localTypingByChatRef.current.set(chatId, true);
+    } else {
+      localTypingByChatRef.current.delete(chatId);
+    }
+    socketRef.current?.emit("typing:update", { chatId, isTyping: nextValue });
+  }, []);
 
   const chatsQuery = useQuery({
     queryKey: ["chats"],
@@ -347,16 +489,103 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    currentChatIdRef.current = currentChatId;
+  }, [currentChatId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const updateOfflineState = () => {
+      setIsOffline(!window.navigator.onLine);
+    };
+
+    updateOfflineState();
+    window.addEventListener("online", updateOfflineState);
+    window.addEventListener("offline", updateOfflineState);
+
+    return () => {
+      window.removeEventListener("online", updateOfflineState);
+      window.removeEventListener("offline", updateOfflineState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.Notification === "undefined") {
+      setNotificationPermission("unsupported");
+      setNotificationsEnabled(false);
+      return;
+    }
+
+    const permission = window.Notification.permission;
+    setNotificationPermission(permission);
+
+    if (permission !== "granted") {
+      setNotificationsEnabled(false);
+      return;
+    }
+
+    const persistedPreference = window.localStorage.getItem(NOTIFICATIONS_PREFERENCE_KEY);
+    setNotificationsEnabled(persistedPreference !== "0");
+  }, [setNotificationsEnabled]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setTypingByChat((current) => {
+        const now = Date.now();
+        let changed = false;
+        const next: Record<string, Record<string, number>> = {};
+
+        for (const [chatId, userMap] of Object.entries(current)) {
+          const freshEntries = Object.entries(userMap).filter(
+            ([, updatedAt]) => now - updatedAt < TYPING_TTL_MS,
+          );
+
+          if (freshEntries.length > 0) {
+            next[chatId] = Object.fromEntries(freshEntries);
+          }
+
+          if (freshEntries.length !== Object.keys(userMap).length) {
+            changed = true;
+          }
+        }
+
+        return changed ? next : current;
+      });
+    }, 1_500);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  useEffect(() => {
     if (!accessToken || socketRef.current) {
       return;
     }
 
+    setConnectionState("connecting");
     const socket = io(SOCKET_URL, {
       transports: ["websocket"],
       withCredentials: true,
       auth: {
         token: accessToken,
       },
+    });
+
+    socket.on("connect", () => {
+      setConnectionState("connected");
+    });
+
+    socket.on("disconnect", () => {
+      setConnectionState("disconnected");
+    });
+
+    socket.on("connect_error", () => {
+      setConnectionState("disconnected");
+    });
+
+    socket.io.on("reconnect_attempt", () => {
+      setConnectionState("connecting");
     });
 
     socket.on("message:new", (message: ChatMessage) => {
@@ -366,6 +595,50 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", message.chatId] });
+
+      if (
+        message.senderId === user?.id ||
+        notificationPermission !== "granted" ||
+        !notificationsEnabled
+      ) {
+        return;
+      }
+
+      const isCurrentChatVisible =
+        currentChatIdRef.current === message.chatId &&
+        document.visibilityState === "visible" &&
+        document.hasFocus();
+
+      if (isCurrentChatVisible || !markMessageAsNotified(message.id)) {
+        return;
+      }
+
+      const knownChats = queryClient.getQueryData<ChatListItem[]>(["chats"]) ?? [];
+      const targetChat = knownChats.find((chat) => chat.id === message.chatId);
+      const title = targetChat
+        ? getChatTitle(targetChat.members, user?.id, {
+            type: targetChat.type,
+            title: targetChat.title,
+          })
+        : message.sender.displayName;
+      const body = getLastMessagePreviewText(message);
+
+      try {
+        const notification = new window.Notification(title, {
+          body,
+          tag: `chat:${message.chatId}`,
+        });
+
+        notification.onclick = () => {
+          window.focus();
+          startTransition(() => {
+            router.push(`/chat/${message.chatId}`);
+          });
+          notification.close();
+        };
+      } catch {
+        setNotificationsEnabled(false);
+      }
     });
 
     socket.on("message:updated", (message: ChatMessage) => {
@@ -398,20 +671,72 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
     });
 
-    socket.on("presence:changed", () => {
-      void queryClient.invalidateQueries({ queryKey: ["chats"] });
-      if (currentChatId) {
-        void queryClient.invalidateQueries({ queryKey: ["chat", currentChatId] });
+    socket.on("presence:changed", (payload: PresenceChangedPayload) => {
+      if (payload?.userId) {
+        updateOnlineUsers(payload.userId, Boolean(payload.isOnline));
       }
+
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      if (currentChatIdRef.current) {
+        void queryClient.invalidateQueries({ queryKey: ["chat", currentChatIdRef.current] });
+      }
+    });
+
+    socket.on("typing:changed", (payload: TypingChangedPayload) => {
+      if (!payload?.chatId || !payload?.userId) {
+        return;
+      }
+
+      setTypingByChat((current) => {
+        const next = { ...current };
+        const currentChatTyping = { ...(next[payload.chatId] ?? {}) };
+
+        if (payload.isTyping) {
+          currentChatTyping[payload.userId] = Date.now();
+          next[payload.chatId] = currentChatTyping;
+          return next;
+        }
+
+        if (!currentChatTyping[payload.userId]) {
+          return current;
+        }
+
+        delete currentChatTyping[payload.userId];
+        if (Object.keys(currentChatTyping).length > 0) {
+          next[payload.chatId] = currentChatTyping;
+        } else {
+          delete next[payload.chatId];
+        }
+
+        return next;
+      });
     });
 
     socketRef.current = socket;
 
     return () => {
+      for (const [chatId, isTyping] of localTypingByChatRef.current.entries()) {
+        if (isTyping) {
+          socket.emit("typing:update", { chatId, isTyping: false });
+        }
+      }
+
+      localTypingByChatRef.current.clear();
       socket.disconnect();
       socketRef.current = null;
+      setConnectionState("disconnected");
     };
-  }, [accessToken, currentChatId, queryClient, router]);
+  }, [
+    accessToken,
+    markMessageAsNotified,
+    notificationPermission,
+    notificationsEnabled,
+    queryClient,
+    router,
+    setNotificationsEnabled,
+    updateOnlineUsers,
+    user?.id,
+  ]);
 
   useEffect(() => {
     if (!currentChatId || !socketRef.current) {
@@ -419,7 +744,50 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     }
 
     socketRef.current.emit("join_chat_room", { chatId: currentChatId });
-  }, [currentChatId]);
+  }, [connectionState, currentChatId]);
+
+  useEffect(() => {
+    if (connectionState !== "connected" || !socketRef.current) {
+      return;
+    }
+
+    const userIds = Array.from(
+      new Set(
+        (chatsQuery.data ?? [])
+          .flatMap((chat) => chat.members.map((member) => member.id))
+          .filter((memberId) => memberId && memberId !== user?.id),
+      ),
+    );
+
+    if (userIds.length === 0) {
+      return;
+    }
+
+    socketRef.current.emit(
+      "presence:sync",
+      { userIds },
+      (payload?: PresenceSyncResponse) => {
+        if (!payload?.ok || !Array.isArray(payload.statuses)) {
+          return;
+        }
+
+        setOnlineUserIds((current) => {
+          const next = { ...current };
+          for (const userId of userIds) {
+            delete next[userId];
+          }
+
+          for (const status of payload.statuses) {
+            if (status.isOnline) {
+              next[status.userId] = true;
+            }
+          }
+
+          return next;
+        });
+      },
+    );
+  }, [chatsQuery.data, connectionState, user?.id]);
 
   const handleChatDangerAction = (chat: ChatListItem) => {
     if (deleteChatMutation.isPending || leaveGroupMutation.isPending) {
@@ -457,6 +825,51 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       memberIds: selectedGroupMemberIds,
     });
   };
+  const connectionStatusCopy = isOffline
+    ? "Оффлайн. Соединение восстановится автоматически."
+    : connectionState === "connected"
+      ? "Realtime подключен."
+      : connectionState === "connecting"
+        ? "Подключаемся к realtime..."
+        : "Связь потеряна. Статусы могут запаздывать.";
+  const notificationStatusCopy =
+    notificationPermission === "unsupported"
+      ? "Браузер не поддерживает web-notifications."
+      : notificationPermission === "denied"
+        ? "Уведомления заблокированы в браузере."
+        : notificationPermission === "granted"
+          ? notificationsEnabled
+            ? "Уведомления о новых сообщениях включены."
+            : "Уведомления выключены."
+          : "Разрешение на уведомления еще не выдано.";
+  const realtimeContextValue = useMemo(
+    () => ({
+      connectionState,
+      isOffline,
+      statusesMayBeStale,
+      notificationPermission,
+      notificationsEnabled,
+      notificationsSupported,
+      requestNotificationPermission,
+      setNotificationsEnabled,
+      isUserOnline,
+      isUserTyping,
+      updateTyping,
+    }),
+    [
+      connectionState,
+      isOffline,
+      isUserOnline,
+      isUserTyping,
+      notificationPermission,
+      notificationsEnabled,
+      notificationsSupported,
+      requestNotificationPermission,
+      setNotificationsEnabled,
+      statusesMayBeStale,
+      updateTyping,
+    ],
+  );
 
   if (isLoading || !isAuthenticated) {
     return (
@@ -469,7 +882,8 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <main className="chat-scene grain h-[100dvh] overflow-hidden" data-testid="chat-shell">
+    <RealtimeContext.Provider value={realtimeContextValue}>
+      <main className="chat-scene grain h-[100dvh] overflow-hidden" data-testid="chat-shell">
       <div className="grid h-full min-h-0 grid-rows-[360px_minmax(0,1fr)] gap-0 lg:grid-cols-[380px_minmax(0,1fr)] lg:grid-rows-1">
         <aside
           className="chat-shell-panel flex min-h-0 flex-col overflow-hidden rounded-none border-0 border-r border-black/8 p-4 sm:p-5"
@@ -792,6 +1206,60 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                 ) : null}
               </div>
             ) : null}
+
+            <div className="rounded-[22px] border border-black/8 bg-white/95 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-stone-400">
+                  Realtime
+                </p>
+                <span
+                  className={clsx(
+                    "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]",
+                    connectionState === "connected" && !isOffline
+                      ? "border-black/12 bg-[#111111] text-white"
+                      : "border-black/12 bg-white text-stone-500",
+                  )}
+                >
+                  {isOffline
+                    ? "offline"
+                    : connectionState === "connected"
+                      ? "online"
+                      : connectionState}
+                </span>
+              </div>
+              <p className="mt-2 text-xs text-stone-500">{connectionStatusCopy}</p>
+              <p className="mt-3 text-[11px] uppercase tracking-[0.2em] text-stone-400">
+                Notifications
+              </p>
+              <p className="mt-2 text-xs text-stone-500">{notificationStatusCopy}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {notificationPermission === "default" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void requestNotificationPermission();
+                    }}
+                    className="rounded-full border border-black/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black"
+                  >
+                    Включить
+                  </button>
+                ) : null}
+                {notificationPermission === "granted" ? (
+                  <button
+                    type="button"
+                    onClick={() => setNotificationsEnabled(!notificationsEnabled)}
+                    className="rounded-full border border-black/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black"
+                  >
+                    {notificationsEnabled ? "Отключить" : "Включить"}
+                  </button>
+                ) : null}
+                {notificationPermission === "denied" ? (
+                  <span className="rounded-full border border-black/10 px-3 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-500">
+                    Разрешите в настройках браузера
+                  </span>
+                ) : null}
+              </div>
+            </div>
           </div>
 
           <div className="relative z-10 mt-6 flex min-h-0 flex-1 flex-col">
@@ -824,6 +1292,33 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                     isGroup && chat.currentUserRole !== "creator" ? "leave" : "delete";
                   const isActive = currentChatId === chat.id;
                   const isDeleting = deletingChatId === chat.id;
+                  const onlineMembersCount = chat.members.filter(
+                    (member) => member.id !== user?.id && isUserOnline(member.id),
+                  ).length;
+                  const typingMembers = chat.members.filter(
+                    (member) => member.id !== user?.id && isUserTyping(chat.id, member.id),
+                  );
+                  const hasTyping = typingMembers.length > 0;
+                  const statusText = isGroup
+                    ? hasTyping
+                      ? typingMembers.length === 1
+                        ? `${typingMembers[0]?.displayName ?? "Кто-то"} печатает...`
+                        : `${typingMembers.length} печатают...`
+                      : `${chat.members.length} участников${onlineMembersCount > 0 ? ` · ${onlineMembersCount} онлайн` : ""}`
+                    : hasTyping
+                      ? "Печатает..."
+                      : partner && isUserOnline(partner.id)
+                        ? "В сети"
+                        : partner?.lastSeenAt
+                          ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
+                          : statusesMayBeStale
+                            ? "Статус может быть устаревшим"
+                            : "Личный чат";
+                  const lastMessagePreview = hasTyping
+                    ? typingMembers.length > 1
+                      ? `${typingMembers.length} печатают...`
+                      : "Печатает..."
+                    : getLastMessagePreviewText(chat.lastMessage);
 
                   return (
                     <div
@@ -872,11 +1367,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                   isActive ? "text-white/60" : "text-stone-500",
                                 )}
                               >
-                                {isGroup
-                                  ? `${chat.members.length} участников`
-                                  : partner?.lastSeenAt
-                                    ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
-                                    : "Личный чат"}
+                                {statusText}
                               </p>
                             </Link>
 
@@ -930,7 +1421,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                               isActive ? "text-white/76" : "text-stone-600",
                             )}
                           >
-                            {getLastMessagePreviewText(chat.lastMessage)}
+                            {lastMessagePreview}
                           </Link>
                         </div>
                       </div>
@@ -992,7 +1483,8 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
           deleteChatMutation.mutate(confirmingChatAction.chatId);
         }}
       />
-    </main>
+      </main>
+    </RealtimeContext.Provider>
   );
 }
 

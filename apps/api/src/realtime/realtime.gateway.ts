@@ -15,6 +15,7 @@ import type { JwtPayload } from "../common/types/jwt-payload";
 import { PrismaService } from "../prisma/prisma.service";
 import { UsersService } from "../users/users.service";
 import { PresenceService } from "./presence.service";
+import { TypingService } from "./typing.service";
 
 interface AuthenticatedSocket extends Socket {
   data: Socket["data"] & {
@@ -39,6 +40,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly presenceService: PresenceService,
+    private readonly typingService: TypingService,
     private readonly usersService: UsersService,
   ) {}
 
@@ -79,6 +81,11 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       return;
     }
 
+    const typingChanges = this.typingService.clearSocket(client.id);
+    for (const change of typingChanges) {
+      this.server.to(this.getChatRoom(change.chatId)).emit("typing:changed", change);
+    }
+
     const stillOnline = this.presenceService.disconnect(user.sub, client.id);
 
     if (!stillOnline) {
@@ -103,20 +110,69 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       return { ok: false };
     }
 
-    const membership = await this.prisma.chatMember.findUnique({
-      where: {
-        chatId_userId: {
-          chatId,
-          userId: user.sub,
-        },
-      },
-    });
-
-    if (!membership) {
+    if (!(await this.isChatMember(chatId, user.sub))) {
       return { ok: false };
     }
 
     client.join(this.getChatRoom(chatId));
+    return { ok: true };
+  }
+
+  @SubscribeMessage("presence:sync")
+  presenceSync(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() body: { userIds?: string[] },
+  ) {
+    if (!client.data.user) {
+      return {
+        ok: false,
+        statuses: [],
+      };
+    }
+
+    const userIds = Array.from(
+      new Set((body?.userIds ?? []).filter((value): value is string => typeof value === "string")),
+    ).slice(0, 300);
+
+    return {
+      ok: true,
+      statuses: this.presenceService.getStatuses(userIds),
+    };
+  }
+
+  @SubscribeMessage("typing:update")
+  async updateTyping(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() body: { chatId?: string; isTyping?: boolean },
+  ) {
+    const user = client.data.user;
+    const chatId = body?.chatId;
+
+    if (!user || !chatId) {
+      return { ok: false };
+    }
+
+    if (!(await this.isChatMember(chatId, user.sub))) {
+      return { ok: false };
+    }
+
+    client.join(this.getChatRoom(chatId));
+
+    const status = this.typingService.setTyping(
+      chatId,
+      user.sub,
+      client.id,
+      Boolean(body?.isTyping),
+    );
+
+    if (status.changed) {
+      this.server.to(this.getChatRoom(chatId)).emit("typing:changed", {
+        chatId,
+        userId: user.sub,
+        isTyping: status.isTyping,
+      });
+    }
+
     return { ok: true };
   }
 
@@ -162,5 +218,21 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   private getChatRoom(chatId: string) {
     return `chat:${chatId}`;
+  }
+
+  private async isChatMember(chatId: string, userId: string) {
+    const membership = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId,
+        },
+      },
+      select: {
+        chatId: true,
+      },
+    });
+
+    return Boolean(membership);
   }
 }

@@ -16,6 +16,7 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { readJson, useAuth } from "../lib/auth-context";
+import { useRealtime } from "../lib/realtime-context";
 import {
   appendMessageUnique,
   dedupeMessages,
@@ -97,6 +98,14 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const { accessToken, authorizedFetch, isAuthenticated, user } = useAuth();
+  const {
+    connectionState,
+    isOffline,
+    statusesMayBeStale,
+    isUserOnline,
+    isUserTyping,
+    updateTyping,
+  } = useRealtime();
   const [draft, setDraft] = useState("");
   const [messageSearch, setMessageSearch] = useState("");
   const [showGroupMembersPanel, setShowGroupMembersPanel] = useState(false);
@@ -138,6 +147,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const recordedChunksRef = useRef<BlobPart[]>([]);
   const prefilledSearchQueryRef = useRef<string | null>(null);
   const focusedFromSearchParamRef = useRef<string | null>(null);
+  const typingStopTimeoutRef = useRef<number | null>(null);
+  const isLocalUserTypingRef = useRef(false);
 
   const chatQuery = useQuery({
     queryKey: ["chat", chatId],
@@ -286,6 +297,18 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
     shouldStickToBottomRef.current = distanceToBottom <= SCROLL_BOTTOM_THRESHOLD;
   }, []);
+
+  const setLocalTypingState = useCallback(
+    (nextValue: boolean) => {
+      if (isLocalUserTypingRef.current === nextValue) {
+        return;
+      }
+
+      isLocalUserTypingRef.current = nextValue;
+      updateTyping(chatId, nextValue);
+    },
+    [chatId, updateTyping],
+  );
 
   const sendMessageMutation = useMutation({
     mutationFn: async ({ body, file }: ComposerPayload) => {
@@ -469,6 +492,44 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, [draft]);
 
   useEffect(() => {
+    const hasTypingSignal = recordingState === "idle" && draft.trim().length > 0;
+
+    if (!hasTypingSignal) {
+      if (typingStopTimeoutRef.current !== null) {
+        window.clearTimeout(typingStopTimeoutRef.current);
+        typingStopTimeoutRef.current = null;
+      }
+
+      setLocalTypingState(false);
+      return;
+    }
+
+    setLocalTypingState(true);
+
+    if (typingStopTimeoutRef.current !== null) {
+      window.clearTimeout(typingStopTimeoutRef.current);
+    }
+
+    typingStopTimeoutRef.current = window.setTimeout(() => {
+      typingStopTimeoutRef.current = null;
+      setLocalTypingState(false);
+    }, 1_800);
+  }, [draft, recordingState, setLocalTypingState]);
+
+  useEffect(
+    () => () => {
+      if (typingStopTimeoutRef.current !== null) {
+        window.clearTimeout(typingStopTimeoutRef.current);
+        typingStopTimeoutRef.current = null;
+      }
+
+      setLocalTypingState(false);
+      isLocalUserTypingRef.current = false;
+    },
+    [setLocalTypingState],
+  );
+
+  useEffect(() => {
     const lastMessage = messageItems[messageItems.length - 1];
 
     if (!lastMessage || lastMessage.senderId === user?.id || lastMessage.isDeleted) {
@@ -552,6 +613,15 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
     return () => window.clearTimeout(timeoutId);
   }, [headerStatusMessage]);
+
+  useEffect(() => {
+    const handleWindowBlur = () => {
+      setLocalTypingState(false);
+    };
+
+    window.addEventListener("blur", handleWindowBlur);
+    return () => window.removeEventListener("blur", handleWindowBlur);
+  }, [setLocalTypingState]);
 
   useEffect(() => {
     if (!showConversationMenu && !showConversationProfile) {
@@ -684,6 +754,45 @@ export function ConversationView({ chatId }: { chatId: string }) {
     [existingGroupMemberIds, groupUsersSearchQuery.data, user?.id],
   );
   const groupMembersCount = groupMembersQuery.data?.members.length ?? chatMembers.length;
+  const onlineGroupMembersCount = chatMembers.filter(
+    (member) => member.id !== user?.id && isUserOnline(member.id),
+  ).length;
+  const typingGroupMembers = chatMembers.filter(
+    (member) => member.id !== user?.id && isUserTyping(chatId, member.id),
+  );
+  const isDirectUserOnline = Boolean(otherUser?.id && isUserOnline(otherUser.id));
+  const isDirectUserTyping = Boolean(otherUser?.id && isUserTyping(chatId, otherUser.id));
+  const directStatusText = isDirectUserTyping
+    ? "Печатает..."
+    : isDirectUserOnline
+      ? "В сети"
+      : otherUser?.lastSeenAt
+        ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
+        : statusesMayBeStale
+          ? "Статус может быть устаревшим"
+          : "Личный чат";
+  const groupStatusText = typingGroupMembers.length
+    ? typingGroupMembers.length === 1
+      ? `${typingGroupMembers[0]?.displayName ?? "Кто-то"} печатает...`
+      : `${typingGroupMembers.length} печатают...`
+    : `${groupMembersCount} участников${onlineGroupMembersCount > 0 ? ` · ${onlineGroupMembersCount} онлайн` : ""}`;
+  const profileSummaryStatus = isGroupChat ? groupStatusText : directStatusText;
+  const realtimeStateCopy = isOffline
+    ? "Оффлайн. Соединение восстановится автоматически."
+    : connectionState === "connected"
+      ? null
+      : connectionState === "connecting"
+        ? "Подключаемся к realtime..."
+        : "Связь потеряна. Статусы могут быть устаревшими.";
+  const typingIndicatorLabel = isGroupChat
+    ? typingGroupMembers.length === 1
+      ? `${typingGroupMembers[0]?.displayName ?? "Кто-то"} печатает...`
+      : typingGroupMembers.length > 1
+        ? `${typingGroupMembers.length} печатают...`
+        : null
+    : isDirectUserTyping
+      ? `${otherUser?.displayName ?? "Собеседник"} печатает...`
+      : null;
   const hasComposerContent = Boolean(draft.trim() || pendingFile);
   const showSendButton = hasComposerContent || sendMessageMutation.isPending;
   const showVoiceButton =
@@ -713,6 +822,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     ? [
         { label: "Тип", value: "Групповой чат" },
         { label: "Участники", value: String(groupMembersCount) },
+        { label: "Онлайн", value: String(onlineGroupMembersCount) },
         {
           label: "Ваша роль",
           value: formatGroupRole(chatQuery.data?.currentUserRole ?? "member"),
@@ -722,15 +832,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
         { label: "Email", value: conversationProfileUser.email },
         {
           label: "Статус",
-          value: otherUser?.lastSeenAt
-            ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
-            : "Личный чат",
+          value: directStatusText,
         },
         {
           label: "Последняя активность",
-          value: otherUser?.lastSeenAt
-            ? formatTime(otherUser.lastSeenAt)
-            : "Сейчас недоступно",
+          value: isDirectUserOnline
+            ? "Сейчас в сети"
+            : otherUser?.lastSeenAt
+              ? formatTime(otherUser.lastSeenAt)
+              : statusesMayBeStale
+                ? "Данные могут быть устаревшими"
+                : "Сейчас недоступно",
         },
       ];
   const visibleGroupMembers = groupMembersQuery.data?.members ?? [];
@@ -766,6 +878,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     try {
+      setLocalTypingState(false);
       setComposerError(null);
       setPendingFile(null);
       if (fileInputRef.current) {
@@ -817,7 +930,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           : "Не удалось получить доступ к микрофону.",
       );
     }
-  }, [recordingState, sendMessageMutation.isPending, stopMediaStream]);
+  }, [recordingState, sendMessageMutation.isPending, setLocalTypingState, stopMediaStream]);
 
   const finishVoiceRecording = useCallback(
     (shouldSend: boolean) => {
@@ -940,6 +1053,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setLocalTypingState(false);
     setComposerError(null);
     sendMessageMutation.mutate({ body, file: pendingFile });
   };
@@ -1023,12 +1137,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     return member.role !== "admin";
   };
 
-  const profileSummaryStatus = isGroupChat
-    ? `${groupMembersCount} участников`
-    : otherUser?.lastSeenAt
-      ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
-      : "Личный чат";
-
   const handleConversationCall = () => {
     setHeaderStatusMessage("Звонки добавим следующим шагом.");
     setShowConversationMenu(false);
@@ -1081,6 +1189,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
           >
             {profileSummaryStatus}
           </p>
+          {realtimeStateCopy ? (
+            <p className="mt-1 text-xs text-stone-500">{realtimeStateCopy}</p>
+          ) : null}
           {headerStatusMessage ? (
             <p className="mt-2 text-xs font-medium text-stone-500">{headerStatusMessage}</p>
           ) : null}
@@ -1727,6 +1838,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
             </div>
           );
         })}
+        {typingIndicatorLabel ? (
+          <div
+            className="flex justify-start"
+            data-testid="typing-indicator"
+          >
+            <div className="rounded-[16px] border border-black/8 bg-white px-3 py-1.5 text-xs text-stone-500 shadow-sm">
+              {typingIndicatorLabel}
+            </div>
+          </div>
+        ) : null}
         <div ref={messageListEndRef} aria-hidden="true" />
       </div>
 
@@ -1833,6 +1954,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     setComposerError(null);
                   }
                 }}
+                onBlur={() => setLocalTypingState(false)}
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 maxLength={MESSAGE_MAX_LENGTH}
