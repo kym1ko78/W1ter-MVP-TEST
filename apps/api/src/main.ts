@@ -3,6 +3,7 @@ import { NestFactory } from "@nestjs/core";
 import { ConfigService } from "@nestjs/config";
 import cookieParser from "cookie-parser";
 import { AppModule } from "./app.module";
+import { SocketRedisAdapter } from "./realtime/socket-redis.adapter";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -17,6 +18,10 @@ async function bootstrap() {
   const port = Number(configService.get<string>("API_PORT") ?? 4000);
 
   app.use(cookieParser());
+  const socketRedisAdapter = new SocketRedisAdapter(app, configService);
+  await socketRedisAdapter.connectToRedis();
+  app.useWebSocketAdapter(socketRedisAdapter);
+
   app.enableCors({
     origin: allowedOrigins,
     credentials: true,
@@ -29,6 +34,11 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
+
+  app.enableShutdownHooks();
+  app.getHttpServer().once("close", () => {
+    void socketRedisAdapter.closeRedisConnections();
+  });
 
   await app.listen(port);
   console.log(`API running on http://localhost:${port}`);
