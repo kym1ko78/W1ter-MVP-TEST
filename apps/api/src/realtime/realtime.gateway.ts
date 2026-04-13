@@ -196,6 +196,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       return { ok: false };
     }
 
+    if (await this.isDirectChatBlocked(chatId)) {
+      return { ok: false, reason: "blocked" };
+    }
+
     const mode: CallMode = body?.mode === "video" ? "video" : "audio";
     const memberUserIds = await this.getChatMemberUserIds(chatId);
 
@@ -230,6 +234,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     if (!(await this.isChatMember(chatId, user.sub))) {
       return { ok: false };
+    }
+
+    if (await this.isDirectChatBlocked(chatId)) {
+      return { ok: false, reason: "blocked" };
     }
 
     const memberUserIds = await this.getChatMemberUserIds(chatId);
@@ -323,6 +331,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     if (!(await this.isChatMember(chatId, user.sub))) {
       return { ok: false };
+    }
+
+    if (await this.isDirectChatBlocked(chatId)) {
+      return { ok: false, reason: "blocked" };
     }
 
     const signalType: CallSignalType | null =
@@ -442,5 +454,51 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     });
 
     return Boolean(membership);
+  }
+
+  private async isDirectChatBlocked(chatId: string) {
+    const chat = await this.prisma.chat.findUnique({
+      where: {
+        id: chatId,
+      },
+      include: {
+        members: {
+          select: {
+            userId: true,
+          },
+        },
+      },
+    });
+
+    if (!chat || chat.type !== "DIRECT") {
+      return false;
+    }
+
+    const firstUserId = chat.members[0]?.userId;
+    const secondUserId = chat.members[1]?.userId;
+
+    if (!firstUserId || !secondUserId) {
+      return false;
+    }
+
+    const relation = await this.prisma.userBlock.findFirst({
+      where: {
+        OR: [
+          {
+            blockerId: firstUserId,
+            blockedId: secondUserId,
+          },
+          {
+            blockerId: secondUserId,
+            blockedId: firstUserId,
+          },
+        ],
+      },
+      select: {
+        blockerId: true,
+      },
+    });
+
+    return Boolean(relation);
   }
 }

@@ -27,9 +27,11 @@ import { ForwardMessageDto } from "./dto/forward-message.dto";
 import { MarkReadDto } from "./dto/mark-read.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
 import { ToggleMessageReactionDto } from "./dto/toggle-message-reaction.dto";
+import { UpdateChatPreferencesDto } from "./dto/update-chat-preferences.dto";
 import { UpdateChatMemberRoleDto } from "./dto/update-chat-member-role.dto";
 import { UpdateMessageDto } from "./dto/update-message.dto";
 import { UploadAttachmentDto } from "./dto/upload-attachment.dto";
+import { CreateModerationReportDto } from "./dto/create-moderation-report.dto";
 import { ATTACHMENT_MAX_BYTES } from "./attachment-rules";
 import { MulterExceptionFilter } from "./multer-exception.filter";
 
@@ -97,6 +99,13 @@ export class ChatController {
   }
 
   @Post(":chatId/members")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-members-add",
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
   async addGroupMember(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
@@ -106,6 +115,13 @@ export class ChatController {
   }
 
   @Delete(":chatId/members/:memberId")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-members-remove",
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
   async removeGroupMember(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
@@ -115,6 +131,13 @@ export class ChatController {
   }
 
   @Patch(":chatId/members/:memberId/role")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-members-role",
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
   async updateGroupMemberRole(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
@@ -125,6 +148,13 @@ export class ChatController {
   }
 
   @Post(":chatId/leave")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-leave-group",
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
   async leaveGroup(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
@@ -133,6 +163,13 @@ export class ChatController {
   }
 
   @Delete(":chatId")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-delete",
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
   async deleteChat(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
@@ -166,6 +203,13 @@ export class ChatController {
   }
 
   @Patch(":chatId/messages/:messageId")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-edit-message",
+    limit: 30,
+    windowMs: 60 * 1000,
+    scope: "user",
+  })
   async editMessage(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
@@ -176,6 +220,13 @@ export class ChatController {
   }
 
   @Post(":chatId/messages/:messageId/forward")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-forward-message",
+    limit: 15,
+    windowMs: 60 * 1000,
+    scope: "user",
+  })
   async forwardMessage(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
@@ -186,6 +237,13 @@ export class ChatController {
   }
 
   @Put(":chatId/messages/:messageId/reaction")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-reaction",
+    limit: 60,
+    windowMs: 60 * 1000,
+    scope: "user",
+  })
   async toggleMessageReaction(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
@@ -196,6 +254,13 @@ export class ChatController {
   }
 
   @Delete(":chatId/messages/:messageId")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-delete-message",
+    limit: 30,
+    windowMs: 60 * 1000,
+    scope: "user",
+  })
   async deleteMessage(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
@@ -230,11 +295,50 @@ export class ChatController {
   }
 
   @Post(":chatId/read")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-read",
+    limit: 120,
+    windowMs: 60 * 1000,
+    scope: "user",
+  })
   async markRead(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
     @Body() dto: MarkReadDto,
   ) {
     return this.chatService.markRead(chatId, user.sub, dto.lastReadMessageId);
+  }
+
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-update-preferences",
+    limit: 60,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
+  @Patch(":chatId/preferences")
+  async updateChatPreferences(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+    @Body() dto: UpdateChatPreferencesDto,
+  ) {
+    return this.chatService.updateChatPreferences(chatId, user.sub, dto);
+  }
+
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "chat-report",
+    limit: 12,
+    windowMs: 60 * 60 * 1000,
+    scope: "user",
+  })
+  @Post(":chatId/report")
+  async reportChat(
+    @CurrentUser() user: JwtPayload,
+    @Param("chatId") chatId: string,
+    @Body() dto: CreateModerationReportDto,
+  ) {
+    return this.chatService.createModerationReport(chatId, user.sub, dto);
   }
 }

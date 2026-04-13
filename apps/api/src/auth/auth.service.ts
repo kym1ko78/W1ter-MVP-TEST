@@ -199,6 +199,102 @@ export class AuthService {
     return this.usersService.getSafeUserById(userId);
   }
 
+  async listSessions(userId: string, currentRefreshToken?: string) {
+    const sessions = await this.prisma.refreshToken.findMany({
+      where: {
+        userId,
+        revokedAt: null,
+        expiresAt: {
+          gt: new Date(),
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    let currentSessionId: string | null = null;
+    if (currentRefreshToken) {
+      const matched = await this.findRefreshRecord(sessions, currentRefreshToken);
+      currentSessionId = matched?.id ?? null;
+    }
+
+    return sessions.map((session) => ({
+      id: session.id,
+      userAgent: session.userAgent,
+      ipAddress: session.ipAddress,
+      isPersistent: session.isPersistent,
+      createdAt: session.createdAt.toISOString(),
+      expiresAt: session.expiresAt.toISOString(),
+      isCurrent: session.id === currentSessionId,
+    }));
+  }
+
+  async revokeSession(userId: string, sessionId: string) {
+    const result = await this.prisma.refreshToken.updateMany({
+      where: {
+        id: sessionId,
+        userId,
+        revokedAt: null,
+      },
+      data: {
+        revokedAt: new Date(),
+      },
+    });
+
+    if (result.count === 0) {
+      throw new NotFoundException("Сессия не найдена.");
+    }
+
+    return {
+      success: true,
+      sessionId,
+    };
+  }
+
+  async revokeOtherSessions(userId: string, currentRefreshToken?: string) {
+    const sessions = await this.prisma.refreshToken.findMany({
+      where: {
+        userId,
+        revokedAt: null,
+        expiresAt: {
+          gt: new Date(),
+        },
+      },
+    });
+
+    const currentSession = currentRefreshToken
+      ? await this.findRefreshRecord(sessions, currentRefreshToken)
+      : null;
+    const idsToRevoke = sessions
+      .filter((session) => session.id !== currentSession?.id)
+      .map((session) => session.id);
+
+    if (idsToRevoke.length === 0) {
+      return {
+        success: true,
+        revokedCount: 0,
+      };
+    }
+
+    const result = await this.prisma.refreshToken.updateMany({
+      where: {
+        userId,
+        id: {
+          in: idsToRevoke,
+        },
+      },
+      data: {
+        revokedAt: new Date(),
+      },
+    });
+
+    return {
+      success: true,
+      revokedCount: result.count,
+    };
+  }
+
   async requestEmailVerification(userId: string): Promise<EmailVerificationRequestResult> {
     const user = await this.requireUserRecord(userId);
 

@@ -17,7 +17,9 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { createReadStream } from "node:fs";
 import type { Response } from "express";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
+import { RateLimit } from "../common/decorators/rate-limit.decorator";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
+import { RateLimitGuard } from "../common/guards/rate-limit.guard";
 import type { JwtPayload } from "../common/types/jwt-payload";
 import { UpdateProfileDto } from "./dto/update-profile.dto";
 import { UsersService } from "./users.service";
@@ -40,11 +42,23 @@ export class UsersController {
   }
 
   @Get("search")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "users-search",
+    limit: 60,
+    windowMs: 60 * 1000,
+    scope: "user",
+  })
   async search(
     @Query("query") query: string,
     @CurrentUser() user: JwtPayload,
   ) {
     return this.usersService.searchUsers(query ?? "", user.sub);
+  }
+
+  @Get("blocked")
+  async getBlockedUsers(@CurrentUser() user: JwtPayload) {
+    return this.usersService.listBlockedUsers(user.sub);
   }
 
   @Patch("me")
@@ -67,6 +81,36 @@ export class UsersController {
   @Delete("me/avatar")
   async deleteAvatar(@CurrentUser() user: JwtPayload) {
     return this.usersService.removeAvatar(user.sub);
+  }
+
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "users-block",
+    limit: 30,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
+  @Post(":userId/block")
+  async blockUser(
+    @CurrentUser() user: JwtPayload,
+    @Param("userId") userId: string,
+  ) {
+    return this.usersService.blockUser(user.sub, userId);
+  }
+
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    key: "users-unblock",
+    limit: 30,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
+  @Delete(":userId/block")
+  async unblockUser(
+    @CurrentUser() user: JwtPayload,
+    @Param("userId") userId: string,
+  ) {
+    return this.usersService.unblockUser(user.sub, userId);
   }
 
   @Get("avatar-files/:storageKey")

@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
+  Param,
   Post,
   Req,
   Res,
@@ -139,6 +141,47 @@ export class AuthController {
     }
 
     return safeUser;
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Get("sessions")
+  async listSessions(
+    @CurrentUser() user: JwtPayload,
+    @Req() request: Request,
+  ) {
+    const refreshToken = request.cookies?.[REFRESH_COOKIE] as string | undefined;
+    return this.authService.listSessions(user.sub, refreshToken);
+  }
+
+  @UseGuards(AccessTokenGuard, RateLimitGuard)
+  @RateLimit({
+    key: "auth-revoke-session",
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
+  @Delete("sessions/:sessionId")
+  async revokeSession(
+    @CurrentUser() user: JwtPayload,
+    @Param("sessionId") sessionId: string,
+  ) {
+    return this.authService.revokeSession(user.sub, sessionId);
+  }
+
+  @UseGuards(AccessTokenGuard, RateLimitGuard)
+  @RateLimit({
+    key: "auth-revoke-other-sessions",
+    limit: 10,
+    windowMs: 10 * 60 * 1000,
+    scope: "user",
+  })
+  @Post("sessions/revoke-others")
+  async revokeOtherSessions(
+    @CurrentUser() user: JwtPayload,
+    @Req() request: Request,
+  ) {
+    const refreshToken = request.cookies?.[REFRESH_COOKIE] as string | undefined;
+    return this.authService.revokeOtherSessions(user.sub, refreshToken);
   }
 
   @UseGuards(AccessTokenGuard, RateLimitGuard)

@@ -142,6 +142,14 @@ type CallSession = {
   createdAt: string;
 };
 
+type ReportReason =
+  | "spam"
+  | "abuse"
+  | "fraud"
+  | "harassment"
+  | "violence"
+  | "other";
+
 export function ConversationView({ chatId }: { chatId: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -175,6 +183,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [showConversationMenu, setShowConversationMenu] = useState(false);
   const [showConversationProfile, setShowConversationProfile] = useState(false);
   const [headerStatusMessage, setHeaderStatusMessage] = useState<string | null>(null);
+  const [reportReason, setReportReason] = useState<ReportReason>("spam");
+  const [reportDetails, setReportDetails] = useState("");
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [isBlockConfirmOpen, setIsBlockConfirmOpen] = useState(false);
   const [callSession, setCallSession] = useState<CallSession | null>(null);
   const [callError, setCallError] = useState<string | null>(null);
   const [isCallMicMuted, setIsCallMicMuted] = useState(false);
@@ -628,6 +641,105 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
   });
 
+  const updateChatPreferencesMutation = useMutation({
+    mutationFn: async (payload: { isMuted?: boolean; mutedUntil?: string | null; isArchived?: boolean }) =>
+      readJson<{
+        chatId: string;
+        isMuted: boolean;
+        mutedUntil: string | null;
+        isArchived: boolean;
+      }>(
+        await authorizedFetch(`/chats/${chatId}/preferences`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        }),
+      ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["chats"] });
+      await queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+    },
+    onError: (error) => {
+      setHeaderStatusMessage(
+        error instanceof Error ? error.message : "Не удалось обновить настройки чата.",
+      );
+    },
+  });
+
+  const blockUserMutation = useMutation({
+    mutationFn: async (targetUserId: string) =>
+      readJson<{ success: boolean }>(
+        await authorizedFetch(`/users/${targetUserId}/block`, {
+          method: "POST",
+        }),
+      ),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["chats"] }),
+        queryClient.invalidateQueries({ queryKey: ["chat", chatId] }),
+      ]);
+      setIsBlockConfirmOpen(false);
+      setShowConversationMenu(false);
+      setShowConversationProfile(false);
+      setHeaderStatusMessage("Пользователь заблокирован.");
+    },
+    onError: (error) => {
+      setIsBlockConfirmOpen(false);
+      setHeaderStatusMessage(error instanceof Error ? error.message : "Не удалось заблокировать пользователя.");
+    },
+  });
+
+  const unblockUserMutation = useMutation({
+    mutationFn: async (targetUserId: string) =>
+      readJson<{ success: boolean }>(
+        await authorizedFetch(`/users/${targetUserId}/block`, {
+          method: "DELETE",
+        }),
+      ),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["chats"] }),
+        queryClient.invalidateQueries({ queryKey: ["chat", chatId] }),
+      ]);
+      setShowConversationMenu(false);
+      setShowConversationProfile(false);
+      setHeaderStatusMessage("Пользователь разблокирован.");
+    },
+    onError: (error) => {
+      setHeaderStatusMessage(error instanceof Error ? error.message : "Не удалось разблокировать пользователя.");
+    },
+  });
+
+  const reportChatMutation = useMutation({
+    mutationFn: async (payload: { reason: ReportReason; details: string }) =>
+      readJson<{ id: string; status: string }>(
+        await authorizedFetch(`/chats/${chatId}/report`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            reason: payload.reason,
+            details: payload.details.trim() || undefined,
+            targetUserId: otherUser?.id,
+          }),
+        }),
+      ),
+    onSuccess: () => {
+      setReportError(null);
+      setIsReportModalOpen(false);
+      setShowConversationMenu(false);
+      setReportReason("spam");
+      setReportDetails("");
+      setHeaderStatusMessage("Жалоба отправлена модерации.");
+    },
+    onError: (error) => {
+      setReportError(error instanceof Error ? error.message : "Не удалось отправить жалобу.");
+    },
+  });
+
   useEffect(() => {
     const element = textareaRef.current;
 
@@ -697,6 +809,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setShowMessageSearch(false);
     setShowConversationMenu(false);
     setShowConversationProfile(false);
+    setIsReportModalOpen(false);
+    setIsBlockConfirmOpen(false);
+    setReportReason("spam");
+    setReportDetails("");
+    setReportError(null);
     setHeaderStatusMessage(null);
     setGroupMemberSearch("");
     setGroupPanelError(null);
@@ -1818,6 +1935,15 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
   const submitComposer = () => {
     const body = composerText;
+    if (isConversationBlocked) {
+      setComposerError(
+        blockedByCurrentUser
+          ? "Разблокируйте контакт, чтобы отправлять сообщения."
+          : "Этот пользователь ограничил общение.",
+      );
+      return;
+    }
+
     if (
       (!body && !pendingFile) ||
       isComposerSubmitPending ||
@@ -2019,8 +2145,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
     return member.role !== "admin";
   };
 
+  const blockedByCurrentUser = Boolean(chatQuery.data?.directStatus?.blockedByCurrentUser);
+  const hasBlockedCurrentUser = Boolean(chatQuery.data?.directStatus?.hasBlockedCurrentUser);
+  const isConversationBlocked = blockedByCurrentUser || hasBlockedCurrentUser;
+
   const profileSummaryStatus = isGroupChat
     ? `${groupMembersCount} участников`
+    : blockedByCurrentUser
+      ? "Вы заблокировали этот контакт"
+      : hasBlockedCurrentUser
+        ? "Контакт ограничил общение"
     : otherUser?.lastSeenAt
       ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
       : "Личный чат";
@@ -2034,6 +2168,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
     : null;
 
   const handleConversationCall = () => {
+    if (isConversationBlocked) {
+      setHeaderStatusMessage(
+        blockedByCurrentUser
+          ? "Сначала разблокируйте контакт."
+          : "Контакт ограничил общение.",
+      );
+      setShowConversationMenu(false);
+      return;
+    }
+
     if (hasCallSession) {
       setHeaderStatusMessage("Сначала завершите текущий звонок.");
       setShowConversationMenu(false);
@@ -2045,6 +2189,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
   };
 
   const handleConversationVideoCall = () => {
+    if (isConversationBlocked) {
+      setHeaderStatusMessage(
+        blockedByCurrentUser
+          ? "Сначала разблокируйте контакт."
+          : "Контакт ограничил общение.",
+      );
+      setShowConversationMenu(false);
+      return;
+    }
+
     if (hasCallSession) {
       setHeaderStatusMessage("Сначала завершите текущий звонок.");
       setShowConversationMenu(false);
@@ -2052,6 +2206,49 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     handleStartCall("video");
+    setShowConversationMenu(false);
+  };
+
+  const handleToggleConversationMute = () => {
+    if (updateChatPreferencesMutation.isPending || !chatQuery.data) {
+      return;
+    }
+
+    updateChatPreferencesMutation.mutate({
+      isMuted: !chatQuery.data.isMuted,
+      mutedUntil: null,
+    });
+    setShowConversationMenu(false);
+  };
+
+  const handleToggleConversationArchive = () => {
+    if (updateChatPreferencesMutation.isPending || !chatQuery.data) {
+      return;
+    }
+
+    updateChatPreferencesMutation.mutate({
+      isArchived: !chatQuery.data.isArchived,
+    });
+    setShowConversationMenu(false);
+  };
+
+  const handleToggleConversationBlock = () => {
+    if (!otherUser || blockUserMutation.isPending || unblockUserMutation.isPending) {
+      return;
+    }
+
+    if (blockedByCurrentUser) {
+      unblockUserMutation.mutate(otherUser.id);
+      return;
+    }
+
+    setIsBlockConfirmOpen(true);
+    setShowConversationMenu(false);
+  };
+
+  const openReportModal = () => {
+    setReportError(null);
+    setIsReportModalOpen(true);
     setShowConversationMenu(false);
   };
 
@@ -2102,6 +2299,28 @@ export function ConversationView({ chatId }: { chatId: string }) {
           >
             {profileSummaryStatus}
           </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {chatQuery.data?.isMuted ? (
+              <span className="rounded-full border border-black/10 bg-[#f7f7f5] px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-stone-500">
+                Mute
+              </span>
+            ) : null}
+            {chatQuery.data?.isArchived ? (
+              <span className="rounded-full border border-black/10 bg-[#f7f7f5] px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-stone-500">
+                Архив
+              </span>
+            ) : null}
+            {blockedByCurrentUser ? (
+              <span className="rounded-full border border-black/10 bg-[#f7f7f5] px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-stone-500">
+                Вы заблокировали контакт
+              </span>
+            ) : null}
+            {hasBlockedCurrentUser ? (
+              <span className="rounded-full border border-black/10 bg-[#f7f7f5] px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-stone-500">
+                Контакт ограничил общение
+              </span>
+            ) : null}
+          </div>
           {headerStatusMessage ? (
             <p className="mt-2 text-xs font-medium text-stone-500">{headerStatusMessage}</p>
           ) : null}
@@ -2221,6 +2440,40 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     <span>Завершить звонок</span>
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  onClick={handleToggleConversationMute}
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                >
+                  <BellIcon className="h-4 w-4 text-stone-500" />
+                  <span>{chatQuery.data?.isMuted ? "Включить уведомления" : "Выключить уведомления"}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleToggleConversationArchive}
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                >
+                  <ArchiveIcon className="h-4 w-4 text-stone-500" />
+                  <span>{chatQuery.data?.isArchived ? "Вернуть из архива" : "Отправить в архив"}</span>
+                </button>
+                {!isGroupChat ? (
+                  <button
+                    type="button"
+                    onClick={handleToggleConversationBlock}
+                    className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                  >
+                    <ShieldIcon className="h-4 w-4 text-stone-500" />
+                    <span>{blockedByCurrentUser ? "Разблокировать" : "Заблокировать"}</span>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={openReportModal}
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                >
+                  <FlagIcon className="h-4 w-4 text-stone-500" />
+                  <span>Пожаловаться</span>
+                </button>
                 {isGroupChat ? (
                   <button
                     type="button"
@@ -3054,6 +3307,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
           </div>
         ) : null}
 
+        {isConversationBlocked ? (
+          <div
+            className="mb-3 rounded-[18px] border border-black/10 bg-[#f7f7f5] px-4 py-3 text-sm text-stone-600"
+            data-testid="conversation-blocked-banner"
+          >
+            {blockedByCurrentUser
+              ? "Вы заблокировали этот контакт. Разблокируйте его в меню, чтобы продолжить общение."
+              : "Этот контакт ограничил общение. Отправка сообщений недоступна."}
+          </div>
+        ) : null}
+
         {editingMessage || replyingToMessage ? (
           <div
             className="mb-3 flex items-start justify-between gap-3 rounded-[18px] border border-black/8 bg-white px-4 py-3"
@@ -3151,7 +3415,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={recordingState !== "idle" || isEditingMessage || isComposerSubmitPending}
+              disabled={
+                recordingState !== "idle" ||
+                isEditingMessage ||
+                isComposerSubmitPending ||
+                isConversationBlocked
+              }
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-black/10 bg-[#f7f7f5] text-stone-500 transition hover:border-black/25 hover:bg-white hover:text-black"
               data-testid="attachment-picker-button"
               aria-label="Прикрепить файл"
@@ -3174,8 +3443,18 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 maxLength={MESSAGE_MAX_LENGTH}
-                disabled={recordingState !== "idle" || isComposerSubmitPending}
-                placeholder={isEditingMessage ? "Измените сообщение..." : "Сообщение..."}
+                disabled={
+                  recordingState !== "idle" ||
+                  isComposerSubmitPending ||
+                  isConversationBlocked
+                }
+                placeholder={
+                  isConversationBlocked
+                    ? "Отправка недоступна"
+                    : isEditingMessage
+                      ? "Измените сообщение..."
+                      : "Сообщение..."
+                }
                 className="h-[42px] min-h-[42px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 pb-0 pt-[6px] leading-[28px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
               />
 
@@ -3201,8 +3480,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
               onClick={composerActionMode === "voice" ? startVoiceRecording : undefined}
               disabled={
                 composerActionMode === "send"
-                  ? isComposerSubmitPending || !hasComposerContent
-                  : recordingState !== "idle"
+                  ? isComposerSubmitPending || !hasComposerContent || isConversationBlocked
+                  : recordingState !== "idle" || isConversationBlocked
               }
               tabIndex={showComposerAction ? 0 : -1}
               aria-label={
@@ -3340,6 +3619,95 @@ export function ConversationView({ chatId }: { chatId: string }) {
         </div>
       ) : null}
 
+      {isReportModalOpen ? (
+        <div
+          className="fixed inset-0 z-[140] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[3px]"
+          onClick={() => {
+            if (!reportChatMutation.isPending) {
+              setIsReportModalOpen(false);
+              setReportError(null);
+            }
+          }}
+          data-testid="report-modal"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="report-title"
+            className="w-full max-w-[460px] rounded-[22px] border border-black/10 bg-white p-4 shadow-[0_22px_52px_rgba(17,24,39,0.22)] sm:p-5"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="report-title" className="text-lg font-semibold tracking-tight text-[#171717]">
+              Жалоба
+            </h3>
+            <p className="mt-1 text-sm text-stone-500">
+              Жалоба отправится модерации. Укажите причину и детали.
+            </p>
+
+            <label className="mt-3 block">
+              <span className="mb-1 block text-xs uppercase tracking-[0.12em] text-stone-500">
+                Причина
+              </span>
+              <select
+                value={reportReason}
+                onChange={(event) => setReportReason(event.target.value as ReportReason)}
+                className="w-full rounded-[14px] border border-black/10 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+              >
+                <option value="spam">Спам</option>
+                <option value="abuse">Оскорбления</option>
+                <option value="fraud">Мошенничество</option>
+                <option value="harassment">Преследование</option>
+                <option value="violence">Насилие/угрозы</option>
+                <option value="other">Другое</option>
+              </select>
+            </label>
+
+            <label className="mt-3 block">
+              <span className="mb-1 block text-xs uppercase tracking-[0.12em] text-stone-500">
+                Детали
+              </span>
+              <textarea
+                value={reportDetails}
+                maxLength={600}
+                onChange={(event) => setReportDetails(event.target.value)}
+                placeholder="Коротко опишите ситуацию"
+                className="min-h-[96px] w-full resize-y rounded-[14px] border border-black/10 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+              />
+            </label>
+
+            {reportError ? (
+              <p className="mt-3 rounded-[12px] border border-black/10 bg-black px-3 py-2 text-xs text-white">
+                {reportError}
+              </p>
+            ) : null}
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!reportChatMutation.isPending) {
+                    setIsReportModalOpen(false);
+                    setReportError(null);
+                  }
+                }}
+                disabled={reportChatMutation.isPending}
+                className="rounded-full border border-black/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={() => reportChatMutation.mutate({ reason: reportReason, details: reportDetails })}
+                disabled={reportChatMutation.isPending}
+                className="rounded-full bg-[#111111] px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {reportChatMutation.isPending ? "Отправляем..." : "Отправить"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <ConfirmDialog
         open={Boolean(confirmingMessage)}
         title="Удалить это сообщение?"
@@ -3391,6 +3759,28 @@ export function ConversationView({ chatId }: { chatId: string }) {
         }}
         onConfirm={() => {
           leaveGroupMutation.mutate();
+        }}
+      />
+
+      <ConfirmDialog
+        open={isBlockConfirmOpen}
+        title="Заблокировать пользователя?"
+        description={
+          otherUser
+            ? `После блокировки ${otherUser.displayName} не сможет писать и звонить в личном чате.`
+            : "После блокировки контакт не сможет писать и звонить в личном чате."
+        }
+        confirmLabel="Заблокировать"
+        isLoading={blockUserMutation.isPending}
+        onCancel={() => {
+          if (!blockUserMutation.isPending) {
+            setIsBlockConfirmOpen(false);
+          }
+        }}
+        onConfirm={() => {
+          if (otherUser) {
+            blockUserMutation.mutate(otherUser.id);
+          }
         }}
       />
     </section>
@@ -3906,6 +4296,80 @@ function VideoIcon({ className }: { className?: string }) {
     >
       <path d="M15 10.5v3a3 3 0 0 1-3 3H6.5a3.5 3.5 0 0 1-3.5-3.5V11a3.5 3.5 0 0 1 3.5-3.5H12a3 3 0 0 1 3 3Z" />
       <path d="m15 11 6-3v8l-6-3" />
+    </svg>
+  );
+}
+
+function BellIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M15 17H5.5A1.5 1.5 0 0 1 4 15.5v-.12a4.5 4.5 0 0 0 1.32-3.18V10a6 6 0 0 1 12 0v2.2a4.5 4.5 0 0 0 1.3 3.18v.12A1.5 1.5 0 0 1 17.12 17H15Z" />
+      <path d="M9.5 17a2.5 2.5 0 0 0 5 0" />
+    </svg>
+  );
+}
+
+function ArchiveIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="4" rx="1.5" />
+      <path d="M4 8h16v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" />
+      <path d="M10 12h4" />
+    </svg>
+  );
+}
+
+function ShieldIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M12 3 5 6v5c0 5 3.4 8.8 7 10 3.6-1.2 7-5 7-10V6l-7-3Z" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  );
+}
+
+function FlagIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M4 22V4" />
+      <path d="M4 5h11l-1.4 2.8L15 11H4" />
+      <path d="M15 5h4" />
     </svg>
   );
 }
