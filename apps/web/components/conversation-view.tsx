@@ -158,6 +158,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const focusedFromSearchParamRef = useRef<string | null>(null);
   const typingStopTimeoutRef = useRef<number | null>(null);
   const isLocalUserTypingRef = useRef(false);
+  const shouldRefocusComposerRef = useRef(false);
 
   const chatQuery = useQuery({
     queryKey: ["chat", chatId],
@@ -274,7 +275,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, []);
 
   const focusComposer = useCallback(() => {
-    queueMicrotask(() => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
       const textarea = textareaRef.current;
 
       if (!textarea || textarea.disabled) {
@@ -284,6 +286,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       textarea.focus();
       const caretPosition = textarea.value.length;
       textarea.setSelectionRange(caretPosition, caretPosition);
+      });
     });
   }, []);
 
@@ -388,7 +391,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
         fileInputRef.current.value = "";
       }
       scrollToBottom("smooth");
-      focusComposer();
     },
     onError: (error) => {
       setComposerError(
@@ -421,7 +423,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       setDraft("");
       setFocusedMessageId(message.id);
       focusMessageById(message.id, "smooth");
-      focusComposer();
     },
     onError: (error) => {
       setComposerError(
@@ -1169,6 +1170,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
         });
 
         shouldScrollAfterSendRef.current = true;
+        shouldRefocusComposerRef.current = true;
         sendMessageMutation.mutate({
           body: "",
           file: voiceFile,
@@ -1205,6 +1207,19 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
     [stopMediaStream],
   );
+
+  useEffect(() => {
+    if (recordingState !== "idle" || isComposerSubmitPending) {
+      return;
+    }
+
+    if (!shouldRefocusComposerRef.current) {
+      return;
+    }
+
+    shouldRefocusComposerRef.current = false;
+    focusComposer();
+  }, [focusComposer, isComposerSubmitPending, recordingState]);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     if (isEditingMessage) {
@@ -1256,10 +1271,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setLocalTypingState(false);
     setComposerError(null);
     if (editingMessage) {
+      shouldRefocusComposerRef.current = true;
       editMessageMutation.mutate({ messageId: editingMessage.id, body });
       return;
     }
 
+    shouldRefocusComposerRef.current = true;
     sendMessageMutation.mutate({
       body,
       file: pendingFile,
