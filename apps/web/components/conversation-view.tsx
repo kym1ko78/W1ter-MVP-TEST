@@ -38,6 +38,7 @@ import {
   formatTime,
   getChatTitle,
   getConversationDayKey,
+  getLastMessagePreviewText,
 } from "../lib/utils";
 import type {
   ChatAttachment,
@@ -57,13 +58,30 @@ const COMPOSER_MAX_HEIGHT = 200;
 const VOICE_RECORDER_MIME_TYPE = "audio/webm";
 const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
 const SCROLL_BOTTOM_THRESHOLD = 180;
+const QUICK_REACTIONS = ["👍", "❤️", "😂", "🔥", "😮", "😢"] as const;
 
 type ComposerPayload = {
   body: string;
   file: File | null;
+  replyToMessageId?: string | null;
 };
 
 type RecordingState = "idle" | "recording" | "stopping";
+
+type EditMessagePayload = {
+  messageId: string;
+  body: string;
+};
+
+type ForwardMessagePayload = {
+  messageId: string;
+  targetChatId: string;
+};
+
+type ToggleReactionPayload = {
+  messageId: string;
+  emoji: (typeof QUICK_REACTIONS)[number];
+};
 
 type ConversationRenderItem =
   | {
@@ -100,9 +118,15 @@ export function ConversationView({ chatId }: { chatId: string }) {
     displayName: string;
   } | null>(null);
   const [confirmingGroupLeave, setConfirmingGroupLeave] = useState(false);
+  const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
+  const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [confirmingMessage, setConfirmingMessage] = useState<ChatMessage | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
+  const [forwardSearch, setForwardSearch] = useState("");
+  const [forwardPanelError, setForwardPanelError] = useState<string | null>(null);
+  const [recentlyReactedMessageId, setRecentlyReactedMessageId] = useState<string | null>(null);
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
@@ -113,6 +137,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [headerStatusMessage, setHeaderStatusMessage] = useState<string | null>(null);
   const deferredMessageSearch = useDeferredValue(messageSearch);
   const deferredGroupMemberSearch = useDeferredValue(groupMemberSearch);
+  const deferredForwardSearch = useDeferredValue(forwardSearch);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const messageSearchInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -150,6 +175,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
       )!,
   });
 
+  const chatsQuery = useQuery({
+    queryKey: ["chats"],
+    enabled: isAuthenticated,
+    queryFn: async () => readJson<ChatListItem[]>(await authorizedFetch("/chats")),
+  });
+
   const messageItems = useMemo(
     () => dedupeMessages(messagesQuery.data?.items ?? []),
     [messagesQuery.data?.items],
@@ -172,6 +203,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const searchParamMessageId = searchParams?.get("message") ?? null;
   const searchParamQuery = searchParams?.get("q") ?? null;
   const normalizedGroupMemberSearch = deferredGroupMemberSearch.trim();
+  const normalizedForwardSearch = deferredForwardSearch.trim().toLocaleLowerCase();
   const isGroupChat = chatQuery.data?.type === "group";
 
   const groupMembersQuery = useQuery({
@@ -295,12 +327,15 @@ export function ConversationView({ chatId }: { chatId: string }) {
   );
 
   const sendMessageMutation = useMutation({
-    mutationFn: async ({ body, file }: ComposerPayload) => {
+    mutationFn: async ({ body, file, replyToMessageId }: ComposerPayload) => {
       if (file) {
         const formData = new FormData();
         formData.append("file", file);
         if (body) {
           formData.append("body", body);
+        }
+        if (replyToMessageId) {
+          formData.append("replyToMessageId", replyToMessageId);
         }
 
         return readJson<ChatMessage>(
@@ -317,7 +352,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ body }),
+          body: JSON.stringify({
+            body,
+            replyToMessageId: replyToMessageId ?? undefined,
+          }),
         }),
       );
     },
@@ -331,6 +369,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       setComposerError(null);
       setDraft("");
       setPendingFile(null);
+      setReplyingToMessage(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -341,6 +380,36 @@ export function ConversationView({ chatId }: { chatId: string }) {
         error instanceof Error
           ? error.message
           : "Не удалось отправить сообщение. Попробуйте еще раз.",
+      );
+    },
+  });
+
+  const editMessageMutation = useMutation({
+    mutationFn: async ({ messageId, body }: EditMessagePayload) =>
+      readJson<ChatMessage>(
+        await authorizedFetch(`/chats/${chatId}/messages/${messageId}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ body }),
+        }),
+      ),
+    onSuccess: (message) => {
+      queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
+        upsertMessage(old, message),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+      setComposerError(null);
+      setEditingMessage(null);
+      setDraft("");
+      setFocusedMessageId(message.id);
+      focusMessageById(message.id, "smooth");
+    },
+    onError: (error) => {
+      setComposerError(
+        error instanceof Error ? error.message : "Не удалось сохранить изменения сообщения.",
       );
     },
   });
@@ -361,6 +430,68 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
     onSettled: () => {
       setConfirmingMessage(null);
+    },
+  });
+
+  const forwardMessageMutation = useMutation({
+    mutationFn: async ({ messageId, targetChatId }: ForwardMessagePayload) =>
+      readJson<ChatMessage>(
+        await authorizedFetch(`/chats/${chatId}/messages/${messageId}/forward`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            targetChatId,
+          }),
+        }),
+      ),
+    onSuccess: (forwardedMessage) => {
+      queryClient.setQueryData<MessagePage>(["messages", forwardedMessage.chatId], (old) =>
+        appendMessageUnique(old, forwardedMessage),
+      );
+
+      if (forwardedMessage.chatId === chatId) {
+        shouldScrollAfterSendRef.current = true;
+        scrollToBottom("smooth");
+      }
+
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", forwardedMessage.chatId] });
+      setForwardPanelError(null);
+      setForwardingMessage(null);
+      setForwardSearch("");
+    },
+    onError: (error) => {
+      setForwardPanelError(
+        error instanceof Error ? error.message : "Не удалось переслать сообщение.",
+      );
+    },
+  });
+
+  const toggleReactionMutation = useMutation({
+    mutationFn: async ({ messageId, emoji }: ToggleReactionPayload) =>
+      readJson<ChatMessage>(
+        await authorizedFetch(`/chats/${chatId}/messages/${messageId}/reaction`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ emoji }),
+        }),
+      ),
+    onSuccess: (message, variables) => {
+      queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
+        upsertMessage(old, message),
+      );
+      setRecentlyReactedMessageId(variables.messageId);
+      setComposerError(null);
+      setForwardPanelError(null);
+    },
+    onError: (error) => {
+      setComposerError(
+        error instanceof Error ? error.message : "Не удалось обновить реакцию. Попробуйте еще раз.",
+      );
     },
   });
 
@@ -543,6 +674,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setGroupPanelError(null);
     setConfirmingMemberRemoval(null);
     setConfirmingGroupLeave(false);
+    setReplyingToMessage(null);
+    setEditingMessage(null);
+    setForwardingMessage(null);
+    setForwardSearch("");
+    setForwardPanelError(null);
+    setRecentlyReactedMessageId(null);
   }, [chatId]);
 
   useEffect(() => {
@@ -720,6 +857,41 @@ export function ConversationView({ chatId }: { chatId: string }) {
     type: chatQuery.data?.type,
     title: chatQuery.data?.title,
   });
+  const forwardCandidates = useMemo(() => {
+    const candidates = chatsQuery.data ?? [];
+
+    return candidates
+      .map((chat) => {
+        const title = getChatTitle(chat.members, user?.id, {
+          type: chat.type,
+          title: chat.title,
+        });
+        const lastMessagePreview = getLastMessagePreviewText(chat.lastMessage);
+        const searchableContent = `${title} ${lastMessagePreview}`.toLocaleLowerCase();
+
+        return {
+          ...chat,
+          title,
+          lastMessagePreview,
+          isCurrentChat: chat.id === chatId,
+          searchableContent,
+        };
+      })
+      .filter((chat) =>
+        normalizedForwardSearch ? chat.searchableContent.includes(normalizedForwardSearch) : true,
+      )
+      .sort((left, right) => {
+        if (left.isCurrentChat && !right.isCurrentChat) {
+          return -1;
+        }
+
+        if (!left.isCurrentChat && right.isCurrentChat) {
+          return 1;
+        }
+
+        return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+      });
+  }, [chatId, chatsQuery.data, normalizedForwardSearch, user?.id]);
   const existingGroupMemberIds = useMemo(
     () =>
       new Set(
@@ -738,6 +910,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     [existingGroupMemberIds, groupUsersSearchQuery.data, user?.id],
   );
   const groupMembersCount = groupMembersQuery.data?.members.length ?? chatMembers.length;
+<<<<<<< HEAD
   const onlineGroupMembersCount = chatMembers.filter(
     (member) => member.id !== user?.id && isUserOnline(member.id),
   ).length;
@@ -786,8 +959,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
     : null;
   const hasComposerContent = Boolean(draft.trim() || pendingFile);
   const showSendButton = hasComposerContent || sendMessageMutation.isPending;
+=======
+  const isEditingMessage = Boolean(editingMessage);
+  const composerText = draft.trim();
+  const isComposerSubmitPending = sendMessageMutation.isPending || editMessageMutation.isPending;
+  const hasComposerContent = isEditingMessage
+    ? Boolean(composerText)
+    : Boolean(composerText || pendingFile);
+  const showSendButton = hasComposerContent || isComposerSubmitPending;
+>>>>>>> origin/main
   const showVoiceButton =
-    !hasComposerContent && !sendMessageMutation.isPending && recordingState === "idle";
+    !isEditingMessage && !hasComposerContent && !isComposerSubmitPending && recordingState === "idle";
   const composerActionMode = showSendButton ? "send" : showVoiceButton ? "voice" : "hidden";
   const showComposerAction = composerActionMode !== "hidden";
   const hasSearchInput = normalizedMessageSearch.length > 0;
@@ -795,6 +977,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const activeSearchNumber = hasSearchMatches
     ? Math.min(activeMatchIndex + 1, messageSearchMatches.length)
     : 0;
+  const submitButtonLabel = isEditingMessage ? "Сохранить изменения" : "Отправить сообщение";
   const isGroupActionPending =
     addGroupMemberMutation.isPending ||
     removeGroupMemberMutation.isPending ||
@@ -859,7 +1042,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   );
 
   const startVoiceRecording = useCallback(async () => {
-    if (recordingState !== "idle" || sendMessageMutation.isPending) {
+    if (recordingState !== "idle" || isComposerSubmitPending || isEditingMessage) {
       return;
     }
 
@@ -921,7 +1104,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
           : "Не удалось получить доступ к микрофону.",
       );
     }
+<<<<<<< HEAD
   }, [recordingState, sendMessageMutation.isPending, setLocalTypingState, stopMediaStream]);
+=======
+  }, [isComposerSubmitPending, isEditingMessage, recordingState, stopMediaStream]);
+>>>>>>> origin/main
 
   const finishVoiceRecording = useCallback(
     (shouldSend: boolean) => {
@@ -969,12 +1156,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
         });
 
         shouldScrollAfterSendRef.current = true;
-        sendMessageMutation.mutate({ body: "", file: voiceFile });
+        sendMessageMutation.mutate({
+          body: "",
+          file: voiceFile,
+          replyToMessageId: replyingToMessage?.id ?? null,
+        });
       };
 
       recorder.stop();
     },
-    [sendMessageMutation, stopMediaStream],
+    [replyingToMessage?.id, sendMessageMutation, stopMediaStream],
   );
 
   useEffect(() => {
@@ -1003,6 +1194,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
   );
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (isEditingMessage) {
+      setComposerError("При редактировании вложения недоступны.");
+      event.target.value = "";
+      return;
+    }
+
     const selectedFile = event.target.files?.[0] ?? null;
 
     if (!selectedFile) {
@@ -1029,8 +1226,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
   };
 
   const submitComposer = () => {
-    const body = draft.trim();
-    if ((!body && !pendingFile) || sendMessageMutation.isPending || recordingState !== "idle") {
+    const body = composerText;
+    if (
+      (!body && !pendingFile) ||
+      isComposerSubmitPending ||
+      recordingState !== "idle"
+    ) {
       return;
     }
 
@@ -1041,7 +1242,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
     setLocalTypingState(false);
     setComposerError(null);
-    sendMessageMutation.mutate({ body, file: pendingFile });
+    if (editingMessage) {
+      editMessageMutation.mutate({ messageId: editingMessage.id, body });
+      return;
+    }
+
+    sendMessageMutation.mutate({
+      body,
+      file: pendingFile,
+      replyToMessageId: replyingToMessage?.id ?? null,
+    });
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -1093,6 +1303,102 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     setConfirmingMessage(message);
+  };
+
+  const handleReplyMessage = (message: ChatMessage) => {
+    if (recordingState !== "idle" || isComposerSubmitPending) {
+      return;
+    }
+
+    if (message.isDeleted) {
+      setComposerError("Нельзя ответить на удаленное сообщение.");
+      return;
+    }
+
+    setComposerError(null);
+    setEditingMessage(null);
+    setReplyingToMessage(message);
+    setPendingFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    textareaRef.current?.focus();
+  };
+
+  const handleStartEditingMessage = (message: ChatMessage) => {
+    if (recordingState !== "idle" || isComposerSubmitPending) {
+      return;
+    }
+
+    if (message.senderId !== user?.id || message.isDeleted) {
+      return;
+    }
+
+    setComposerError(null);
+    setReplyingToMessage(null);
+    setEditingMessage(message);
+    setDraft(message.body ?? "");
+    setPendingFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    queueMicrotask(() => textareaRef.current?.focus());
+  };
+
+  const handleStartForwardMessage = (message: ChatMessage) => {
+    if (message.isDeleted) {
+      setComposerError("Удаленное сообщение нельзя переслать.");
+      return;
+    }
+
+    if (!message.body?.trim() && message.attachments.length === 0) {
+      setComposerError("В этом сообщении нечего пересылать.");
+      return;
+    }
+
+    setComposerError(null);
+    setForwardPanelError(null);
+    setForwardSearch("");
+    setForwardingMessage(message);
+  };
+
+  const handleForwardToChat = (targetChatId: string) => {
+    if (!forwardingMessage || forwardMessageMutation.isPending) {
+      return;
+    }
+
+    forwardMessageMutation.mutate({
+      messageId: forwardingMessage.id,
+      targetChatId,
+    });
+  };
+
+  const handleToggleMessageReaction = (
+    message: ChatMessage,
+    emoji: (typeof QUICK_REACTIONS)[number],
+  ) => {
+    if (message.isDeleted || toggleReactionMutation.isPending) {
+      return;
+    }
+
+    toggleReactionMutation.mutate({
+      messageId: message.id,
+      emoji,
+    });
+  };
+
+  const cancelComposerContext = () => {
+    if (editingMessage) {
+      setEditingMessage(null);
+      setDraft("");
+    }
+
+    setReplyingToMessage(null);
+    setPendingFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    setComposerError(null);
   };
 
   const handleToggleGroupMemberRole = (
@@ -1704,6 +2010,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
             normalizedBody.toLocaleLowerCase().includes(normalizedMessageSearchLower);
           const isActiveSearchMatch = activeSearchMessage?.id === message.id;
           const isFocusedFromGlobalSearch = focusedMessageId === message.id;
+          const isEditedMessage = !message.isDeleted && message.updatedAt !== message.createdAt;
+          const messageMetaLabel = `${isEditedMessage ? "изм. " : ""}${formatTime(message.createdAt)}`;
+          const replyToMessage = message.replyTo;
+          const replyPreviewText = getReplyPreviewText(replyToMessage);
           const highlightClassName = isMine
             ? "rounded bg-white px-0.5 text-[#111111]"
             : "rounded bg-[#111111] px-0.5 text-white";
@@ -1713,6 +2023,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
           const compactBubble = inlineMetaBubble;
           const shortTextOnlyBubble =
             inlineMetaBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
+          const currentUserId = user?.id ?? null;
+          const currentUserReaction =
+            currentUserId
+              ? message.reactions.find((reaction) => reaction.userIds.includes(currentUserId))?.emoji ??
+                null
+              : null;
 
           return (
             <div
@@ -1722,102 +2038,225 @@ export function ConversationView({ chatId }: { chatId: string }) {
               data-message-owner={isMine ? "self" : "other"}
               data-message-search-match={isSearchMatch ? "true" : "false"}
               data-message-search-active={isActiveSearchMatch ? "true" : "false"}
+              onMouseLeave={() => {
+                setRecentlyReactedMessageId((current) =>
+                  current === message.id ? null : current,
+                );
+              }}
               className={clsx("group flex w-full", isMine ? "justify-end" : "justify-start")}
             >
               <div
                 className={clsx(
-                  "flex items-start gap-2",
+                  "relative",
                   isMine ? "ml-auto max-w-[85%] sm:max-w-[70%]" : "max-w-[85%] sm:max-w-[70%]",
                 )}
               >
-                {isMine ? (
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteMessage(message)}
-                    data-testid="delete-message-button"
-                    className="mt-1 rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-stone-500 opacity-0 transition hover:border-black/25 hover:text-black group-hover:opacity-100"
+                {!message.isDeleted ? (
+                  <div
+                    className={clsx(
+                      "pointer-events-none absolute top-0 z-20 flex min-w-[120px] flex-col gap-1 rounded-[14px] border border-black/10 bg-white/95 p-1 shadow-[0_12px_28px_rgba(17,24,39,0.12)] backdrop-blur-sm opacity-0 transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+                      isMine ? "right-full mr-2" : "left-full ml-2",
+                    )}
                   >
-                    {deleteMessageMutation.isPending ? "..." : "Удалить"}
-                  </button>
-                ) : null}
-                <div
-                  className={clsx(
-                    "w-fit max-w-full shadow-sm transition-[box-shadow]",
-                    shortTextOnlyBubble
-                      ? "rounded-[13px] px-2.5 py-0.5"
-                      : compactBubble
-                        ? "rounded-[17px] px-2.5 py-1"
-                        : attachmentOnlyBubble
-                          ? "rounded-[20px] px-3 py-[2px]"
-                          : "rounded-[22px] px-4 py-2.5",
-                    isMine
-                      ? "bg-[#111111] text-white"
-                      : "border border-black/8 bg-white text-[#171717]",
-                    isActiveSearchMatch
-                      ? isMine
-                        ? "ring-2 ring-white/75 ring-offset-2 ring-offset-[#111111]"
-                        : "ring-2 ring-black/35 ring-offset-2 ring-offset-white"
-                      : null,
-                    !isActiveSearchMatch && isFocusedFromGlobalSearch
-                      ? isMine
-                        ? "ring-2 ring-white/45 ring-offset-2 ring-offset-[#111111]"
-                        : "ring-2 ring-black/20 ring-offset-2 ring-offset-white"
-                      : null,
-                  )}
-                >
-                  {inlineMetaBubble && message.body ? (
-                    <div
-                      className={clsx(
-                        "grid grid-cols-[minmax(0,1fr)_auto] items-end",
-                        shortTextOnlyBubble ? "gap-x-1" : "gap-x-1.5",
-                      )}
+                    <button
+                      type="button"
+                      onClick={() => handleReplyMessage(message)}
+                      data-testid="reply-message-button"
+                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
                     >
-                      <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
+                      Ответ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleStartForwardMessage(message)}
+                      data-testid="forward-message-button"
+                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                    >
+                      Переслать
+                    </button>
+                    {isMine ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditingMessage(message)}
+                          data-testid="edit-message-button"
+                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                        >
+                          Изменить
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMessage(message)}
+                          data-testid="delete-message-button"
+                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                        >
+                          {deleteMessageMutation.isPending ? "..." : "Удалить"}
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className={clsx("flex max-w-full flex-col gap-1.5", isMine ? "items-end" : "items-start")}>
+                  <div
+                    className={clsx(
+                      "w-fit max-w-full shadow-sm transition-[box-shadow]",
+                      shortTextOnlyBubble
+                        ? "rounded-[13px] px-2.5 py-0.5"
+                        : compactBubble
+                          ? "rounded-[17px] px-2.5 py-1"
+                          : attachmentOnlyBubble
+                            ? "rounded-[20px] px-3 py-[2px]"
+                            : "rounded-[22px] px-4 py-2.5",
+                      isMine
+                        ? "bg-[#111111] text-white"
+                        : "border border-black/8 bg-white text-[#171717]",
+                      isActiveSearchMatch
+                        ? isMine
+                          ? "ring-2 ring-white/75 ring-offset-2 ring-offset-[#111111]"
+                          : "ring-2 ring-black/35 ring-offset-2 ring-offset-white"
+                        : null,
+                      !isActiveSearchMatch && isFocusedFromGlobalSearch
+                        ? isMine
+                          ? "ring-2 ring-white/45 ring-offset-2 ring-offset-[#111111]"
+                          : "ring-2 ring-black/20 ring-offset-2 ring-offset-white"
+                        : null,
+                    )}
+                  >
+                    {replyToMessage ? (
+                      <button
+                        type="button"
+                        onClick={() => focusMessageById(replyToMessage.id, "smooth")}
+                        className={clsx(
+                          "mb-1.5 block w-full rounded-[12px] border px-2.5 py-1.5 text-left transition hover:opacity-90",
+                          isMine
+                            ? "border-white/20 bg-white/10 text-white"
+                            : "border-black/10 bg-black/[0.03] text-stone-700",
+                        )}
+                        data-testid="message-reply-preview"
+                      >
+                        <p
+                          className={clsx(
+                            "truncate text-[10px] uppercase tracking-[0.12em]",
+                            isMine ? "text-white/70" : "text-stone-500",
+                          )}
+                        >
+                          {replyToMessage.sender.displayName}
+                        </p>
+                        <p className="mt-0.5 truncate text-xs">{replyPreviewText}</p>
+                      </button>
+                    ) : null}
+                    {inlineMetaBubble && message.body ? (
+                      <div
+                        className={clsx(
+                          "grid grid-cols-[minmax(0,1fr)_auto] items-end",
+                          shortTextOnlyBubble ? "gap-x-1" : "gap-x-1.5",
+                        )}
+                      >
+                        <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
+                          {renderHighlightedMessageBody(
+                            message.body,
+                            normalizedMessageSearch,
+                            highlightClassName,
+                          )}
+                        </p>
+                        <p
+                          className={clsx(
+                            "shrink-0 self-end pb-0 text-[11px] leading-none",
+                            isMine ? "text-white/62" : "text-stone-400",
+                          )}
+                        >
+                          {messageMetaLabel}
+                        </p>
+                      </div>
+                    ) : null}
+                    {message.body && !inlineMetaBubble ? (
+                      <p className="whitespace-pre-wrap break-words text-sm leading-5">
                         {renderHighlightedMessageBody(
                           message.body,
                           normalizedMessageSearch,
                           highlightClassName,
                         )}
                       </p>
+                    ) : null}
+                    {message.attachments.length > 0 ? (
+                      <MessageAttachments
+                        accessToken={accessToken}
+                        attachments={message.attachments}
+                        isMine={isMine}
+                      />
+                    ) : null}
+                    {!inlineMetaBubble ? (
                       <p
                         className={clsx(
-                          "shrink-0 self-end pb-0 text-[11px] leading-none",
+                          hasText
+                            ? "mt-1 text-right text-[11px] leading-none"
+                            : attachmentOnlyBubble
+                              ? "mt-0 text-right text-[11px] leading-none"
+                              : "mt-1.5 text-right text-[11px] leading-none",
                           isMine ? "text-white/62" : "text-stone-400",
                         )}
                       >
-                        {formatTime(message.createdAt)}
+                        {messageMetaLabel}
                       </p>
+                    ) : null}
+                  </div>
+
+                  {message.reactions.length > 0 ? (
+                    <div className="flex max-w-full flex-wrap gap-1">
+                      {message.reactions.map((reaction) => {
+                        const reactedByCurrentUser =
+                          currentUserId ? reaction.userIds.includes(currentUserId) : false;
+
+                        return (
+                          <button
+                            key={`${message.id}-${reaction.emoji}`}
+                            type="button"
+                            onClick={() =>
+                              handleToggleMessageReaction(
+                                message,
+                                reaction.emoji as (typeof QUICK_REACTIONS)[number],
+                              )
+                            }
+                            className={clsx(
+                              "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
+                              reactedByCurrentUser
+                                ? "border-black bg-black text-white"
+                                : "border-black/10 bg-white text-stone-600 hover:border-black/25 hover:text-black",
+                            )}
+                            data-testid="message-reaction-chip"
+                          >
+                            <span>{reaction.emoji}</span>
+                            <span>{reaction.count}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   ) : null}
-                  {message.body && !inlineMetaBubble ? (
-                    <p className="whitespace-pre-wrap break-words text-sm leading-5">
-                      {renderHighlightedMessageBody(
-                        message.body,
-                        normalizedMessageSearch,
-                        highlightClassName,
-                      )}
-                    </p>
-                  ) : null}
-                  {message.attachments.length > 0 ? (
-                    <MessageAttachments
-                      accessToken={accessToken}
-                      attachments={message.attachments}
-                      isMine={isMine}
-                    />
-                  ) : null}
-                  {!inlineMetaBubble ? (
-                    <p
-                      className={clsx(
-                        hasText
-                          ? "mt-1 text-right text-[11px] leading-none"
-                          : attachmentOnlyBubble
-                            ? "mt-0 text-right text-[11px] leading-none"
-                            : "mt-1.5 text-right text-[11px] leading-none",
-                        isMine ? "text-white/62" : "text-stone-400",
-                      )}
+
+                  {!message.isDeleted && recentlyReactedMessageId !== message.id ? (
+                    <div
+                      className="pointer-events-none flex max-h-0 max-w-full flex-wrap gap-1 overflow-hidden rounded-[14px] border border-black/10 bg-white px-2 py-0 opacity-0 shadow-sm -translate-y-1 transition-all duration-150 ease-out group-hover:pointer-events-auto group-hover:max-h-16 group-hover:translate-y-0 group-hover:py-1.5 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:max-h-16 group-focus-within:translate-y-0 group-focus-within:py-1.5 group-focus-within:opacity-100"
+                      data-testid="message-reaction-picker"
                     >
-                      {formatTime(message.createdAt)}
-                    </p>
+                      {QUICK_REACTIONS.map((emoji) => (
+                        <button
+                          key={`${message.id}-${emoji}-quick-reaction`}
+                          type="button"
+                          onClick={() => handleToggleMessageReaction(message, emoji)}
+                          disabled={toggleReactionMutation.isPending}
+                          className={clsx(
+                            "rounded-full border px-2 py-1 text-sm transition disabled:cursor-not-allowed disabled:opacity-50",
+                            currentUserReaction === emoji
+                              ? "border-black bg-black text-white"
+                              : "border-black/10 bg-white text-stone-700 hover:border-black/25 hover:text-black",
+                          )}
+                          data-testid="quick-reaction-button"
+                          aria-label={`Поставить реакцию ${emoji}`}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
                   ) : null}
                 </div>
               </div>
@@ -1853,6 +2292,39 @@ export function ConversationView({ chatId }: { chatId: string }) {
             data-testid="composer-error"
           >
             {composerError}
+          </div>
+        ) : null}
+
+        {editingMessage || replyingToMessage ? (
+          <div
+            className="mb-3 flex items-start justify-between gap-3 rounded-[18px] border border-black/8 bg-white px-4 py-3"
+            data-testid={editingMessage ? "composer-edit-context" : "composer-reply-context"}
+          >
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-[0.14em] text-stone-500">
+                {editingMessage
+                  ? "Редактирование сообщения"
+                  : `Ответ: ${replyingToMessage?.sender.displayName ?? "Сообщение"}`}
+              </p>
+              <button
+                type="button"
+                onClick={() =>
+                  focusMessageById(editingMessage?.id ?? replyingToMessage?.id ?? "", "smooth")
+                }
+                className="mt-1 block max-w-full truncate text-left text-sm text-[#171717] hover:underline"
+              >
+                {editingMessage
+                  ? getReplyPreviewText(editingMessage)
+                  : getReplyPreviewText(replyingToMessage)}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={cancelComposerContext}
+              className="shrink-0 rounded-full border border-black/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-600 transition hover:border-black/25 hover:text-black"
+            >
+              Отмена
+            </button>
           </div>
         ) : null}
 
@@ -1922,7 +2394,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={recordingState !== "idle"}
+              disabled={recordingState !== "idle" || isEditingMessage || isComposerSubmitPending}
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-black/10 bg-[#f7f7f5] text-stone-500 transition hover:border-black/25 hover:bg-white hover:text-black"
               data-testid="attachment-picker-button"
               aria-label="Прикрепить файл"
@@ -1946,8 +2418,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 maxLength={MESSAGE_MAX_LENGTH}
-                disabled={recordingState !== "idle"}
-                placeholder="Сообщение..."
+                disabled={recordingState !== "idle" || isComposerSubmitPending}
+                placeholder={isEditingMessage ? "Измените сообщение..." : "Сообщение..."}
                 className="h-[42px] min-h-[42px] max-h-[200px] w-full resize-none overflow-y-hidden border border-transparent bg-transparent px-1 pb-0 pt-[6px] leading-[28px] text-[#171717] outline-none transition placeholder:text-stone-400 disabled:cursor-not-allowed disabled:opacity-45"
               />
 
@@ -1973,18 +2445,18 @@ export function ConversationView({ chatId }: { chatId: string }) {
               onClick={composerActionMode === "voice" ? startVoiceRecording : undefined}
               disabled={
                 composerActionMode === "send"
-                  ? sendMessageMutation.isPending || !hasComposerContent
+                  ? isComposerSubmitPending || !hasComposerContent
                   : recordingState !== "idle"
               }
               tabIndex={showComposerAction ? 0 : -1}
               aria-label={
                 composerActionMode === "send"
-                  ? "Отправить сообщение"
+                  ? submitButtonLabel
                   : "Записать голосовое сообщение"
               }
               title={
                 composerActionMode === "send"
-                  ? "Отправить сообщение"
+                  ? submitButtonLabel
                   : "Записать голосовое сообщение"
               }
               className={clsx(
@@ -2015,7 +2487,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       : "pointer-events-none opacity-0 scale-[0.52] rotate-[-16deg]",
                   )}
                 >
-                  {sendMessageMutation.isPending ? (
+                  {isComposerSubmitPending ? (
                     <span className="text-sm font-semibold leading-none">...</span>
                   ) : (
                     <SendIcon className="h-5 w-5" />
@@ -2026,6 +2498,91 @@ export function ConversationView({ chatId }: { chatId: string }) {
           </div>
         </div>
       </form>
+
+      {forwardingMessage ? (
+        <div
+          className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[3px]"
+          onClick={() => {
+            if (!forwardMessageMutation.isPending) {
+              setForwardingMessage(null);
+              setForwardPanelError(null);
+            }
+          }}
+          data-testid="forward-message-modal"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="forward-message-title"
+            className="w-full max-w-[470px] rounded-[22px] border border-black/10 bg-white p-4 shadow-[0_22px_52px_rgba(17,24,39,0.22)] sm:p-5"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="forward-message-title" className="text-lg font-semibold tracking-tight text-[#171717]">
+              Переслать сообщение
+            </h3>
+            <p className="mt-1 text-sm text-stone-500">
+              {getReplyPreviewText(forwardingMessage)}
+            </p>
+
+            <input
+              value={forwardSearch}
+              onChange={(event) => setForwardSearch(event.target.value)}
+              placeholder="Поиск чата для пересылки"
+              className="mt-3 w-full rounded-[14px] border border-black/10 bg-[#f7f7f5] px-3 py-2 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+              data-testid="forward-search-input"
+            />
+
+            {forwardPanelError ? (
+              <p className="mt-3 rounded-[12px] border border-black/10 bg-black px-3 py-2 text-xs text-white">
+                {forwardPanelError}
+              </p>
+            ) : null}
+
+            <div className="scroll-region-y mt-3 max-h-64 space-y-1.5 overflow-y-auto rounded-[14px] border border-black/8 bg-[#fafaf9] p-1.5">
+              {chatsQuery.isLoading ? (
+                <p className="px-2 py-2 text-sm text-stone-500">Загружаем чаты...</p>
+              ) : forwardCandidates.length > 0 ? (
+                forwardCandidates.map((candidate) => (
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    onClick={() => handleForwardToChat(candidate.id)}
+                    disabled={forwardMessageMutation.isPending}
+                    className="flex w-full items-center justify-between gap-3 rounded-[12px] border border-transparent px-3 py-2.5 text-left transition hover:border-black/10 hover:bg-white disabled:cursor-not-allowed disabled:opacity-55"
+                    data-testid="forward-target-chat"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-[#171717]">{candidate.title}</p>
+                      <p className="truncate text-xs text-stone-500">{candidate.lastMessagePreview}</p>
+                    </div>
+                    <span className="shrink-0 rounded-full border border-black/10 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-500">
+                      {candidate.isCurrentChat ? "Текущий" : candidate.type === "group" ? "Группа" : "Личный"}
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <p className="px-2 py-2 text-sm text-stone-500">Подходящих чатов не найдено.</p>
+              )}
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!forwardMessageMutation.isPending) {
+                    setForwardingMessage(null);
+                    setForwardPanelError(null);
+                  }
+                }}
+                disabled={forwardMessageMutation.isPending}
+                className="rounded-full border border-black/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <ConfirmDialog
         open={Boolean(confirmingMessage)}
@@ -2507,6 +3064,20 @@ function formatGroupRole(role: ChatMemberRole) {
     default:
       return "member";
   }
+}
+
+function getReplyPreviewText(
+  message:
+    | {
+        body: string | null;
+        isDeleted?: boolean;
+        deletedAt?: string | null;
+        attachments?: Array<{ originalName: string; mimeType?: string | null }>;
+      }
+    | null
+    | undefined,
+) {
+  return getLastMessagePreviewText(message);
 }
 
 function formatRecordingDuration(seconds: number) {

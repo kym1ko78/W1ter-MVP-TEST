@@ -1451,7 +1451,7 @@ export class ChatService {
       title: chat.type === ChatType.GROUP ? chat.title : null,
       updatedAt: chat.updatedAt.toISOString(),
       unreadCount,
-      currentUserRole: this.toChatMemberRole(currentMembership?.role ?? ChatMemberRole.MEMBER),
+      currentUserRole: this.toChatMemberRole((currentMembership?.role ?? "MEMBER") as ChatMemberRole),
       members: chat.members.map((member) => this.toSafeUser(member.user)),
       lastMessage: latestVisibleMessage ? this.toMessagePreview(latestVisibleMessage) : null,
     };
