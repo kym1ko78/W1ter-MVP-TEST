@@ -156,6 +156,18 @@ export function getLastMessagePreviewText(
       return "Голосовое сообщение";
     }
 
+    if (firstAttachment.mimeType?.startsWith("video/")) {
+      return "Видео";
+    }
+
+    if (firstAttachment.mimeType === "application/pdf") {
+      return "PDF документ";
+    }
+
+    if (firstAttachment.mimeType?.startsWith("text/")) {
+      return "Текстовый файл";
+    }
+
     return `Вложение: ${firstAttachment.originalName}`;
   }
 

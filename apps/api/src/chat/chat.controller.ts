@@ -9,6 +9,7 @@ import {
   Put,
   Query,
   UploadedFile,
+  UseFilters,
   UseGuards,
   UseInterceptors,
 } from "@nestjs/common";
@@ -29,6 +30,8 @@ import { ToggleMessageReactionDto } from "./dto/toggle-message-reaction.dto";
 import { UpdateChatMemberRoleDto } from "./dto/update-chat-member-role.dto";
 import { UpdateMessageDto } from "./dto/update-message.dto";
 import { UploadAttachmentDto } from "./dto/upload-attachment.dto";
+import { ATTACHMENT_MAX_BYTES } from "./attachment-rules";
+import { MulterExceptionFilter } from "./multer-exception.filter";
 
 type UploadedAttachmentFile = {
   buffer: Buffer;
@@ -209,7 +212,14 @@ export class ChatController {
     scope: "user",
   })
   @Post(":chatId/attachments")
-  @UseInterceptors(FileInterceptor("file"))
+  @UseFilters(new MulterExceptionFilter())
+  @UseInterceptors(
+    FileInterceptor("file", {
+      limits: {
+        fileSize: ATTACHMENT_MAX_BYTES,
+      },
+    }),
+  )
   async uploadAttachment(
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,

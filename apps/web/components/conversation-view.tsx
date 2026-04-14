@@ -17,6 +17,14 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { readJson, useAuth } from "../lib/auth-context";
 import {
+  ATTACHMENT_ACCEPT,
+  ATTACHMENT_MAX_MB,
+  getAttachmentKind,
+  getAttachmentTypeLabel,
+  validateAttachmentFile,
+} from "../lib/attachment-rules";
+import { useRealtime } from "../lib/realtime-context";
+import {
   appendMessageUnique,
   dedupeMessages,
   normalizeMessagePage,
@@ -47,29 +55,6 @@ import { UserAvatar } from "./user-avatar";
 const MESSAGE_MAX_LENGTH = 4000;
 const COMPOSER_MIN_HEIGHT = 56;
 const COMPOSER_MAX_HEIGHT = 200;
-const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
-const ATTACHMENT_ACCEPT = [
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "application/pdf",
-  "text/plain",
-  "audio/webm",
-  "audio/ogg",
-  "audio/mp4",
-  "audio/mpeg",
-].join(",");
-const ATTACHMENT_ALLOWED_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "application/pdf",
-  "text/plain",
-  "audio/webm",
-  "audio/ogg",
-  "audio/mp4",
-  "audio/mpeg",
-]);
 const VOICE_RECORDER_MIME_TYPE = "audio/webm";
 const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
 const SCROLL_BOTTOM_THRESHOLD = 180;
@@ -115,6 +100,14 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const { accessToken, authorizedFetch, isAuthenticated, user } = useAuth();
+  const {
+    connectionState,
+    isOffline,
+    statusesMayBeStale,
+    isUserOnline,
+    isUserTyping,
+    updateTyping,
+  } = useRealtime();
   const [draft, setDraft] = useState("");
   const [messageSearch, setMessageSearch] = useState("");
   const [showGroupMembersPanel, setShowGroupMembersPanel] = useState(false);
@@ -163,6 +156,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const recordedChunksRef = useRef<BlobPart[]>([]);
   const prefilledSearchQueryRef = useRef<string | null>(null);
   const focusedFromSearchParamRef = useRef<string | null>(null);
+  const typingStopTimeoutRef = useRef<number | null>(null);
+  const isLocalUserTypingRef = useRef(false);
 
   const chatQuery = useQuery({
     queryKey: ["chat", chatId],
@@ -318,6 +313,18 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
     shouldStickToBottomRef.current = distanceToBottom <= SCROLL_BOTTOM_THRESHOLD;
   }, []);
+
+  const setLocalTypingState = useCallback(
+    (nextValue: boolean) => {
+      if (isLocalUserTypingRef.current === nextValue) {
+        return;
+      }
+
+      isLocalUserTypingRef.current = nextValue;
+      updateTyping(chatId, nextValue);
+    },
+    [chatId, updateTyping],
+  );
 
   const sendMessageMutation = useMutation({
     mutationFn: async ({ body, file, replyToMessageId }: ComposerPayload) => {
@@ -600,6 +607,44 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, [draft]);
 
   useEffect(() => {
+    const hasTypingSignal = recordingState === "idle" && draft.trim().length > 0;
+
+    if (!hasTypingSignal) {
+      if (typingStopTimeoutRef.current !== null) {
+        window.clearTimeout(typingStopTimeoutRef.current);
+        typingStopTimeoutRef.current = null;
+      }
+
+      setLocalTypingState(false);
+      return;
+    }
+
+    setLocalTypingState(true);
+
+    if (typingStopTimeoutRef.current !== null) {
+      window.clearTimeout(typingStopTimeoutRef.current);
+    }
+
+    typingStopTimeoutRef.current = window.setTimeout(() => {
+      typingStopTimeoutRef.current = null;
+      setLocalTypingState(false);
+    }, 1_800);
+  }, [draft, recordingState, setLocalTypingState]);
+
+  useEffect(
+    () => () => {
+      if (typingStopTimeoutRef.current !== null) {
+        window.clearTimeout(typingStopTimeoutRef.current);
+        typingStopTimeoutRef.current = null;
+      }
+
+      setLocalTypingState(false);
+      isLocalUserTypingRef.current = false;
+    },
+    [setLocalTypingState],
+  );
+
+  useEffect(() => {
     const lastMessage = messageItems[messageItems.length - 1];
 
     if (!lastMessage || lastMessage.senderId === user?.id || lastMessage.isDeleted) {
@@ -689,6 +734,15 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
     return () => window.clearTimeout(timeoutId);
   }, [headerStatusMessage]);
+
+  useEffect(() => {
+    const handleWindowBlur = () => {
+      setLocalTypingState(false);
+    };
+
+    window.addEventListener("blur", handleWindowBlur);
+    return () => window.removeEventListener("blur", handleWindowBlur);
+  }, [setLocalTypingState]);
 
   useEffect(() => {
     if (!showConversationMenu && !showConversationProfile) {
@@ -856,6 +910,52 @@ export function ConversationView({ chatId }: { chatId: string }) {
     [existingGroupMemberIds, groupUsersSearchQuery.data, user?.id],
   );
   const groupMembersCount = groupMembersQuery.data?.members.length ?? chatMembers.length;
+  const onlineGroupMembersCount = chatMembers.filter(
+    (member) => member.id !== user?.id && isUserOnline(member.id),
+  ).length;
+  const typingGroupMembers = chatMembers.filter(
+    (member) => member.id !== user?.id && isUserTyping(chatId, member.id),
+  );
+  const isDirectUserOnline = Boolean(otherUser?.id && isUserOnline(otherUser.id));
+  const isDirectUserTyping = Boolean(otherUser?.id && isUserTyping(chatId, otherUser.id));
+  const directStatusText = isDirectUserTyping
+    ? "Печатает..."
+    : isDirectUserOnline
+      ? "В сети"
+      : otherUser?.lastSeenAt
+        ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
+        : statusesMayBeStale
+          ? "Статус может быть устаревшим"
+          : "Личный чат";
+  const groupStatusText = typingGroupMembers.length
+    ? typingGroupMembers.length === 1
+      ? `${typingGroupMembers[0]?.displayName ?? "Кто-то"} печатает...`
+      : `${typingGroupMembers.length} печатают...`
+    : `${groupMembersCount} участников${onlineGroupMembersCount > 0 ? ` · ${onlineGroupMembersCount} онлайн` : ""}`;
+  const profileSummaryStatus = isGroupChat ? groupStatusText : directStatusText;
+  const realtimeStateCopy = isOffline
+    ? "Оффлайн. Соединение восстановится автоматически."
+    : connectionState === "connected"
+      ? null
+      : connectionState === "connecting"
+        ? "Подключаемся к realtime..."
+        : "Связь потеряна. Статусы могут быть устаревшими.";
+  const typingIndicatorLabel = isGroupChat
+    ? typingGroupMembers.length === 1
+      ? `${typingGroupMembers[0]?.displayName ?? "Кто-то"} печатает...`
+      : typingGroupMembers.length > 1
+        ? `${typingGroupMembers.length} печатают...`
+        : null
+    : isDirectUserTyping
+      ? `${otherUser?.displayName ?? "Собеседник"} печатает...`
+      : null;
+  const pendingAttachmentTypeLabel = pendingFile
+    ? getAttachmentTypeLabel({
+        mimeType: pendingFile.type,
+        isImage: pendingFile.type.startsWith("image/"),
+        originalName: pendingFile.name,
+      })
+    : null;
   const isEditingMessage = Boolean(editingMessage);
   const composerText = draft.trim();
   const isComposerSubmitPending = sendMessageMutation.isPending || editMessageMutation.isPending;
@@ -891,6 +991,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     ? [
         { label: "Тип", value: "Групповой чат" },
         { label: "Участники", value: String(groupMembersCount) },
+        { label: "Онлайн", value: String(onlineGroupMembersCount) },
         {
           label: "Ваша роль",
           value: formatGroupRole(chatQuery.data?.currentUserRole ?? "member"),
@@ -900,15 +1001,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
         { label: "Email", value: conversationProfileUser.email },
         {
           label: "Статус",
-          value: otherUser?.lastSeenAt
-            ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
-            : "Личный чат",
+          value: directStatusText,
         },
         {
           label: "Последняя активность",
-          value: otherUser?.lastSeenAt
-            ? formatTime(otherUser.lastSeenAt)
-            : "Сейчас недоступно",
+          value: isDirectUserOnline
+            ? "Сейчас в сети"
+            : otherUser?.lastSeenAt
+              ? formatTime(otherUser.lastSeenAt)
+              : statusesMayBeStale
+                ? "Данные могут быть устаревшими"
+                : "Сейчас недоступно",
         },
       ];
   const visibleGroupMembers = groupMembersQuery.data?.members ?? [];
@@ -944,6 +1047,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     try {
+      setLocalTypingState(false);
       setComposerError(null);
       setPendingFile(null);
       if (fileInputRef.current) {
@@ -995,7 +1099,13 @@ export function ConversationView({ chatId }: { chatId: string }) {
           : "Не удалось получить доступ к микрофону.",
       );
     }
-  }, [isComposerSubmitPending, isEditingMessage, recordingState, stopMediaStream]);
+  }, [
+    isComposerSubmitPending,
+    isEditingMessage,
+    recordingState,
+    setLocalTypingState,
+    stopMediaStream,
+  ]);
 
   const finishVoiceRecording = useCallback(
     (shouldSend: boolean) => {
@@ -1094,14 +1204,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    if (!ATTACHMENT_ALLOWED_TYPES.has(selectedFile.type)) {
-      setComposerError("Поддерживаются PNG, JPEG, WEBP, PDF, TXT и аудио WEBM/OGG/MP4/MP3.");
-      event.target.value = "";
-      return;
-    }
-
-    if (selectedFile.size > ATTACHMENT_MAX_BYTES) {
-      setComposerError("Размер файла не должен превышать 10 MB.");
+    const validation = validateAttachmentFile(selectedFile);
+    if (!validation.isValid) {
+      setComposerError(validation.error);
       event.target.value = "";
       return;
     }
@@ -1132,6 +1237,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setLocalTypingState(false);
     setComposerError(null);
     if (editingMessage) {
       editMessageMutation.mutate({ messageId: editingMessage.id, body });
@@ -1320,12 +1426,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     return member.role !== "admin";
   };
 
-  const profileSummaryStatus = isGroupChat
-    ? `${groupMembersCount} участников`
-    : otherUser?.lastSeenAt
-      ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
-      : "Личный чат";
-
   const handleConversationCall = () => {
     setHeaderStatusMessage("Звонки добавим следующим шагом.");
     setShowConversationMenu(false);
@@ -1378,6 +1478,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
           >
             {profileSummaryStatus}
           </p>
+          {realtimeStateCopy ? (
+            <p className="mt-1 text-xs text-stone-500">{realtimeStateCopy}</p>
+          ) : null}
           {headerStatusMessage ? (
             <p className="mt-2 text-xs font-medium text-stone-500">{headerStatusMessage}</p>
           ) : null}
@@ -2157,6 +2260,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
             </div>
           );
         })}
+        {typingIndicatorLabel ? (
+          <div
+            className="flex justify-start"
+            data-testid="typing-indicator"
+          >
+            <div className="rounded-[16px] border border-black/8 bg-white px-3 py-1.5 text-xs text-stone-500 shadow-sm">
+              {typingIndicatorLabel}
+            </div>
+          </div>
+        ) : null}
         <div ref={messageListEndRef} aria-hidden="true" />
       </div>
 
@@ -2219,7 +2332,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
           >
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-[#171717]">{pendingFile.name}</p>
-              <p className="text-xs text-stone-500">{formatFileSize(pendingFile.size)}</p>
+              <p className="text-xs text-stone-500">
+                {pendingAttachmentTypeLabel ?? "Файл"} · {formatFileSize(pendingFile.size)} · до {ATTACHMENT_MAX_MB} MB
+              </p>
             </div>
             <button
               type="button"
@@ -2296,6 +2411,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     setComposerError(null);
                   }
                 }}
+                onBlur={() => setLocalTypingState(false)}
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 maxLength={MESSAGE_MAX_LENGTH}
@@ -2535,16 +2651,16 @@ function MessageAttachments({
     <div className={clsx("space-y-2", attachments.length > 0 && "mt-1")}>
       {attachments.map((attachment) => {
         const downloadUrl = buildAttachmentUrl(attachment.downloadPath, accessToken);
-        const isAudio = attachment.mimeType.startsWith("audio/");
+        const kind = getAttachmentKind(attachment);
 
-        if (attachment.isImage) {
+        if (kind === "image") {
           return (
             <a
               key={attachment.id}
               href={downloadUrl}
               target="_blank"
               rel="noreferrer"
-              className="block overflow-hidden rounded-[18px] border border-black/10 bg-black/5"
+              className="group/image relative block overflow-hidden rounded-[18px] border border-black/10 bg-black/5"
               data-testid="message-attachment"
             >
               <img
@@ -2555,8 +2671,10 @@ function MessageAttachments({
               />
               <div
                 className={clsx(
-                  "flex items-center justify-between gap-3 px-3 py-2 text-xs",
-                  isMine ? "bg-white/8 text-white/85" : "bg-stone-50 text-stone-600",
+                  "pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 px-3 py-2 text-xs opacity-0 transition duration-200 group-hover/image:opacity-100 group-focus-visible/image:opacity-100",
+                  isMine
+                    ? "bg-gradient-to-t from-black/70 to-black/20 text-white"
+                    : "bg-gradient-to-t from-black/62 to-black/18 text-white",
                 )}
               >
                 <span className="truncate">{attachment.originalName}</span>
@@ -2566,9 +2684,31 @@ function MessageAttachments({
           );
         }
 
-        if (isAudio) {
+        if (kind === "audio") {
           return (
             <VoiceMessageAttachment
+              key={attachment.id}
+              attachment={attachment}
+              downloadUrl={downloadUrl}
+              isMine={isMine}
+            />
+          );
+        }
+
+        if (kind === "video") {
+          return (
+            <VideoMessageAttachment
+              key={attachment.id}
+              attachment={attachment}
+              downloadUrl={downloadUrl}
+              isMine={isMine}
+            />
+          );
+        }
+
+        if (kind === "pdf") {
+          return (
+            <PdfMessageAttachment
               key={attachment.id}
               attachment={attachment}
               downloadUrl={downloadUrl}
@@ -2594,13 +2734,97 @@ function MessageAttachments({
             <div className="min-w-0">
               <p className="truncate font-semibold">{attachment.originalName}</p>
               <p className={clsx("text-xs", isMine ? "text-white/75" : "text-stone-500")}>
-                {attachment.mimeType} · {formatFileSize(attachment.sizeBytes)}
+                {getAttachmentTypeLabel(attachment)} · {formatFileSize(attachment.sizeBytes)}
               </p>
             </div>
             <span className="shrink-0 text-xs uppercase tracking-[0.16em]">Open</span>
           </a>
         );
       })}
+    </div>
+  );
+}
+
+function VideoMessageAttachment({
+  attachment,
+  downloadUrl,
+  isMine,
+}: {
+  attachment: ChatAttachment;
+  downloadUrl: string;
+  isMine: boolean;
+}) {
+  return (
+    <div
+      className={clsx(
+        "overflow-hidden rounded-[18px] border",
+        isMine ? "border-white/12 bg-black/30 text-white" : "border-black/10 bg-white text-[#171717]",
+      )}
+      data-testid="message-attachment"
+    >
+      <video
+        controls
+        preload="metadata"
+        src={downloadUrl}
+        className="max-h-80 w-full bg-black object-contain"
+      >
+        <a href={downloadUrl} target="_blank" rel="noreferrer">
+          Открыть видео
+        </a>
+      </video>
+      <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+        <span className="min-w-0 truncate">{attachment.originalName}</span>
+        <span className={clsx("shrink-0", isMine ? "text-white/80" : "text-stone-500")}>
+          {formatFileSize(attachment.sizeBytes)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function PdfMessageAttachment({
+  attachment,
+  downloadUrl,
+  isMine,
+}: {
+  attachment: ChatAttachment;
+  downloadUrl: string;
+  isMine: boolean;
+}) {
+  return (
+    <div
+      className={clsx(
+        "overflow-hidden rounded-[18px] border",
+        isMine ? "border-white/12 bg-black/30 text-white" : "border-black/10 bg-white text-[#171717]",
+      )}
+      data-testid="message-attachment"
+    >
+      <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{attachment.originalName}</p>
+          <p className={clsx("mt-0.5", isMine ? "text-white/75" : "text-stone-500")}>
+            PDF · {formatFileSize(attachment.sizeBytes)}
+          </p>
+        </div>
+        <a
+          href={downloadUrl}
+          target="_blank"
+          rel="noreferrer"
+          className={clsx(
+            "shrink-0 rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] transition",
+            isMine
+              ? "border-white/25 text-white hover:border-white/45"
+              : "border-black/15 text-stone-600 hover:border-black/35 hover:text-black",
+          )}
+        >
+          Open
+        </a>
+      </div>
+      <iframe
+        src={`${downloadUrl}#toolbar=0&navpanes=0`}
+        title={attachment.originalName}
+        className="h-56 w-full bg-white"
+      />
     </div>
   );
 }

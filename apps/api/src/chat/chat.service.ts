@@ -13,23 +13,16 @@ import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
+import {
+  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_MAX_MB,
+  getAttachmentStorageExtension,
+  getAttachmentValidationMessage,
+  resolveAttachmentMimeType,
+} from "./attachment-rules";
 import { CreateDirectChatDto } from "./dto/create-direct-chat.dto";
 import { CreateGroupChatDto } from "./dto/create-group-chat.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
-
-const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
-const ATTACHMENT_ALLOWED_MIME_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "application/pdf",
-  "text/plain",
-  "audio/webm",
-  "audio/ogg",
-  "audio/ogg;codecs=opus",
-  "audio/mp4",
-  "audio/mpeg",
-]);
 const REACTION_EMOJIS = new Set(["👍", "❤️", "😂", "🔥", "😮", "😢"]);
 
 type UploadedAttachmentFile = {
@@ -1038,20 +1031,22 @@ export class ChatService {
 
     const trimmedBody = body?.trim() ?? "";
     const replyToMessage = await this.resolveReplyTarget(chatId, replyToMessageId);
-    const mimeType = uploadedFile.mimetype || "application/octet-stream";
+    const mimeType = resolveAttachmentMimeType(uploadedFile.mimetype, uploadedFile.originalname);
 
-    if (!ATTACHMENT_ALLOWED_MIME_TYPES.has(mimeType)) {
+    if (!mimeType) {
       throw new BadRequestException(
-        "Поддерживаются PNG, JPEG, WEBP, PDF, TXT и аудиофайлы WEBM/OGG/MP4/MP3.",
+        getAttachmentValidationMessage(),
       );
     }
 
     if (uploadedFile.size > ATTACHMENT_MAX_BYTES) {
-      throw new BadRequestException("Размер файла не должен превышать 10 MB.");
+      throw new BadRequestException(`Размер файла не должен превышать ${ATTACHMENT_MAX_MB} MB.`);
     }
 
     const originalName = this.sanitizeOriginalName(uploadedFile.originalname);
-    const storageKey = `${randomUUID()}${extname(originalName).slice(0, 24)}`;
+    const sourceExtension = extname(originalName).slice(0, 24);
+    const extension = sourceExtension || getAttachmentStorageExtension(mimeType);
+    const storageKey = `${randomUUID()}${extension}`;
     const uploadsDir = this.getUploadsDirectory();
     const absolutePath = join(uploadsDir, storageKey);
 

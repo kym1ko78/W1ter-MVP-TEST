@@ -28,5 +28,15 @@ export class PresenceService {
 
     return true;
   }
-}
 
+  isOnline(userId: string) {
+    return (this.connections.get(userId)?.size ?? 0) > 0;
+  }
+
+  getStatuses(userIds: string[]) {
+    return userIds.map((userId) => ({
+      userId,
+      isOnline: this.isOnline(userId),
+    }));
+  }
+}
