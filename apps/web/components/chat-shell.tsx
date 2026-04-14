@@ -116,7 +116,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     chatId: string;
     mode: ChatActionMode;
   } | null>(null);
-<<<<<<< HEAD
   const [connectionState, setConnectionState] = useState<RealtimeConnectionState>("disconnected");
   const [isOffline, setIsOffline] = useState(false);
   const [onlineUserIds, setOnlineUserIds] = useState<Record<string, true>>({});
@@ -125,11 +124,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     useState<NotificationPermissionState>("unsupported");
   const [notificationsEnabled, setNotificationsEnabledState] = useState(false);
   const notifiedMessageIdsRef = useRef<string[]>([]);
-  const currentChatIdRef = useRef<string | null>(null);
   const localTypingByChatRef = useRef<Map<string, boolean>>(new Map());
-  const deferredSearch = useDeferredValue(search);
-=======
->>>>>>> origin/main
   const deferredGroupSearch = useDeferredValue(groupSearch);
   const deferredGlobalSearch = useDeferredValue(globalSearch);
   const normalizedGroupSearch = deferredGroupSearch.trim();
@@ -143,7 +138,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
     return null;
   }, [safePathname]);
-<<<<<<< HEAD
+  const currentChatIdRef = useRef<string | null>(currentChatId);
   const notificationsSupported =
     typeof window !== "undefined" && typeof window.Notification !== "undefined";
   const statusesMayBeStale = connectionState !== "connected";
@@ -249,11 +244,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     } else {
       localTypingByChatRef.current.delete(chatId);
     }
+
     socketRef.current?.emit("typing:update", { chatId, isTyping: nextValue });
   }, []);
-=======
-  const currentChatIdRef = useRef<string | null>(currentChatId);
->>>>>>> origin/main
 
   const chatsQuery = useQuery({
     queryKey: ["chats"],
@@ -497,7 +490,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }, [currentChatId]);
 
   useEffect(() => {
-<<<<<<< HEAD
     if (typeof window === "undefined") {
       return;
     }
@@ -564,8 +556,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-=======
->>>>>>> origin/main
     if (!accessToken || socketRef.current) {
       return;
     }
@@ -579,26 +569,8 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       },
     });
 
-<<<<<<< HEAD
-    socket.on("connect", () => {
-      setConnectionState("connected");
-    });
-
-    socket.on("disconnect", () => {
-      setConnectionState("disconnected");
-    });
-
-    socket.on("connect_error", () => {
-      setConnectionState("disconnected");
-    });
-
-    socket.io.on("reconnect_attempt", () => {
-      setConnectionState("connecting");
-    });
-
-    socket.on("message:new", (message: ChatMessage) => {
-=======
     const handleConnect = () => {
+      setConnectionState("connected");
       const chatId = currentChatIdRef.current;
 
       if (!chatId) {
@@ -609,19 +581,18 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     };
 
     const handleMessageNew = (message: ChatMessage) => {
->>>>>>> origin/main
       queryClient.setQueryData<MessagePage>(["messages", message.chatId], (old) =>
         appendMessageUnique(old, message),
       );
 
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", message.chatId] });
-<<<<<<< HEAD
 
       if (
         message.senderId === user?.id ||
         notificationPermission !== "granted" ||
-        !notificationsEnabled
+        !notificationsEnabled ||
+        typeof document === "undefined"
       ) {
         return;
       }
@@ -661,10 +632,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       } catch {
         setNotificationsEnabled(false);
       }
-    });
-=======
     };
->>>>>>> origin/main
 
     const handleMessageUpdated = (message: ChatMessage) => {
       queryClient.setQueryData<MessagePage>(["messages", message.chatId], (old) =>
@@ -696,8 +664,19 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
     };
 
-<<<<<<< HEAD
-    socket.on("presence:changed", (payload: PresenceChangedPayload) => {
+    const handleDisconnect = () => {
+      setConnectionState("disconnected");
+    };
+
+    const handleConnectError = () => {
+      setConnectionState("disconnected");
+    };
+
+    const handleReconnectAttempt = () => {
+      setConnectionState("connecting");
+    };
+
+    const handlePresenceChanged = (payload: PresenceChangedPayload) => {
       if (payload?.userId) {
         updateOnlineUsers(payload.userId, Boolean(payload.isOnline));
       }
@@ -706,9 +685,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       if (currentChatIdRef.current) {
         void queryClient.invalidateQueries({ queryKey: ["chat", currentChatIdRef.current] });
       }
-    });
+    };
 
-    socket.on("typing:changed", (payload: TypingChangedPayload) => {
+    const handleTypingChanged = (payload: TypingChangedPayload) => {
       if (!payload?.chatId || !payload?.userId) {
         return;
       }
@@ -736,28 +715,23 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
         return next;
       });
-    });
-=======
-    const handlePresenceChanged = () => {
-      void queryClient.invalidateQueries({ queryKey: ["chats"] });
-      if (currentChatIdRef.current) {
-        void queryClient.invalidateQueries({ queryKey: ["chat", currentChatIdRef.current] });
-      }
     };
 
     socket.on("connect", handleConnect);
+    socket.on("disconnect", handleDisconnect);
+    socket.on("connect_error", handleConnectError);
     socket.on("message:new", handleMessageNew);
     socket.on("message:updated", handleMessageUpdated);
     socket.on("chat:updated", handleChatUpdated);
     socket.on("chat:deleted", handleChatDeleted);
     socket.on("chat:read", handleChatRead);
     socket.on("presence:changed", handlePresenceChanged);
->>>>>>> origin/main
+    socket.on("typing:changed", handleTypingChanged);
+    socket.io.on("reconnect_attempt", handleReconnectAttempt);
 
     socketRef.current = socket;
 
     return () => {
-<<<<<<< HEAD
       for (const [chatId, isTyping] of localTypingByChatRef.current.entries()) {
         if (isTyping) {
           socket.emit("typing:update", { chatId, isTyping: false });
@@ -765,15 +739,17 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       }
 
       localTypingByChatRef.current.clear();
-      socket.disconnect();
-=======
       socket.off("connect", handleConnect);
+      socket.off("disconnect", handleDisconnect);
+      socket.off("connect_error", handleConnectError);
       socket.off("message:new", handleMessageNew);
       socket.off("message:updated", handleMessageUpdated);
       socket.off("chat:updated", handleChatUpdated);
       socket.off("chat:deleted", handleChatDeleted);
       socket.off("chat:read", handleChatRead);
       socket.off("presence:changed", handlePresenceChanged);
+      socket.off("typing:changed", handleTypingChanged);
+      socket.io.off("reconnect_attempt", handleReconnectAttempt);
       socket.io.opts.reconnection = false;
 
       if (socket.connected) {
@@ -784,11 +760,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
         });
       }
 
->>>>>>> origin/main
       socketRef.current = null;
       setConnectionState("disconnected");
     };
-<<<<<<< HEAD
   }, [
     accessToken,
     markMessageAsNotified,
@@ -800,12 +774,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     updateOnlineUsers,
     user?.id,
   ]);
-=======
-  }, [accessToken, queryClient, router]);
->>>>>>> origin/main
 
   useEffect(() => {
-    if (!currentChatId || !socketRef.current || !socketRef.current.connected) {
+    if (!currentChatId || !socketRef.current || connectionState !== "connected") {
       return;
     }
 
@@ -992,11 +963,8 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-<<<<<<< HEAD
     <RealtimeContext.Provider value={realtimeContextValue}>
-      <main className="chat-scene grain h-[100dvh] overflow-hidden" data-testid="chat-shell">
-=======
-    <main className="chat-scene grain relative h-[100dvh] overflow-hidden" data-testid="chat-shell">
+      <main className="chat-scene grain relative h-[100dvh] overflow-hidden" data-testid="chat-shell">
       <div
         className={clsx(
           "pointer-events-none absolute inset-0 z-20 bg-black/18 transition-opacity duration-300",
@@ -1209,7 +1177,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
         </div>
       </div>
 
->>>>>>> origin/main
       <div className="grid h-full min-h-0 grid-rows-[360px_minmax(0,1fr)] gap-0 lg:grid-cols-[380px_minmax(0,1fr)] lg:grid-rows-1">
         <aside
           className="chat-shell-panel flex min-h-0 flex-col overflow-hidden rounded-none border-0 border-r border-black/8 p-4 sm:p-5"
@@ -1448,46 +1415,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                   <SidebarSkeleton />
                 </>
               ) : chatsQuery.data?.length ? (
-<<<<<<< HEAD
-                chatsQuery.data.map((chat) => {
-                  const title = getChatTitle(chat.members, user?.id, {
-                    type: chat.type,
-                    title: chat.title,
-                  });
-                  const partner = chat.members.find((member) => member.id !== user?.id);
-                  const isGroup = chat.type === "group";
-                  const actionMode: ChatActionMode =
-                    isGroup && chat.currentUserRole !== "creator" ? "leave" : "delete";
-                  const isActive = currentChatId === chat.id;
-                  const isDeleting = deletingChatId === chat.id;
-                  const onlineMembersCount = chat.members.filter(
-                    (member) => member.id !== user?.id && isUserOnline(member.id),
-                  ).length;
-                  const typingMembers = chat.members.filter(
-                    (member) => member.id !== user?.id && isUserTyping(chat.id, member.id),
-                  );
-                  const hasTyping = typingMembers.length > 0;
-                  const statusText = isGroup
-                    ? hasTyping
-                      ? typingMembers.length === 1
-                        ? `${typingMembers[0]?.displayName ?? "Кто-то"} печатает...`
-                        : `${typingMembers.length} печатают...`
-                      : `${chat.members.length} участников${onlineMembersCount > 0 ? ` · ${onlineMembersCount} онлайн` : ""}`
-                    : hasTyping
-                      ? "Печатает..."
-                      : partner && isUserOnline(partner.id)
-                        ? "В сети"
-                        : partner?.lastSeenAt
-                          ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
-                          : statusesMayBeStale
-                            ? "Статус может быть устаревшим"
-                            : "Личный чат";
-                  const lastMessagePreview = hasTyping
-                    ? typingMembers.length > 1
-                      ? `${typingMembers.length} печатают...`
-                      : "Печатает..."
-                    : getLastMessagePreviewText(chat.lastMessage);
-=======
                 <div className="overflow-hidden bg-white/92">
                   {chatsQuery.data.map((chat) => {
                     const title = getChatTitle(chat.members, user?.id, {
@@ -1500,7 +1427,33 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                       isGroup && chat.currentUserRole !== "creator" ? "leave" : "delete";
                     const isActive = currentChatId === chat.id;
                     const isDeleting = deletingChatId === chat.id;
->>>>>>> origin/main
+                    const onlineMembersCount = chat.members.filter(
+                      (member) => member.id !== user?.id && isUserOnline(member.id),
+                    ).length;
+                    const typingMembers = chat.members.filter(
+                      (member) => member.id !== user?.id && isUserTyping(chat.id, member.id),
+                    );
+                    const hasTyping = typingMembers.length > 0;
+                    const statusText = isGroup
+                      ? hasTyping
+                        ? typingMembers.length === 1
+                          ? `${typingMembers[0]?.displayName ?? "Кто-то"} печатает...`
+                          : `${typingMembers.length} печатают...`
+                        : `${chat.members.length} участников${onlineMembersCount > 0 ? ` · ${onlineMembersCount} онлайн` : ""}`
+                      : hasTyping
+                        ? "Печатает..."
+                        : partner && isUserOnline(partner.id)
+                          ? "В сети"
+                          : partner?.lastSeenAt
+                            ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
+                            : statusesMayBeStale
+                              ? "Статус может быть устаревшим"
+                              : "Личный чат";
+                    const lastMessagePreview = hasTyping
+                      ? typingMembers.length > 1
+                        ? `${typingMembers.length} печатают...`
+                        : "Печатает..."
+                      : getLastMessagePreviewText(chat.lastMessage);
 
                     return (
                       <div
@@ -1533,34 +1486,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                 href={`/chat/${chat.id}`}
                                 className="min-w-0 flex-1"
                               >
-<<<<<<< HEAD
-                                {title}
-                              </p>
-                              <p
-                                className={clsx(
-                                  "mt-1 truncate text-xs",
-                                  isActive ? "text-white/60" : "text-stone-500",
-                                )}
-                              >
-                                {statusText}
-                              </p>
-                            </Link>
-
-                            <div className="shrink-0 text-right">
-                              <p
-                                className={clsx(
-                                  "text-[10px] uppercase tracking-[0.16em]",
-                                  isActive ? "text-white/45" : "text-stone-400",
-                                )}
-                              >
-                                {chat.lastMessage ? formatTime(chat.lastMessage.createdAt) : "New"}
-                              </p>
-                              {chat.unreadCount > 0 ? (
-                                <span
-                                  data-testid="chat-unread-badge"
-=======
                                 <p
->>>>>>> origin/main
                                   className={clsx(
                                     "truncate text-sm font-semibold",
                                     isActive ? "text-white" : "text-[#171717]",
@@ -1574,25 +1500,10 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                     isActive ? "text-white/60" : "text-stone-500",
                                   )}
                                 >
-                                  {isGroup
-                                    ? `${chat.members.length} участников`
-                                    : partner?.lastSeenAt
-                                      ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
-                                      : "Личный чат"}
+                                  {statusText}
                                 </p>
                               </Link>
 
-<<<<<<< HEAD
-                          <Link
-                            href={`/chat/${chat.id}`}
-                            className={clsx(
-                              "mt-3 block truncate text-sm",
-                              isActive ? "text-white/76" : "text-stone-600",
-                            )}
-                          >
-                            {lastMessagePreview}
-                          </Link>
-=======
                               <div className="shrink-0 text-right">
                                 <p
                                   className={clsx(
@@ -1643,10 +1554,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                 isActive ? "text-white/76" : "text-stone-600",
                               )}
                             >
-                              {getLastMessagePreviewText(chat.lastMessage)}
+                              {lastMessagePreview}
                             </Link>
                           </div>
->>>>>>> origin/main
                         </div>
                       </div>
                     );

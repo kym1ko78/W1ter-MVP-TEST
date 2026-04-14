@@ -910,7 +910,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     [existingGroupMemberIds, groupUsersSearchQuery.data, user?.id],
   );
   const groupMembersCount = groupMembersQuery.data?.members.length ?? chatMembers.length;
-<<<<<<< HEAD
   const onlineGroupMembersCount = chatMembers.filter(
     (member) => member.id !== user?.id && isUserOnline(member.id),
   ).length;
@@ -957,9 +956,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
         originalName: pendingFile.name,
       })
     : null;
-  const hasComposerContent = Boolean(draft.trim() || pendingFile);
-  const showSendButton = hasComposerContent || sendMessageMutation.isPending;
-=======
   const isEditingMessage = Boolean(editingMessage);
   const composerText = draft.trim();
   const isComposerSubmitPending = sendMessageMutation.isPending || editMessageMutation.isPending;
@@ -967,7 +963,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     ? Boolean(composerText)
     : Boolean(composerText || pendingFile);
   const showSendButton = hasComposerContent || isComposerSubmitPending;
->>>>>>> origin/main
   const showVoiceButton =
     !isEditingMessage && !hasComposerContent && !isComposerSubmitPending && recordingState === "idle";
   const composerActionMode = showSendButton ? "send" : showVoiceButton ? "voice" : "hidden";
@@ -1104,11 +1099,13 @@ export function ConversationView({ chatId }: { chatId: string }) {
           : "Не удалось получить доступ к микрофону.",
       );
     }
-<<<<<<< HEAD
-  }, [recordingState, sendMessageMutation.isPending, setLocalTypingState, stopMediaStream]);
-=======
-  }, [isComposerSubmitPending, isEditingMessage, recordingState, stopMediaStream]);
->>>>>>> origin/main
+  }, [
+    isComposerSubmitPending,
+    isEditingMessage,
+    recordingState,
+    setLocalTypingState,
+    stopMediaStream,
+  ]);
 
   const finishVoiceRecording = useCallback(
     (shouldSend: boolean) => {
