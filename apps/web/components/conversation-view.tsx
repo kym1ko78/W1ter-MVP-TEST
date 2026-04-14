@@ -273,6 +273,20 @@ export function ConversationView({ chatId }: { chatId: string }) {
     });
   }, []);
 
+  const focusComposer = useCallback(() => {
+    queueMicrotask(() => {
+      const textarea = textareaRef.current;
+
+      if (!textarea || textarea.disabled) {
+        return;
+      }
+
+      textarea.focus();
+      const caretPosition = textarea.value.length;
+      textarea.setSelectionRange(caretPosition, caretPosition);
+    });
+  }, []);
+
   const focusMessageById = useCallback((messageId: string, behavior: ScrollBehavior = "smooth") => {
     const listElement = messageListRef.current;
 
@@ -374,6 +388,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
         fileInputRef.current.value = "";
       }
       scrollToBottom("smooth");
+      focusComposer();
     },
     onError: (error) => {
       setComposerError(
@@ -406,6 +421,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       setDraft("");
       setFocusedMessageId(message.id);
       focusMessageById(message.id, "smooth");
+      focusComposer();
     },
     onError: (error) => {
       setComposerError(
