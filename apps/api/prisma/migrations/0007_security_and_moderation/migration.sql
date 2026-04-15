@@ -1,16 +1,16 @@
 CREATE TYPE "ModerationReportStatus" AS ENUM ('OPEN', 'ACTION_TAKEN', 'DISMISSED');
 
 CREATE TABLE "user_blocks" (
-  "blocker_id" UUID NOT NULL,
-  "blocked_id" UUID NOT NULL,
+  "blocker_id" TEXT NOT NULL,
+  "blocked_id" TEXT NOT NULL,
   "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
   CONSTRAINT "user_blocks_pkey" PRIMARY KEY ("blocker_id", "blocked_id")
 );
 
 CREATE TABLE "user_chat_preferences" (
-  "user_id" UUID NOT NULL,
-  "chat_id" UUID NOT NULL,
+  "user_id" TEXT NOT NULL,
+  "chat_id" TEXT NOT NULL,
   "is_muted" BOOLEAN NOT NULL DEFAULT false,
   "muted_until" TIMESTAMP(3),
   "is_archived" BOOLEAN NOT NULL DEFAULT false,
@@ -22,11 +22,11 @@ CREATE TABLE "user_chat_preferences" (
 );
 
 CREATE TABLE "moderation_reports" (
-  "id" UUID NOT NULL,
-  "reporter_id" UUID NOT NULL,
-  "reported_user_id" UUID,
-  "chat_id" UUID,
-  "message_id" UUID,
+  "id" TEXT NOT NULL,
+  "reporter_id" TEXT NOT NULL,
+  "reported_user_id" TEXT,
+  "chat_id" TEXT,
+  "message_id" TEXT,
   "reason" TEXT NOT NULL,
   "details" TEXT,
   "status" "ModerationReportStatus" NOT NULL DEFAULT 'OPEN',
