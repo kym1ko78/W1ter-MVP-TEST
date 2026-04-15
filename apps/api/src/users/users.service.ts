@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
@@ -10,6 +11,11 @@ import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { PrismaService } from "../prisma/prisma.service";
 import { UpdateProfileDto } from "./dto/update-profile.dto";
+import {
+  generateUsernameFromDisplayName,
+  isValidUsernameFormat,
+  normalizeUsernameCandidate,
+} from "./username.util";
 
 const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const AVATAR_ALLOWED_TYPES = new Map<string, string>([
@@ -46,6 +52,7 @@ export class UsersService {
 
   async searchUsers(query: string, currentUserId: string) {
     const term = query.trim();
+    const normalizedUsernameTerm = normalizeUsernameCandidate(term);
 
     if (!term) {
       return [];
@@ -67,6 +74,16 @@ export class UsersService {
               mode: "insensitive",
             },
           },
+          ...(normalizedUsernameTerm
+            ? [
+                {
+                  username: {
+                    contains: normalizedUsernameTerm,
+                    mode: "insensitive" as const,
+                  },
+                },
+              ]
+            : []),
         ],
       },
       take: 10,
@@ -82,11 +99,32 @@ export class UsersService {
     const existingUser = await this.requireUser(userId);
 
     const nextDisplayName = dto.displayName?.trim();
+    const normalizedUsername = dto.username?.trim()
+      ? normalizeUsernameCandidate(dto.username)
+      : existingUser.username;
+
+    if (dto.username?.trim() && !isValidUsernameFormat(normalizedUsername)) {
+      throw new BadRequestException(
+        "Ник должен содержать 3-24 символа: латинские буквы, цифры или _.",
+      );
+    }
+
+    if (normalizedUsername !== existingUser.username) {
+      const userWithSameUsername = await this.prisma.user.findUnique({
+        where: { username: normalizedUsername },
+        select: { id: true },
+      });
+
+      if (userWithSameUsername && userWithSameUsername.id !== userId) {
+        throw new ConflictException("Этот ник уже занят.");
+      }
+    }
 
     const user = await this.prisma.user.update({
       where: { id: userId },
       data: {
         displayName: nextDisplayName || existingUser.displayName,
+        username: normalizedUsername,
       },
     });
 
@@ -185,6 +223,7 @@ export class UsersService {
   private toSafeUser(user: {
     id: string;
     email: string;
+    username: string;
     displayName: string;
     avatarUrl: string | null;
     emailVerifiedAt: Date | null;
@@ -194,6 +233,7 @@ export class UsersService {
     return {
       id: user.id,
       email: user.email,
+      username: user.username,
       displayName: user.displayName,
       avatarUrl: user.avatarUrl,
       emailVerifiedAt: user.emailVerifiedAt?.toISOString() ?? null,
@@ -245,6 +285,27 @@ export class UsersService {
         return "image/webp";
       default:
         return "application/octet-stream";
+    }
+  }
+
+  async generateUniqueUsername(displayName: string, fallbackId?: string) {
+    const baseUsername = generateUsernameFromDisplayName(displayName, fallbackId);
+    let attempt = baseUsername;
+    let suffix = 1;
+
+    while (true) {
+      const existing = await this.prisma.user.findUnique({
+        where: { username: attempt },
+        select: { id: true },
+      });
+
+      if (!existing) {
+        return attempt;
+      }
+
+      const trimmedBase = baseUsername.slice(0, Math.max(3, 24 - String(suffix).length - 1));
+      attempt = `${trimmedBase}_${suffix}`;
+      suffix += 1;
     }
   }
 }

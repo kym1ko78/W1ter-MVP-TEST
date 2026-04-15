@@ -1,7 +1,7 @@
 ﻿import type { ChatMessage, MessagePage } from "../types/api";
 
 function isVisibleMessage(message: ChatMessage) {
-  return !message.isDeleted && !message.deletedAt;
+  return !message.isDeleted && !message.deletedAt && !message.isHiddenForCurrentUser;
 }
 
 export function dedupeMessages(messages: ChatMessage[]): ChatMessage[] {

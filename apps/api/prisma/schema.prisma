@@ -21,6 +21,7 @@ enum ChatMemberRole {
 model User {
   id                  String         @id @default(uuid())
   email               String         @unique
+  username            String         @unique
   passwordHash        String         @map("password_hash")
   displayName         String         @map("display_name")
   avatarUrl           String?        @map("avatar_url")
@@ -36,6 +37,7 @@ model User {
   sentMessages        Message[]      @relation("SentMessages")
   uploadedAttachments Attachment[]   @relation("UploadedAttachments")
   messageReactions    MessageReaction[]
+  hiddenMessages      MessageHidden[]
 
   @@map("users")
 }
@@ -99,11 +101,24 @@ model Message {
   replies          Message[]    @relation("MessageReplies")
   attachments      Attachment[]
   reactions        MessageReaction[]
+  hiddenFor        MessageHidden[]
 
   @@index([chatId, createdAt])
   @@index([senderId])
   @@index([replyToMessageId])
   @@map("messages")
+}
+
+model MessageHidden {
+  messageId String   @map("message_id")
+  userId    String   @map("user_id")
+  hiddenAt  DateTime @default(now()) @map("hidden_at")
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
+  @@index([userId])
+  @@map("message_hidden_for")
 }
 
 model MessageReaction {

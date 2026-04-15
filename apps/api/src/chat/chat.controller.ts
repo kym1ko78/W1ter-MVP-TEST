@@ -23,6 +23,7 @@ import { ChatService } from "./chat.service";
 import { AddChatMemberDto } from "./dto/add-chat-member.dto";
 import { CreateDirectChatDto } from "./dto/create-direct-chat.dto";
 import { CreateGroupChatDto } from "./dto/create-group-chat.dto";
+import { DeleteMessageDto } from "./dto/delete-message.dto";
 import { ForwardMessageDto } from "./dto/forward-message.dto";
 import { MarkReadDto } from "./dto/mark-read.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
@@ -200,8 +201,9 @@ export class ChatController {
     @CurrentUser() user: JwtPayload,
     @Param("chatId") chatId: string,
     @Param("messageId") messageId: string,
+    @Body() dto: DeleteMessageDto,
   ) {
-    return this.chatService.deleteMessage(chatId, messageId, user.sub);
+    return this.chatService.deleteMessage(chatId, messageId, user.sub, dto.mode);
   }
 
   @UseGuards(RateLimitGuard)

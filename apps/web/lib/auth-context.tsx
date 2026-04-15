@@ -44,7 +44,7 @@ type AuthContextValue = {
   refreshSession: () => Promise<string | null>;
   authorizedFetch: (path: string, init?: RequestInit) => Promise<Response>;
   requestEmailVerification: () => Promise<EmailVerificationResponse>;
-  updateProfile: (input: { displayName: string }) => Promise<SafeUser>;
+  updateProfile: (input: { displayName: string; username: string }) => Promise<SafeUser>;
   uploadAvatar: (file: File) => Promise<SafeUser>;
   removeAvatar: () => Promise<SafeUser>;
 };
@@ -235,7 +235,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [authorizedFetch]);
 
   const updateProfile = useCallback(
-    async (input: { displayName: string }) => {
+    async (input: { displayName: string; username: string }) => {
       const updatedUser = await readJson<SafeUser>(
         await authorizedFetch("/users/me", {
           method: "PATCH",

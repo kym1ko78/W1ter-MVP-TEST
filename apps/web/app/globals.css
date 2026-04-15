@@ -18,10 +18,10 @@
   --chat-ink: #171717;
   --chat-soft-ink: #6b6b6b;
   --chat-accent: #111111;
-  --scrollbar-size: 8px;
-  --scrollbar-track: rgba(33, 38, 48, 0.88);
-  --scrollbar-thumb: rgba(125, 131, 142, 0.82);
-  --scrollbar-thumb-hover: rgba(151, 157, 168, 0.95);
+  --scrollbar-size: 10px;
+  --scrollbar-track: rgba(17, 17, 17, 0.06);
+  --scrollbar-thumb: rgba(17, 17, 17, 0.22);
+  --scrollbar-thumb-hover: rgba(17, 17, 17, 0.34);
 }
 
 * {
@@ -261,29 +261,35 @@ body.chat-page-locked {
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+  -ms-overflow-style: auto;
+}
+
+.scroll-region-overlay-right {
+  margin-inline-end: calc(var(--scrollbar-size) * -1);
+  padding-inline-end: var(--scrollbar-size);
 }
 
 .scroll-region-y::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
 }
 
 .scroll-region-y::-webkit-scrollbar-track {
-  display: none;
   background: transparent;
 }
 
 .scroll-region-y::-webkit-scrollbar-thumb {
-  display: none;
-  background: transparent;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
 }
 
 .scroll-region-y::-webkit-scrollbar-thumb:hover {
-  display: none;
-  background: transparent;
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
 }
 
 .scroll-region-y::-webkit-scrollbar-button,
@@ -302,8 +308,5 @@ body.chat-page-locked {
 
 .scroll-region-y::-webkit-scrollbar-corner,
 .scroll-region-y::-webkit-resizer {
-  display: none;
-  width: 0;
-  height: 0;
   background: transparent;
 }

@@ -37,6 +37,7 @@ export function ProfileScreen() {
   } = useAuth();
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const [displayName, setDisplayName] = useState(user?.displayName ?? "");
+  const [username, setUsername] = useState(user?.username ?? "");
   const [verificationPreviewUrl, setVerificationPreviewUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<ProfileStatus>(null);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
@@ -46,7 +47,8 @@ export function ProfileScreen() {
 
   useEffect(() => {
     setDisplayName(user?.displayName ?? "");
-  }, [user?.displayName]);
+    setUsername(user?.username ?? "");
+  }, [user?.displayName, user?.username]);
 
   useEffect(() => {
     setVerificationPreviewUrl(getStoredEmailVerificationPreviewUrl());
@@ -66,8 +68,11 @@ export function ProfileScreen() {
   }, [isAuthenticated, isLoading, router]);
 
   const isNameChanged = useMemo(() => {
-    return displayName.trim() !== (user?.displayName ?? "");
-  }, [displayName, user?.displayName]);
+    return (
+      displayName.trim() !== (user?.displayName ?? "") ||
+      username.trim().replace(/^#+/, "") !== (user?.username ?? "")
+    );
+  }, [displayName, user?.displayName, username, user?.username]);
 
   const syncMessengerViews = async () => {
     await Promise.all([
@@ -80,9 +85,15 @@ export function ProfileScreen() {
   const handleProfileSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmedName = displayName.trim();
+    const trimmedUsername = username.trim().replace(/^#+/, "");
 
     if (trimmedName.length < 2) {
       setStatus({ type: "error", message: "Имя должно содержать минимум 2 символа." });
+      return;
+    }
+
+    if (trimmedUsername.length < 3) {
+      setStatus({ type: "error", message: "Ник должен содержать минимум 3 символа." });
       return;
     }
 
@@ -94,7 +105,7 @@ export function ProfileScreen() {
     setStatus(null);
 
     try {
-      await updateProfile({ displayName: trimmedName });
+      await updateProfile({ displayName: trimmedName, username: trimmedUsername });
       await syncMessengerViews();
       setStatus({ type: "success", message: "Профиль обновлен." });
     } catch (error) {
@@ -242,6 +253,7 @@ export function ProfileScreen() {
               {user.displayName}
             </h1>
             <p className="mt-3 text-sm text-stone-500">{user.email}</p>
+            <p className="mt-2 text-sm font-medium text-stone-500">#{user.username}</p>
             <p className="mt-2 text-[11px] uppercase tracking-[0.2em] text-stone-400">
               Telegram style profile
             </p>
@@ -328,6 +340,23 @@ export function ProfileScreen() {
                   />
                 </label>
 
+                <label className="mt-4 block">
+                  <span className="mb-2 block text-sm font-medium text-[#171717]"># Username</span>
+                  <input
+                    data-testid="profile-username-input"
+                    value={username}
+                    maxLength={24}
+                    onChange={(event) => {
+                      setUsername(event.target.value);
+                      if (status?.type === "error") {
+                        setStatus(null);
+                      }
+                    }}
+                    className="w-full rounded-[20px] border border-black/8 bg-[#f7f7f5] px-4 py-3 text-sm text-[#171717] outline-none transition placeholder:text-stone-400 focus:border-black/70 focus:bg-white focus:ring-4 focus:ring-black/5"
+                    placeholder="your_nick"
+                  />
+                </label>
+
                 <div className="mt-6 flex flex-wrap items-center gap-3">
                   <button
                     data-testid="profile-save-button"
@@ -339,7 +368,10 @@ export function ProfileScreen() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setDisplayName(user.displayName)}
+                    onClick={() => {
+                      setDisplayName(user.displayName);
+                      setUsername(user.username);
+                    }}
                     disabled={!isNameChanged || isSavingProfile}
                     className="rounded-[20px] border border-black/10 bg-white px-5 py-3 text-sm font-medium text-stone-600 transition hover:border-black hover:text-black disabled:cursor-not-allowed disabled:opacity-55"
                   >
@@ -400,6 +432,7 @@ export function ProfileScreen() {
                 ) : null}
               </div>
               <InfoCard label="Email" value={user.email} />
+              <InfoCard label="Username" value={`#${user.username}`} monospace />
               <InfoCard label="User ID" value={user.id} monospace />
               <InfoCard
                 label="Последняя активность"
