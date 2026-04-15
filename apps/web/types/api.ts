@@ -58,6 +58,14 @@ export interface ChatListItem {
   updatedAt: string;
   unreadCount: number;
   currentUserRole: ChatMemberRole;
+  isMuted?: boolean;
+  mutedUntil?: string | null;
+  isArchived?: boolean;
+  archivedAt?: string | null;
+  directStatus?: {
+    blockedByCurrentUser: boolean;
+    hasBlockedCurrentUser: boolean;
+  } | null;
   lastMessage: {
     id: string;
     chatId: string;

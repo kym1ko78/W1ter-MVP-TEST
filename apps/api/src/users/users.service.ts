@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { ChatType, Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
@@ -51,9 +53,12 @@ export class UsersService {
       return [];
     }
 
+    const blockedUserIds = await this.getBlockedUserIds(currentUserId);
     const users = await this.prisma.user.findMany({
       where: {
-        id: { not: currentUserId },
+        id: {
+          notIn: [currentUserId, ...blockedUserIds],
+        },
         OR: [
           {
             email: {
@@ -76,6 +81,133 @@ export class UsersService {
     });
 
     return users.map((user) => this.toSafeUser(user));
+  }
+
+  async listBlockedUsers(currentUserId: string) {
+    const blocks = await this.prisma.userBlock.findMany({
+      where: {
+        blockerId: currentUserId,
+      },
+      include: {
+        blocked: true,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    return blocks.map((block) => ({
+      user: this.toSafeUser(block.blocked),
+      createdAt: block.createdAt.toISOString(),
+    }));
+  }
+
+  async blockUser(currentUserId: string, targetUserId: string) {
+    const normalizedTargetUserId = targetUserId.trim();
+
+    if (!normalizedTargetUserId) {
+      throw new BadRequestException("Некорректный идентификатор пользователя.");
+    }
+
+    if (normalizedTargetUserId === currentUserId) {
+      throw new BadRequestException("Нельзя заблокировать самого себя.");
+    }
+
+    const targetUser = await this.requireUser(normalizedTargetUserId);
+
+    try {
+      const block = await this.prisma.userBlock.create({
+        data: {
+          blockerId: currentUserId,
+          blockedId: normalizedTargetUserId,
+        },
+      });
+
+      const directChats = await this.prisma.chat.findMany({
+        where: {
+          type: ChatType.DIRECT,
+          members: {
+            some: {
+              userId: currentUserId,
+            },
+          },
+          AND: [
+            {
+              members: {
+                some: {
+                  userId: normalizedTargetUserId,
+                },
+              },
+            },
+          ],
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (directChats.length > 0) {
+        await this.prisma.$transaction(
+          directChats.map((chat) =>
+            this.prisma.userChatPreference.upsert({
+              where: {
+                userId_chatId: {
+                  userId: currentUserId,
+                  chatId: chat.id,
+                },
+              },
+              create: {
+                userId: currentUserId,
+                chatId: chat.id,
+                isMuted: true,
+                isArchived: true,
+                archivedAt: new Date(),
+              },
+              update: {
+                isMuted: true,
+                isArchived: true,
+                archivedAt: new Date(),
+              },
+            }),
+          ),
+        );
+      }
+
+      return {
+        success: true,
+        user: this.toSafeUser(targetUser),
+        blockedAt: block.createdAt.toISOString(),
+      };
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        throw new ConflictException("Пользователь уже заблокирован.");
+      }
+
+      throw error;
+    }
+  }
+
+  async unblockUser(currentUserId: string, targetUserId: string) {
+    const normalizedTargetUserId = targetUserId.trim();
+
+    if (!normalizedTargetUserId) {
+      throw new BadRequestException("Некорректный идентификатор пользователя.");
+    }
+
+    await this.prisma.userBlock.deleteMany({
+      where: {
+        blockerId: currentUserId,
+        blockedId: normalizedTargetUserId,
+      },
+    });
+
+    return {
+      success: true,
+      userId: normalizedTargetUserId,
+    };
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
@@ -180,6 +312,40 @@ export class UsersService {
     }
 
     return user;
+  }
+
+  private async getBlockedUserIds(currentUserId: string) {
+    const relations = await this.prisma.userBlock.findMany({
+      where: {
+        OR: [
+          {
+            blockerId: currentUserId,
+          },
+          {
+            blockedId: currentUserId,
+          },
+        ],
+      },
+      select: {
+        blockerId: true,
+        blockedId: true,
+      },
+    });
+
+    const result = new Set<string>();
+
+    for (const relation of relations) {
+      if (relation.blockerId === currentUserId) {
+        result.add(relation.blockedId);
+        continue;
+      }
+
+      if (relation.blockedId === currentUserId) {
+        result.add(relation.blockerId);
+      }
+    }
+
+    return Array.from(result);
   }
 
   private toSafeUser(user: {

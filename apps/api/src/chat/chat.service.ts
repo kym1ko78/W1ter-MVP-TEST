@@ -6,7 +6,16 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Attachment, ChatMemberRole, ChatType, MessageReaction, Prisma, User } from "@prisma/client";
+import {
+  Attachment,
+  ChatMemberRole,
+  ChatType,
+  MessageReaction,
+  ModerationReportStatus,
+  Prisma,
+  User,
+  UserChatPreference,
+} from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
@@ -20,9 +29,11 @@ import {
   getAttachmentValidationMessage,
   resolveAttachmentMimeType,
 } from "./attachment-rules";
+import { CreateModerationReportDto } from "./dto/create-moderation-report.dto";
 import { CreateDirectChatDto } from "./dto/create-direct-chat.dto";
 import { CreateGroupChatDto } from "./dto/create-group-chat.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
+import { UpdateChatPreferencesDto } from "./dto/update-chat-preferences.dto";
 const REACTION_EMOJIS = new Set(["👍", "❤️", "😂", "🔥", "😮", "😢"]);
 
 type UploadedAttachmentFile = {
@@ -64,6 +75,12 @@ type MembershipWithChat = Prisma.ChatMemberGetPayload<{
   };
 }>;
 
+type ChatSerializationContext = {
+  preferencesByChatId: Map<string, UserChatPreference>;
+  blockedByCurrentUser: Set<string>;
+  blockedCurrentUser: Set<string>;
+};
+
 @Injectable()
 export class ChatService {
   private readonly logger = new Logger(ChatService.name);
@@ -78,6 +95,8 @@ export class ChatService {
     if (currentUserId === dto.targetUserId) {
       throw new ForbiddenException("You cannot create a direct chat with yourself");
     }
+
+    await this.ensureUsersNotBlocked(currentUserId, dto.targetUserId);
 
     const targetUser = await this.prisma.user.findUnique({
       where: { id: dto.targetUserId },
@@ -210,7 +229,8 @@ export class ChatService {
       },
     });
 
-    return chats.map((chat) => this.toChatListItem(chat, currentUserId));
+    const context = await this.buildChatSerializationContext(currentUserId, chats);
+    return chats.map((chat) => this.toChatListItem(chat, currentUserId, context));
   }
 
   async getChatById(chatId: string, currentUserId: string) {
@@ -246,7 +266,8 @@ export class ChatService {
       throw new NotFoundException("Chat not found");
     }
 
-    return this.toChatListItem(chat, currentUserId);
+    const context = await this.buildChatSerializationContext(currentUserId, [chat]);
+    return this.toChatListItem(chat, currentUserId, context);
   }
 
   async getGroupMembers(chatId: string, currentUserId: string) {
@@ -582,6 +603,7 @@ export class ChatService {
     if (!body) {
       throw new BadRequestException("Сообщение не должно быть пустым.");
     }
+    await this.enforceMessagingSecurityRules(chatId, currentUserId, body);
     const replyToMessage = await this.resolveReplyTarget(chatId, dto.replyToMessageId);
 
     const message = await this.prisma.$transaction(async (transaction) => {
@@ -1024,6 +1046,7 @@ export class ChatService {
     replyToMessageId?: string,
   ) {
     await this.ensureMembership(chatId, currentUserId);
+    await this.enforceMessagingSecurityRules(chatId, currentUserId, body?.trim() ?? "<attachment>");
 
     if (!uploadedFile || !Buffer.isBuffer(uploadedFile.buffer) || uploadedFile.size <= 0) {
       throw new BadRequestException("Файл не был загружен.");
@@ -1164,6 +1187,411 @@ export class ChatService {
     );
 
     return { success: true };
+  }
+
+  async updateChatPreferences(
+    chatId: string,
+    currentUserId: string,
+    dto: UpdateChatPreferencesDto,
+  ) {
+    await this.ensureMembership(chatId, currentUserId);
+
+    const hasMutedChange = typeof dto.isMuted === "boolean" || dto.mutedUntil !== undefined;
+    const hasArchivedChange = typeof dto.isArchived === "boolean";
+
+    if (!hasMutedChange && !hasArchivedChange) {
+      throw new BadRequestException("Укажите хотя бы одно поле для обновления настроек.");
+    }
+
+    const existingPreference = await this.prisma.userChatPreference.findUnique({
+      where: {
+        userId_chatId: {
+          userId: currentUserId,
+          chatId,
+        },
+      },
+    });
+
+    const now = new Date();
+    const isMuted = dto.isMuted ?? existingPreference?.isMuted ?? false;
+    const mutedUntilDate = this.resolveMutedUntil(dto.mutedUntil, isMuted);
+    const isArchived = dto.isArchived ?? existingPreference?.isArchived ?? false;
+    const archivedAt =
+      isArchived && !existingPreference?.isArchived
+        ? now
+        : isArchived
+          ? existingPreference?.archivedAt ?? now
+          : null;
+
+    const preference = await this.prisma.userChatPreference.upsert({
+      where: {
+        userId_chatId: {
+          userId: currentUserId,
+          chatId,
+        },
+      },
+      create: {
+        userId: currentUserId,
+        chatId,
+        isMuted,
+        mutedUntil: isMuted ? mutedUntilDate : null,
+        isArchived,
+        archivedAt,
+      },
+      update: {
+        isMuted,
+        mutedUntil: isMuted ? mutedUntilDate : null,
+        isArchived,
+        archivedAt,
+      },
+    });
+
+    return this.toChatPreferencePayload(preference);
+  }
+
+  async createModerationReport(
+    chatId: string,
+    currentUserId: string,
+    dto: CreateModerationReportDto,
+  ) {
+    await this.ensureMembership(chatId, currentUserId);
+
+    const normalizedReason = dto.reason.trim();
+    if (normalizedReason.length < 3) {
+      throw new BadRequestException("Причина жалобы слишком короткая.");
+    }
+
+    const normalizedDetails = dto.details?.trim() || null;
+    const messageId = dto.messageId?.trim() || null;
+    let targetUserId = dto.targetUserId?.trim() || null;
+
+    if (messageId) {
+      const message = await this.prisma.message.findFirst({
+        where: {
+          id: messageId,
+          chatId,
+        },
+        select: {
+          id: true,
+          senderId: true,
+        },
+      });
+
+      if (!message) {
+        throw new NotFoundException("Сообщение для жалобы не найдено.");
+      }
+
+      if (!targetUserId) {
+        targetUserId = message.senderId;
+      }
+    }
+
+    if (!targetUserId) {
+      const chat = await this.prisma.chat.findUnique({
+        where: { id: chatId },
+        include: {
+          members: {
+            select: {
+              userId: true,
+            },
+          },
+        },
+      });
+
+      if (!chat) {
+        throw new NotFoundException("Chat not found");
+      }
+
+      if (chat.type === ChatType.DIRECT) {
+        targetUserId =
+          chat.members.find((member) => member.userId !== currentUserId)?.userId ?? null;
+      }
+    }
+
+    if (targetUserId) {
+      if (targetUserId === currentUserId) {
+        throw new BadRequestException("Нельзя отправить жалобу на себя.");
+      }
+
+      const targetMembership = await this.prisma.chatMember.findUnique({
+        where: {
+          chatId_userId: {
+            chatId,
+            userId: targetUserId,
+          },
+        },
+      });
+
+      if (!targetMembership) {
+        throw new BadRequestException("Жалоба может быть отправлена только на участника этого чата.");
+      }
+    }
+
+    const report = await this.prisma.moderationReport.create({
+      data: {
+        reporterId: currentUserId,
+        reportedUserId: targetUserId,
+        chatId,
+        messageId,
+        reason: normalizedReason,
+        details: normalizedDetails,
+      },
+    });
+
+    this.logger.warn(
+      `Moderation report ${report.id} created by ${currentUserId} in chat ${chatId} (target=${targetUserId ?? "none"})`,
+    );
+
+    return {
+      id: report.id,
+      status: report.status.toLowerCase(),
+      reason: report.reason,
+      details: report.details,
+      createdAt: report.createdAt.toISOString(),
+      chatId,
+      messageId,
+      targetUserId,
+    };
+  }
+
+  private async enforceMessagingSecurityRules(
+    chatId: string,
+    currentUserId: string,
+    contentFingerprint: string,
+  ) {
+    await this.ensureDirectMessagingAllowed(chatId, currentUserId);
+    await this.ensureUserIsNotTemporarilyRestricted(currentUserId);
+    await this.ensureNoSpamFlood(chatId, currentUserId, contentFingerprint);
+  }
+
+  private async ensureDirectMessagingAllowed(chatId: string, currentUserId: string) {
+    const chat = await this.prisma.chat.findUnique({
+      where: {
+        id: chatId,
+      },
+      include: {
+        members: {
+          select: {
+            userId: true,
+          },
+        },
+      },
+    });
+
+    if (!chat || chat.type !== ChatType.DIRECT) {
+      return;
+    }
+
+    const partnerId = chat.members.find((member) => member.userId !== currentUserId)?.userId;
+    if (!partnerId) {
+      return;
+    }
+
+    await this.ensureUsersNotBlocked(currentUserId, partnerId);
+  }
+
+  private async ensureNoSpamFlood(chatId: string, currentUserId: string, contentFingerprint: string) {
+    const now = Date.now();
+    const recentWindowStart = new Date(now - 20 * 1000);
+    const duplicateWindowStart = new Date(now - 45 * 1000);
+    const normalizedContent = contentFingerprint.trim().toLocaleLowerCase();
+
+    const [recentMessages, duplicateMessages] = await Promise.all([
+      this.prisma.message.findMany({
+        where: {
+          chatId,
+          senderId: currentUserId,
+          deletedAt: null,
+          createdAt: {
+            gte: recentWindowStart,
+          },
+        },
+        select: {
+          id: true,
+        },
+      }),
+      normalizedContent
+        ? this.prisma.message.findMany({
+            where: {
+              chatId,
+              senderId: currentUserId,
+              deletedAt: null,
+              createdAt: {
+                gte: duplicateWindowStart,
+              },
+            },
+            select: {
+              body: true,
+            },
+            take: 8,
+            orderBy: {
+              createdAt: "desc",
+            },
+          })
+        : Promise.resolve([] as Array<{ body: string | null }>),
+    ]);
+
+    if (recentMessages.length >= 8) {
+      this.logger.warn(
+        `Spam guard: too many messages from user ${currentUserId} in chat ${chatId}`,
+      );
+      throw new ForbiddenException("Слишком много сообщений за короткое время. Попробуйте чуть позже.");
+    }
+
+    if (normalizedContent) {
+      const duplicates = duplicateMessages.filter(
+        (message) => (message.body ?? "").trim().toLocaleLowerCase() === normalizedContent,
+      );
+
+      if (duplicates.length >= 3) {
+        this.logger.warn(
+          `Spam guard: duplicate content from user ${currentUserId} in chat ${chatId}`,
+        );
+        throw new ForbiddenException("Похожие сообщения отправляются слишком часто.");
+      }
+    }
+  }
+
+  private async ensureUserIsNotTemporarilyRestricted(currentUserId: string) {
+    const reportsCount = await this.prisma.moderationReport.count({
+      where: {
+        reportedUserId: currentUserId,
+        status: ModerationReportStatus.OPEN,
+        createdAt: {
+          gte: new Date(Date.now() - 24 * 60 * 60 * 1000),
+        },
+      },
+    });
+
+    if (reportsCount >= 6) {
+      throw new ForbiddenException(
+        "Отправка сообщений временно ограничена из-за подозрительной активности.",
+      );
+    }
+  }
+
+  private async ensureUsersNotBlocked(currentUserId: string, targetUserId: string) {
+    const relation = await this.prisma.userBlock.findFirst({
+      where: {
+        OR: [
+          {
+            blockerId: currentUserId,
+            blockedId: targetUserId,
+          },
+          {
+            blockerId: targetUserId,
+            blockedId: currentUserId,
+          },
+        ],
+      },
+      select: {
+        blockerId: true,
+      },
+    });
+
+    if (!relation) {
+      return;
+    }
+
+    if (relation.blockerId === currentUserId) {
+      throw new ForbiddenException("Сначала разблокируйте пользователя, чтобы продолжить общение.");
+    }
+
+    throw new ForbiddenException("Этот пользователь ограничил контакт с вами.");
+  }
+
+  private resolveMutedUntil(mutedUntil: string | null | undefined, isMuted: boolean) {
+    if (!isMuted) {
+      return null;
+    }
+
+    if (mutedUntil === null || mutedUntil === undefined || mutedUntil === "") {
+      return null;
+    }
+
+    const parsedDate = new Date(mutedUntil);
+    if (Number.isNaN(parsedDate.getTime())) {
+      throw new BadRequestException("Неверное значение mutedUntil.");
+    }
+
+    if (parsedDate <= new Date()) {
+      throw new BadRequestException("Дата mutedUntil должна быть в будущем.");
+    }
+
+    return parsedDate;
+  }
+
+  private toChatPreferencePayload(preference: UserChatPreference) {
+    return {
+      chatId: preference.chatId,
+      isMuted: preference.isMuted,
+      mutedUntil: preference.mutedUntil?.toISOString() ?? null,
+      isArchived: preference.isArchived,
+      archivedAt: preference.archivedAt?.toISOString() ?? null,
+      updatedAt: preference.updatedAt.toISOString(),
+    };
+  }
+
+  private async buildChatSerializationContext(
+    currentUserId: string,
+    chats: ChatWithMembersAndMessages[],
+  ): Promise<ChatSerializationContext> {
+    const chatIds = chats.map((chat) => chat.id);
+    const directPartnerIds = chats
+      .filter((chat) => chat.type === ChatType.DIRECT)
+      .map((chat) => chat.members.find((member) => member.userId !== currentUserId)?.userId ?? null)
+      .filter((userId): userId is string => Boolean(userId));
+
+    const [preferences, blockedByCurrentUser, blockedCurrentUser] = await Promise.all([
+      chatIds.length
+        ? this.prisma.userChatPreference.findMany({
+            where: {
+              userId: currentUserId,
+              chatId: {
+                in: chatIds,
+              },
+            },
+          })
+        : Promise.resolve([] as UserChatPreference[]),
+      directPartnerIds.length
+        ? this.prisma.userBlock.findMany({
+            where: {
+              blockerId: currentUserId,
+              blockedId: {
+                in: directPartnerIds,
+              },
+            },
+            select: {
+              blockedId: true,
+            },
+          })
+        : Promise.resolve([] as Array<{ blockedId: string }>),
+      directPartnerIds.length
+        ? this.prisma.userBlock.findMany({
+            where: {
+              blockerId: {
+                in: directPartnerIds,
+              },
+              blockedId: currentUserId,
+            },
+            select: {
+              blockerId: true,
+            },
+          })
+        : Promise.resolve([] as Array<{ blockerId: string }>),
+    ]);
+
+    return {
+      preferencesByChatId: new Map(
+        preferences.map((preference) => [preference.chatId, preference]),
+      ),
+      blockedByCurrentUser: new Set(
+        blockedByCurrentUser.map((item) => item.blockedId),
+      ),
+      blockedCurrentUser: new Set(
+        blockedCurrentUser.map((item) => item.blockerId),
+      ),
+    };
   }
 
   private async resolveReplyTarget(chatId: string, replyToMessageId?: string) {
@@ -1434,9 +1862,29 @@ export class ChatService {
     };
   }
 
-  private toChatListItem(chat: ChatWithMembersAndMessages, currentUserId: string) {
+  private toChatListItem(
+    chat: ChatWithMembersAndMessages,
+    currentUserId: string,
+    context: ChatSerializationContext,
+  ) {
     const currentMembership = chat.members.find((member) => member.userId === currentUserId);
     const latestVisibleMessage = chat.messages[0] ?? null;
+    const preference = context.preferencesByChatId.get(chat.id);
+    const isMuted = Boolean(
+      preference?.isMuted &&
+        (!preference.mutedUntil || preference.mutedUntil > new Date()),
+    );
+    const isArchived = Boolean(preference?.isArchived);
+    const directPartnerId =
+      chat.type === ChatType.DIRECT
+        ? chat.members.find((member) => member.userId !== currentUserId)?.userId ?? null
+        : null;
+    const blockedByCurrentUser = Boolean(
+      directPartnerId && context.blockedByCurrentUser.has(directPartnerId),
+    );
+    const hasBlockedCurrentUser = Boolean(
+      directPartnerId && context.blockedCurrentUser.has(directPartnerId),
+    );
 
     const unreadCount =
       latestVisibleMessage &&
@@ -1452,6 +1900,17 @@ export class ChatService {
       updatedAt: chat.updatedAt.toISOString(),
       unreadCount,
       currentUserRole: this.toChatMemberRole((currentMembership?.role ?? "MEMBER") as ChatMemberRole),
+      isMuted,
+      mutedUntil: preference?.mutedUntil?.toISOString() ?? null,
+      isArchived,
+      archivedAt: preference?.archivedAt?.toISOString() ?? null,
+      directStatus:
+        chat.type === ChatType.DIRECT
+          ? {
+              blockedByCurrentUser,
+              hasBlockedCurrentUser,
+            }
+          : null,
       members: chat.members.map((member) => this.toSafeUser(member.user)),
       lastMessage: latestVisibleMessage ? this.toMessagePreview(latestVisibleMessage) : null,
     };

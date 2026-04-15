@@ -18,6 +18,12 @@ enum ChatMemberRole {
   MEMBER
 }
 
+enum ModerationReportStatus {
+  OPEN
+  ACTION_TAKEN
+  DISMISSED
+}
+
 model User {
   id                  String         @id @default(uuid())
   email               String         @unique
@@ -36,6 +42,11 @@ model User {
   sentMessages        Message[]      @relation("SentMessages")
   uploadedAttachments Attachment[]   @relation("UploadedAttachments")
   messageReactions    MessageReaction[]
+  blockedUsers        UserBlock[]    @relation("UserBlocksInitiated")
+  blockedByUsers      UserBlock[]    @relation("UserBlocksReceived")
+  chatPreferences     UserChatPreference[]
+  createdReports      ModerationReport[] @relation("ModerationReportsCreated")
+  reportedInReports   ModerationReport[] @relation("ModerationReportsAgainst")
 
   @@map("users")
 }
@@ -65,6 +76,8 @@ model Chat {
   updatedAt     DateTime     @updatedAt @map("updated_at")
   members       ChatMember[]
   messages      Message[]
+  preferences   UserChatPreference[]
+  moderationReports ModerationReport[]
 
   @@index([updatedAt])
   @@map("chats")
@@ -99,6 +112,7 @@ model Message {
   replies          Message[]    @relation("MessageReplies")
   attachments      Attachment[]
   reactions        MessageReaction[]
+  moderationReports ModerationReport[]
 
   @@index([chatId, createdAt])
   @@index([senderId])
@@ -134,4 +148,58 @@ model Attachment {
   @@index([messageId])
   @@index([uploaderId])
   @@map("attachments")
+}
+
+model UserBlock {
+  blockerId String   @map("blocker_id")
+  blockedId String   @map("blocked_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  blocker   User     @relation("UserBlocksInitiated", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked   User     @relation("UserBlocksReceived", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@id([blockerId, blockedId])
+  @@index([blockedId])
+  @@map("user_blocks")
+}
+
+model UserChatPreference {
+  userId     String    @map("user_id")
+  chatId     String    @map("chat_id")
+  isMuted    Boolean   @default(false) @map("is_muted")
+  mutedUntil DateTime? @map("muted_until")
+  isArchived Boolean   @default(false) @map("is_archived")
+  archivedAt DateTime? @map("archived_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chat       Chat      @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@id([userId, chatId])
+  @@index([chatId])
+  @@index([userId, isArchived])
+  @@map("user_chat_preferences")
+}
+
+model ModerationReport {
+  id             String                 @id @default(uuid())
+  reporterId     String                 @map("reporter_id")
+  reportedUserId String?                @map("reported_user_id")
+  chatId         String?                @map("chat_id")
+  messageId      String?                @map("message_id")
+  reason         String
+  details        String?
+  status         ModerationReportStatus @default(OPEN)
+  createdAt      DateTime               @default(now()) @map("created_at")
+  updatedAt      DateTime               @updatedAt @map("updated_at")
+  resolvedAt     DateTime?              @map("resolved_at")
+  reporter       User                   @relation("ModerationReportsCreated", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser   User?                  @relation("ModerationReportsAgainst", fields: [reportedUserId], references: [id], onDelete: SetNull)
+  chat           Chat?                  @relation(fields: [chatId], references: [id], onDelete: SetNull)
+  message        Message?               @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([reporterId, createdAt])
+  @@index([reportedUserId, createdAt])
+  @@index([chatId, createdAt])
+  @@index([messageId, createdAt])
+  @@map("moderation_reports")
 }

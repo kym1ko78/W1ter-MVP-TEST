@@ -4,8 +4,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useAuth } from "../lib/auth-context";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { readJson, useAuth } from "../lib/auth-context";
 import {
   getStoredEmailVerificationPreviewUrl,
   setStoredEmailVerificationPreviewUrl,
@@ -21,11 +21,22 @@ type ProfileStatus = {
   message: string;
 } | null;
 
+type AuthDeviceSession = {
+  id: string;
+  userAgent: string | null;
+  ipAddress: string | null;
+  isPersistent: boolean;
+  createdAt: string;
+  expiresAt: string;
+  isCurrent: boolean;
+};
+
 export function ProfileScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const {
     accessToken,
+    authorizedFetch,
     isAuthenticated,
     isLoading,
     logout,
@@ -43,6 +54,11 @@ export function ProfileScreen() {
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [isRemovingAvatar, setIsRemovingAvatar] = useState(false);
   const [isSendingVerification, setIsSendingVerification] = useState(false);
+  const [sessions, setSessions] = useState<AuthDeviceSession[]>([]);
+  const [isSessionsLoading, setIsSessionsLoading] = useState(false);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
+  const [isRevokingOtherSessions, setIsRevokingOtherSessions] = useState(false);
 
   useEffect(() => {
     setDisplayName(user?.displayName ?? "");
@@ -76,6 +92,36 @@ export function ProfileScreen() {
       queryClient.invalidateQueries({ queryKey: ["messages"] }),
     ]);
   };
+
+  const loadSessions = useCallback(async () => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    setIsSessionsLoading(true);
+    setSessionsError(null);
+
+    try {
+      const payload = await readJson<AuthDeviceSession[]>(
+        await authorizedFetch("/auth/sessions"),
+      );
+      setSessions(payload);
+    } catch (error) {
+      setSessionsError(
+        error instanceof Error ? error.message : "Не удалось загрузить сессии.",
+      );
+    } finally {
+      setIsSessionsLoading(false);
+    }
+  }, [authorizedFetch, isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    void loadSessions();
+  }, [isAuthenticated, loadSessions]);
 
   const handleProfileSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -198,6 +244,62 @@ export function ProfileScreen() {
       });
     } finally {
       setIsSendingVerification(false);
+    }
+  };
+
+  const handleRevokeSession = async (sessionId: string) => {
+    if (revokingSessionId || isRevokingOtherSessions) {
+      return;
+    }
+
+    setRevokingSessionId(sessionId);
+    setSessionsError(null);
+
+    try {
+      await readJson<{ success: boolean }>(
+        await authorizedFetch(`/auth/sessions/${sessionId}`, {
+          method: "DELETE",
+        }),
+      );
+      await loadSessions();
+      setStatus({ type: "success", message: "Сессия завершена." });
+    } catch (error) {
+      setSessionsError(
+        error instanceof Error ? error.message : "Не удалось завершить сессию.",
+      );
+    } finally {
+      setRevokingSessionId(null);
+    }
+  };
+
+  const handleRevokeOtherSessions = async () => {
+    if (revokingSessionId || isRevokingOtherSessions) {
+      return;
+    }
+
+    setIsRevokingOtherSessions(true);
+    setSessionsError(null);
+
+    try {
+      const result = await readJson<{ success: boolean; revokedCount: number }>(
+        await authorizedFetch("/auth/sessions/revoke-others", {
+          method: "POST",
+        }),
+      );
+      await loadSessions();
+      setStatus({
+        type: "success",
+        message:
+          result.revokedCount > 0
+            ? `Завершено сессий: ${result.revokedCount}.`
+            : "Дополнительных сессий не найдено.",
+      });
+    } catch (error) {
+      setSessionsError(
+        error instanceof Error ? error.message : "Не удалось завершить другие сессии.",
+      );
+    } finally {
+      setIsRevokingOtherSessions(false);
     }
   };
 
@@ -398,6 +500,71 @@ export function ProfileScreen() {
                     </div>
                   </div>
                 ) : null}
+              </div>
+              <div className="rounded-[26px] border border-black/8 bg-white px-5 py-5 shadow-[0_16px_36px_rgba(17,24,39,0.06)]">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">
+                    Сессии и устройства
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void loadSessions()}
+                    disabled={isSessionsLoading}
+                    className="rounded-full border border-black/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-stone-500 transition hover:border-black/20 hover:text-black disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isSessionsLoading ? "..." : "Обновить"}
+                  </button>
+                </div>
+
+                {sessionsError ? (
+                  <p className="mt-3 rounded-[12px] border border-black/10 bg-black px-3 py-2 text-xs text-white">
+                    {sessionsError}
+                  </p>
+                ) : null}
+
+                {isSessionsLoading ? (
+                  <p className="mt-3 text-sm text-stone-500">Загружаем сессии...</p>
+                ) : sessions.length > 0 ? (
+                  <div className="mt-3 space-y-2">
+                    {sessions.map((session) => (
+                      <div
+                        key={session.id}
+                        className="rounded-[16px] border border-black/8 bg-[#f7f7f5] px-3 py-3"
+                      >
+                        <p className="truncate text-sm font-medium text-[#171717]">
+                          {session.userAgent || "Неизвестное устройство"}
+                        </p>
+                        <p className="mt-1 text-xs text-stone-500">
+                          IP: {session.ipAddress || "unknown"}
+                        </p>
+                        <p className="mt-1 text-xs text-stone-500">
+                          {session.isCurrent ? "Текущая сессия" : "Дополнительная сессия"}
+                        </p>
+                        {!session.isCurrent ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleRevokeSession(session.id)}
+                            disabled={Boolean(revokingSessionId) || isRevokingOtherSessions}
+                            className="mt-2 rounded-full border border-black/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/20 hover:text-black disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {revokingSessionId === session.id ? "Завершаем..." : "Завершить"}
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-sm text-stone-500">Активных сессий нет.</p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => void handleRevokeOtherSessions()}
+                  disabled={isRevokingOtherSessions || Boolean(revokingSessionId)}
+                  className="mt-4 w-full rounded-[18px] border border-black/10 bg-white px-4 py-2 text-sm font-medium text-stone-600 transition hover:border-black hover:text-black disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isRevokingOtherSessions ? "Завершаем..." : "Завершить все, кроме текущей"}
+                </button>
               </div>
               <InfoCard label="Email" value={user.email} />
               <InfoCard label="User ID" value={user.id} monospace />

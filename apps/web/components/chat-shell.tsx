@@ -70,7 +70,17 @@ type LeaveGroupResponse = {
   chatId: string;
 };
 
+type ChatPreferencesResponse = {
+  chatId: string;
+  isMuted: boolean;
+  mutedUntil: string | null;
+  isArchived: boolean;
+  archivedAt: string | null;
+  updatedAt: string;
+};
+
 type ChatActionMode = "delete" | "leave";
+type ChatListFilterMode = "active" | "archived" | "all";
 
 type GlobalMessageSearchResult = {
   chatId: string;
@@ -106,6 +116,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const [selectedGroupMembers, setSelectedGroupMembers] = useState<SafeUser[]>([]);
   const [groupCreateError, setGroupCreateError] = useState<string | null>(null);
   const [globalSearch, setGlobalSearch] = useState("");
+  const [chatListFilter, setChatListFilter] = useState<ChatListFilterMode>("active");
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
   const [confirmingChatAction, setConfirmingChatAction] = useState<{
     chatId: string;
@@ -428,6 +439,34 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     },
   });
 
+  const updateChatPreferencesMutation = useMutation({
+    mutationFn: async (payload: {
+      chatId: string;
+      isMuted?: boolean;
+      mutedUntil?: string | null;
+      isArchived?: boolean;
+    }) =>
+      readJson<ChatPreferencesResponse>(
+        await authorizedFetch(`/chats/${payload.chatId}/preferences`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            isMuted: payload.isMuted,
+            mutedUntil: payload.mutedUntil,
+            isArchived: payload.isArchived,
+          }),
+        }),
+      ),
+    onSuccess: async (_, payload) => {
+      await queryClient.invalidateQueries({ queryKey: ["chats"] });
+      if (currentChatIdRef.current === payload.chatId) {
+        await queryClient.invalidateQueries({ queryKey: ["chat", payload.chatId] });
+      }
+    },
+  });
+
   useEffect(() => {
     if (isLoading) {
       return;
@@ -713,6 +752,50 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     createGroupChatMutation.mutate({
       title: normalizedGroupTitle,
       memberIds: selectedGroupMemberIds,
+    });
+  };
+
+  const chats = chatsQuery.data ?? [];
+  const activeChats = useMemo(
+    () => chats.filter((chat) => !chat.isArchived),
+    [chats],
+  );
+  const archivedChats = useMemo(
+    () => chats.filter((chat) => Boolean(chat.isArchived)),
+    [chats],
+  );
+  const visibleChats = useMemo(() => {
+    if (chatListFilter === "archived") {
+      return archivedChats;
+    }
+
+    if (chatListFilter === "all") {
+      return chats;
+    }
+
+    return activeChats;
+  }, [activeChats, archivedChats, chatListFilter, chats]);
+
+  const handleToggleChatMute = (chat: ChatListItem) => {
+    if (updateChatPreferencesMutation.isPending) {
+      return;
+    }
+
+    updateChatPreferencesMutation.mutate({
+      chatId: chat.id,
+      isMuted: !chat.isMuted,
+      mutedUntil: null,
+    });
+  };
+
+  const handleToggleChatArchive = (chat: ChatListItem) => {
+    if (updateChatPreferencesMutation.isPending) {
+      return;
+    }
+
+    updateChatPreferencesMutation.mutate({
+      chatId: chat.id,
+      isArchived: !chat.isArchived,
     });
   };
 
@@ -1245,8 +1328,30 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
             <div className="mb-3 flex items-center justify-between">
               <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Ваши чаты</p>
               <span className="rounded-full border border-black/8 bg-[#111111] px-2.5 py-1 text-xs font-semibold text-white">
-                {chatsQuery.data?.length ?? 0}
+                {visibleChats.length}
               </span>
+            </div>
+            <div className="mb-3 flex flex-wrap gap-1.5">
+              {([
+                { id: "active", label: `Активные (${activeChats.length})` },
+                { id: "archived", label: `Архив (${archivedChats.length})` },
+                { id: "all", label: `Все (${chats.length})` },
+              ] as Array<{ id: ChatListFilterMode; label: string }>).map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setChatListFilter(option.id)}
+                  className={clsx(
+                    "rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] transition",
+                    chatListFilter === option.id
+                      ? "border-black bg-[#111111] text-white"
+                      : "border-black/10 bg-white text-stone-500 hover:border-black/20 hover:text-black",
+                  )}
+                  data-testid={`chat-filter-${option.id}`}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
 
             <div
@@ -1259,9 +1364,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                   <SidebarSkeleton />
                   <SidebarSkeleton />
                 </>
-              ) : chatsQuery.data?.length ? (
+              ) : visibleChats.length ? (
                 <div className="overflow-hidden bg-white/92">
-                  {chatsQuery.data.map((chat) => {
+                  {visibleChats.map((chat) => {
                     const title = getChatTitle(chat.members, user?.id, {
                       type: chat.type,
                       title: chat.title,
@@ -1324,6 +1429,44 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                       ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
                                       : "Личный чат"}
                                 </p>
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {chat.isMuted ? (
+                                    <span
+                                      className={clsx(
+                                        "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]",
+                                        isActive
+                                          ? "border-white/20 text-white/75"
+                                          : "border-black/10 text-stone-500",
+                                      )}
+                                    >
+                                      Без звука
+                                    </span>
+                                  ) : null}
+                                  {chat.isArchived ? (
+                                    <span
+                                      className={clsx(
+                                        "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]",
+                                        isActive
+                                          ? "border-white/20 text-white/75"
+                                          : "border-black/10 text-stone-500",
+                                      )}
+                                    >
+                                      Архив
+                                    </span>
+                                  ) : null}
+                                  {chat.directStatus?.blockedByCurrentUser ? (
+                                    <span
+                                      className={clsx(
+                                        "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]",
+                                        isActive
+                                          ? "border-white/20 text-white/75"
+                                          : "border-black/10 text-stone-500",
+                                      )}
+                                    >
+                                      Блок
+                                    </span>
+                                  ) : null}
+                                </div>
                               </Link>
 
                               <div className="shrink-0 text-right">
@@ -1346,6 +1489,40 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                     {chat.unreadCount}
                                   </span>
                                 ) : null}
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleChatMute(chat)}
+                                  disabled={
+                                    deleteChatMutation.isPending ||
+                                    leaveGroupMutation.isPending ||
+                                    updateChatPreferencesMutation.isPending
+                                  }
+                                  className={clsx(
+                                    "mt-2 block rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] transition disabled:cursor-not-allowed disabled:opacity-60",
+                                    isActive
+                                      ? "border-white/15 bg-white/5 text-white/70 hover:border-white/25 hover:text-white"
+                                      : "border-black/10 bg-white text-stone-500 hover:border-black/20 hover:text-black",
+                                  )}
+                                >
+                                  {chat.isMuted ? "Вкл звук" : "Mute"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleChatArchive(chat)}
+                                  disabled={
+                                    deleteChatMutation.isPending ||
+                                    leaveGroupMutation.isPending ||
+                                    updateChatPreferencesMutation.isPending
+                                  }
+                                  className={clsx(
+                                    "mt-2 block rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] transition disabled:cursor-not-allowed disabled:opacity-60",
+                                    isActive
+                                      ? "border-white/15 bg-white/5 text-white/70 hover:border-white/25 hover:text-white"
+                                      : "border-black/10 bg-white text-stone-500 hover:border-black/20 hover:text-black",
+                                  )}
+                                >
+                                  {chat.isArchived ? "Вернуть" : "Архив"}
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => handleChatDangerAction(chat)}
@@ -1389,7 +1566,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                   className="rounded-[26px] border border-dashed border-black/12 bg-white/80 px-4 py-6 text-sm leading-6 text-stone-600"
                   data-testid="chat-list-empty"
                 >
-                  Пока нет чатов. Используйте общий поиск сверху или откройте меню, чтобы создать первую группу.
+                  {chatListFilter === "archived"
+                    ? "В архиве пока пусто."
+                    : "Пока нет чатов. Используйте общий поиск сверху или откройте меню, чтобы создать первую группу."}
                 </div>
               )}
             </div>
