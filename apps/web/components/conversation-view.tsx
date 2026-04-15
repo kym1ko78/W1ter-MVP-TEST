@@ -6,6 +6,8 @@ import {
   ChangeEvent,
   FormEvent,
   KeyboardEvent,
+  type ComponentType,
+  type PointerEvent as ReactPointerEvent,
   startTransition,
   useCallback,
   useDeferredValue,
@@ -14,6 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import { readJson, useAuth } from "../lib/auth-context";
 import {
@@ -24,6 +27,13 @@ import {
   validateAttachmentFile,
 } from "../lib/attachment-rules";
 import { useRealtime } from "../lib/realtime-context";
+import {
+  CHAT_CENTER_MIN_WIDTH,
+  CHAT_RIGHT_PANEL_DEFAULT_WIDTH,
+  CHAT_RIGHT_PANEL_MAX_WIDTH,
+  CHAT_RIGHT_PANEL_MIN_WIDTH,
+  useChatLayout,
+} from "../lib/chat-layout-context";
 import {
   appendMessageUnique,
   dedupeMessages,
@@ -49,7 +59,7 @@ import type {
   MessagePage,
   SafeUser,
 } from "../types/api";
-import { ConfirmDialog } from "./confirm-dialog";
+import { ConfirmDialog, DeleteMessageDialog } from "./confirm-dialog";
 import { UserAvatar } from "./user-avatar";
 
 const MESSAGE_MAX_LENGTH = 4000;
@@ -58,12 +68,34 @@ const COMPOSER_MAX_HEIGHT = 200;
 const VOICE_RECORDER_MIME_TYPE = "audio/webm";
 const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
 const SCROLL_BOTTOM_THRESHOLD = 180;
+const PROFILE_PANEL_TRANSITION_MS = 280;
+const MESSAGE_CONTEXT_MENU_WIDTH = 276;
+const MESSAGE_CONTEXT_MENU_MIN_HEIGHT = 360;
+const MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN = 12;
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🔥", "😮", "😢"] as const;
 
 type ComposerPayload = {
   body: string;
   file: File | null;
   replyToMessageId?: string | null;
+};
+
+type DeleteChatResponse = {
+  success: boolean;
+  chatId: string;
+};
+
+type DeleteMessageMode = "self" | "everyone";
+
+type DeleteMessagePayload = {
+  messageId: string;
+  mode: DeleteMessageMode;
+};
+
+type MessageContextMenuState = {
+  message: ChatMessage;
+  x: number;
+  y: number;
 };
 
 type RecordingState = "idle" | "recording" | "stopping";
@@ -95,6 +127,8 @@ type ConversationRenderItem =
       message: ChatMessage;
     };
 
+type IconComponent = ComponentType<{ className?: string }>;
+
 export function ConversationView({ chatId }: { chatId: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -108,6 +142,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     isUserTyping,
     updateTyping,
   } = useRealtime();
+  const { isDesktopLayout, leftSidebarWidth, rightPanelWidth, setRightPanelWidth } = useChatLayout();
   const [draft, setDraft] = useState("");
   const [messageSearch, setMessageSearch] = useState("");
   const [showGroupMembersPanel, setShowGroupMembersPanel] = useState(false);
@@ -118,6 +153,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     displayName: string;
   } | null>(null);
   const [confirmingGroupLeave, setConfirmingGroupLeave] = useState(false);
+  const [confirmingChatDeletion, setConfirmingChatDeletion] = useState(false);
   const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -126,7 +162,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
   const [forwardSearch, setForwardSearch] = useState("");
   const [forwardPanelError, setForwardPanelError] = useState<string | null>(null);
-  const [recentlyReactedMessageId, setRecentlyReactedMessageId] = useState<string | null>(null);
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
@@ -134,7 +169,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [showMessageSearch, setShowMessageSearch] = useState(false);
   const [showConversationMenu, setShowConversationMenu] = useState(false);
   const [showConversationProfile, setShowConversationProfile] = useState(false);
+  const [messageContextMenu, setMessageContextMenu] = useState<MessageContextMenuState | null>(null);
   const [headerStatusMessage, setHeaderStatusMessage] = useState<string | null>(null);
+  const [isConversationProfileMounted, setIsConversationProfileMounted] = useState(false);
+  const [isConversationProfileVisible, setIsConversationProfileVisible] = useState(false);
   const deferredMessageSearch = useDeferredValue(messageSearch);
   const deferredGroupMemberSearch = useDeferredValue(groupMemberSearch);
   const deferredForwardSearch = useDeferredValue(forwardSearch);
@@ -158,6 +196,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const focusedFromSearchParamRef = useRef<string | null>(null);
   const typingStopTimeoutRef = useRef<number | null>(null);
   const isLocalUserTypingRef = useRef(false);
+  const shouldRefocusComposerRef = useRef(false);
 
   const chatQuery = useQuery({
     queryKey: ["chat", chatId],
@@ -274,7 +313,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, []);
 
   const focusComposer = useCallback(() => {
-    queueMicrotask(() => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
       const textarea = textareaRef.current;
 
       if (!textarea || textarea.disabled) {
@@ -284,6 +324,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       textarea.focus();
       const caretPosition = textarea.value.length;
       textarea.setSelectionRange(caretPosition, caretPosition);
+      });
     });
   }, []);
 
@@ -388,7 +429,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
         fileInputRef.current.value = "";
       }
       scrollToBottom("smooth");
-      focusComposer();
     },
     onError: (error) => {
       setComposerError(
@@ -421,7 +461,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       setDraft("");
       setFocusedMessageId(message.id);
       focusMessageById(message.id, "smooth");
-      focusComposer();
     },
     onError: (error) => {
       setComposerError(
@@ -431,10 +470,14 @@ export function ConversationView({ chatId }: { chatId: string }) {
   });
 
   const deleteMessageMutation = useMutation({
-    mutationFn: async (messageId: string) =>
+    mutationFn: async ({ messageId, mode }: DeleteMessagePayload) =>
       readJson<ChatMessage>(
         await authorizedFetch(`/chats/${chatId}/messages/${messageId}`, {
           method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ mode }),
         }),
       ),
     onSuccess: (message) => {
@@ -500,7 +543,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
         upsertMessage(old, message),
       );
-      setRecentlyReactedMessageId(variables.messageId);
       setComposerError(null);
       setForwardPanelError(null);
     },
@@ -605,6 +647,34 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
   });
 
+  const deleteChatMutation = useMutation({
+    mutationFn: async () =>
+      readJson<DeleteChatResponse>(
+        await authorizedFetch(`/chats/${chatId}`, {
+          method: "DELETE",
+        }),
+      ),
+    onSuccess: ({ chatId: deletedChatId }) => {
+      queryClient.removeQueries({ queryKey: ["group-members", deletedChatId] });
+      queryClient.removeQueries({ queryKey: ["chat", deletedChatId] });
+      queryClient.removeQueries({ queryKey: ["messages", deletedChatId] });
+      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      setShowConversationMenu(false);
+      setShowConversationProfile(false);
+      startTransition(() => {
+        router.replace("/chat");
+      });
+    },
+    onError: (error) => {
+      setHeaderStatusMessage(
+        error instanceof Error ? error.message : "Не удалось удалить этот чат.",
+      );
+    },
+    onSettled: () => {
+      setConfirmingChatDeletion(false);
+    },
+  });
+
   useEffect(() => {
     const element = textareaRef.current;
 
@@ -695,7 +765,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setForwardingMessage(null);
     setForwardSearch("");
     setForwardPanelError(null);
-    setRecentlyReactedMessageId(null);
   }, [chatId]);
 
   useEffect(() => {
@@ -752,6 +821,28 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, [headerStatusMessage]);
 
   useEffect(() => {
+    if (showConversationProfile) {
+      setIsConversationProfileMounted(true);
+      const frameId = window.requestAnimationFrame(() => {
+        setIsConversationProfileVisible(true);
+      });
+
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
+    if (!isConversationProfileMounted) {
+      return;
+    }
+
+    setIsConversationProfileVisible(false);
+    const timeoutId = window.setTimeout(() => {
+      setIsConversationProfileMounted(false);
+    }, PROFILE_PANEL_TRANSITION_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isConversationProfileMounted, showConversationProfile]);
+
+  useEffect(() => {
     const handleWindowBlur = () => {
       setLocalTypingState(false);
     };
@@ -779,14 +870,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       ) {
         setShowConversationMenu(false);
       }
-
-      if (
-        showConversationProfile &&
-        !conversationProfileRef.current?.contains(target) &&
-        !conversationProfileButtonRef.current?.contains(target)
-      ) {
-        setShowConversationProfile(false);
-      }
     };
 
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -806,6 +889,33 @@ export function ConversationView({ chatId }: { chatId: string }) {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [showConversationMenu, showConversationProfile]);
+
+  useEffect(() => {
+    if (!messageContextMenu) {
+      return;
+    }
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMessageContextMenu(null);
+      }
+    };
+
+    const handleResize = () => {
+      setMessageContextMenu(null);
+    };
+
+    const listElement = messageListRef.current;
+    listElement?.addEventListener("scroll", handleResize, { passive: true });
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      listElement?.removeEventListener("scroll", handleResize);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [messageContextMenu]);
 
   useEffect(() => {
     if (!activeSearchMessage) {
@@ -997,12 +1107,80 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const conversationProfileUser: SafeUser = otherUser ?? {
     id: chatId,
     displayName: conversationTitle,
+    username: isGroupChat ? `chat_${chatId.slice(0, 8)}` : `user_${chatId.slice(0, 8)}`,
     email: isGroupChat ? `${groupMembersCount} участников` : conversationTitle,
     avatarUrl: null,
     emailVerifiedAt: null,
     emailVerificationSentAt: null,
     lastSeenAt: null,
   };
+  const conversationProfileHandle =
+    !isGroupChat && conversationProfileUser.username ? `#${conversationProfileUser.username}` : null;
+  const usesSplitConversationLayout = isConversationProfileMounted;
+  const conversationProfileOffsetStyle =
+    isDesktopLayout && isConversationProfileMounted
+      ? { paddingRight: `${rightPanelWidth}px` }
+      : undefined;
+  const handleRightPanelResizeStart = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (!isDesktopLayout || typeof window === "undefined") {
+        return;
+      }
+
+      event.preventDefault();
+      const startX = event.clientX;
+      const initialWidth = rightPanelWidth;
+      const previousUserSelect = document.body.style.userSelect;
+      const previousCursor = document.body.style.cursor;
+
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "col-resize";
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const viewportWidth = window.innerWidth;
+        const rawWidth = initialWidth - (moveEvent.clientX - startX);
+        const maxWidth = Math.max(
+          CHAT_RIGHT_PANEL_MIN_WIDTH,
+          Math.min(
+            CHAT_RIGHT_PANEL_MAX_WIDTH,
+            viewportWidth - leftSidebarWidth - CHAT_CENTER_MIN_WIDTH,
+          ),
+        );
+        const nextWidth = Math.min(Math.max(rawWidth, CHAT_RIGHT_PANEL_MIN_WIDTH), maxWidth);
+        setRightPanelWidth(nextWidth);
+      };
+
+      const stopResize = () => {
+        document.body.style.userSelect = previousUserSelect;
+        document.body.style.cursor = previousCursor;
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", stopResize);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", stopResize);
+    },
+    [isDesktopLayout, leftSidebarWidth, rightPanelWidth, setRightPanelWidth],
+  );
+  const messageContextMenuPosition = useMemo(() => {
+    if (!messageContextMenu || typeof window === "undefined") {
+      return null;
+    }
+
+    const maxLeft = Math.max(
+      MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
+      window.innerWidth - MESSAGE_CONTEXT_MENU_WIDTH - MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
+    );
+    const maxTop = Math.max(
+      MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
+      window.innerHeight - MESSAGE_CONTEXT_MENU_MIN_HEIGHT - MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
+    );
+
+    return {
+      left: Math.min(Math.max(messageContextMenu.x, MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN), maxLeft),
+      top: Math.min(Math.max(messageContextMenu.y, MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN), maxTop),
+    };
+  }, [messageContextMenu]);
   const profileDetailRows = isGroupChat
     ? [
         { label: "Тип", value: "Групповой чат" },
@@ -1014,6 +1192,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
         },
       ]
     : [
+        { label: "Ник", value: conversationProfileHandle ?? "Не задан" },
         { label: "Email", value: conversationProfileUser.email },
         {
           label: "Статус",
@@ -1031,6 +1210,61 @@ export function ConversationView({ chatId }: { chatId: string }) {
         },
       ];
   const visibleGroupMembers = groupMembersQuery.data?.members ?? [];
+  const canDeleteConversation = !isGroupChat || chatQuery.data?.currentUserRole === "creator";
+  const destructiveConversationLabel = canDeleteConversation
+    ? isGroupChat
+      ? "Удалить группу"
+      : "Удалить чат"
+    : "Выйти из группы";
+  const mediaStats = useMemo(() => {
+    let imageCount = 0;
+    let videoCount = 0;
+    let audioCount = 0;
+    let fileCount = 0;
+    let linkCount = 0;
+
+    for (const message of messageItems) {
+      linkCount += (message.body?.match(/(?:https?:\/\/|www\.)\S+/gi) ?? []).length;
+
+      for (const attachment of message.attachments) {
+        const kind = getAttachmentKind(attachment);
+
+        if (kind === "image") {
+          imageCount += 1;
+          continue;
+        }
+
+        if (kind === "video") {
+          videoCount += 1;
+          continue;
+        }
+
+        if (kind === "audio") {
+          audioCount += 1;
+          continue;
+        }
+
+        fileCount += 1;
+      }
+    }
+
+    return [
+      { key: "images", label: "Фотографии", value: imageCount, icon: GalleryIcon },
+      { key: "videos", label: "Видео", value: videoCount, icon: VideoIcon },
+      { key: "files", label: "Файлы", value: fileCount, icon: FileStackIcon },
+      { key: "audio", label: "Аудио", value: audioCount, icon: AudioBarsIcon },
+      { key: "links", label: "Ссылки", value: linkCount, icon: LinkChainIcon },
+    ];
+  }, [messageItems]);
+  const contextMenuMessage = messageContextMenu?.message ?? null;
+  const contextMenuTimestampLabel = contextMenuMessage
+    ? `${formatConversationDateLabel(contextMenuMessage.createdAt).toLocaleLowerCase()} в ${formatTime(contextMenuMessage.createdAt)}`
+    : null;
+  const contextMenuCurrentUserReaction =
+    contextMenuMessage && user?.id
+      ? contextMenuMessage.reactions.find((reaction) => reaction.userIds.includes(user.id))?.emoji ??
+        null
+      : null;
 
   const stopMediaStream = useCallback(() => {
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -1169,6 +1403,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
         });
 
         shouldScrollAfterSendRef.current = true;
+        shouldRefocusComposerRef.current = true;
         sendMessageMutation.mutate({
           body: "",
           file: voiceFile,
@@ -1205,6 +1440,19 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
     [stopMediaStream],
   );
+
+  useEffect(() => {
+    if (recordingState !== "idle" || isComposerSubmitPending) {
+      return;
+    }
+
+    if (!shouldRefocusComposerRef.current) {
+      return;
+    }
+
+    shouldRefocusComposerRef.current = false;
+    focusComposer();
+  }, [focusComposer, isComposerSubmitPending, recordingState]);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     if (isEditingMessage) {
@@ -1256,10 +1504,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setLocalTypingState(false);
     setComposerError(null);
     if (editingMessage) {
+      shouldRefocusComposerRef.current = true;
       editMessageMutation.mutate({ messageId: editingMessage.id, body });
       return;
     }
 
+    shouldRefocusComposerRef.current = true;
     sendMessageMutation.mutate({
       body,
       file: pendingFile,
@@ -1315,8 +1565,33 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setMessageContextMenu(null);
     setConfirmingMessage(message);
   };
+
+  const handleDeleteMessageMode = (mode: DeleteMessageMode) => {
+    if (!confirmingMessage) {
+      return;
+    }
+
+    deleteMessageMutation.mutate({
+      messageId: confirmingMessage.id,
+      mode,
+    });
+  };
+
+  const openMessageContextMenu = useCallback(
+    (message: ChatMessage, x: number, y: number) => {
+      setShowConversationMenu(false);
+      setShowConversationProfile(false);
+      setMessageContextMenu({ message, x, y });
+    },
+    [],
+  );
+
+  const closeMessageContextMenu = useCallback(() => {
+    setMessageContextMenu(null);
+  }, []);
 
   const handleReplyMessage = (message: ChatMessage) => {
     if (recordingState !== "idle" || isComposerSubmitPending) {
@@ -1328,6 +1603,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setMessageContextMenu(null);
     setComposerError(null);
     setEditingMessage(null);
     setReplyingToMessage(message);
@@ -1347,6 +1623,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setMessageContextMenu(null);
     setComposerError(null);
     setReplyingToMessage(null);
     setEditingMessage(message);
@@ -1369,6 +1646,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setMessageContextMenu(null);
     setComposerError(null);
     setForwardPanelError(null);
     setForwardSearch("");
@@ -1394,11 +1672,44 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setMessageContextMenu(null);
     toggleReactionMutation.mutate({
       messageId: message.id,
       emoji,
     });
   };
+
+  const handleCopyMessageText = useCallback(async (message: ChatMessage) => {
+    const text = message.body?.trim();
+
+    if (!text) {
+      setHeaderStatusMessage("В этом сообщении нет текста для копирования.");
+      setMessageContextMenu(null);
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setHeaderStatusMessage("Текст сообщения скопирован.");
+    } catch {
+      setHeaderStatusMessage("Не удалось скопировать текст сообщения.");
+    } finally {
+      setMessageContextMenu(null);
+    }
+  }, []);
+
+  const handlePinMessageStub = useCallback((message: ChatMessage) => {
+    setFocusedMessageId(message.id);
+    setHeaderStatusMessage("Закрепление сообщений добавим следующим шагом.");
+    setMessageContextMenu(null);
+  }, []);
+
+  const handleSelectMessageStub = useCallback((message: ChatMessage) => {
+    setFocusedMessageId(message.id);
+    focusMessageById(message.id, "smooth");
+    setHeaderStatusMessage("Режим выделения добавим следующим шагом.");
+    setMessageContextMenu(null);
+  }, [focusMessageById]);
 
   const cancelComposerContext = () => {
     if (editingMessage) {
@@ -1447,6 +1758,41 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setShowConversationMenu(false);
   };
 
+  const announceConversationAction = (
+    message: string,
+    options?: { closeMenu?: boolean; closeProfile?: boolean },
+  ) => {
+    setHeaderStatusMessage(message);
+    if (options?.closeMenu ?? true) {
+      setShowConversationMenu(false);
+    }
+    if (options?.closeProfile) {
+      setShowConversationProfile(false);
+    }
+  };
+
+  const openConversationProfile = () => {
+    setShowConversationMenu(false);
+    setShowConversationProfile(true);
+  };
+
+  const openGroupMembersPanel = () => {
+    setShowConversationMenu(false);
+    setShowConversationProfile(false);
+    setShowGroupMembersPanel(true);
+  };
+
+  const handleConversationDangerAction = () => {
+    setShowConversationMenu(false);
+
+    if (canDeleteConversation) {
+      setConfirmingChatDeletion(true);
+      return;
+    }
+
+    setConfirmingGroupLeave(true);
+  };
+
   const toggleMessageSearch = () => {
     setShowConversationMenu(false);
     setShowConversationProfile(false);
@@ -1480,7 +1826,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
       className="chat-shell-panel chat-thread-surface relative flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0"
       data-testid="conversation-view"
     >
-      <header className="relative z-20 flex flex-none items-start justify-between gap-4 border-b border-black/8 bg-white px-4 py-3 sm:px-5">
+      <header
+        className="relative z-20 flex flex-none border-b border-black/8 bg-white px-4 py-3 transition-[padding] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)] sm:px-5"
+        style={conversationProfileOffsetStyle}
+      >
+        <div className="flex w-full items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <h2
             className="truncate text-[21px] font-semibold leading-none tracking-tight text-[#171717]"
@@ -1560,44 +1910,90 @@ export function ConversationView({ chatId }: { chatId: string }) {
             {showConversationMenu ? (
               <div
                 ref={conversationMenuRef}
-                className="absolute right-0 top-12 z-30 min-w-[220px] rounded-[22px] border border-black/8 bg-white p-2 text-sm text-[#171717] shadow-[0_24px_60px_rgba(17,24,39,0.14)]"
+                className="absolute right-0 top-12 z-30 w-[292px] max-w-[calc(100vw-2rem)] rounded-[28px] border border-black/8 bg-[rgba(255,255,255,0.98)] p-2 text-sm text-[#171717] shadow-[0_28px_60px_rgba(17,24,39,0.16)] backdrop-blur"
               >
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowConversationMenu(false);
-                    setShowConversationProfile(true);
-                  }}
-                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
-                >
-                  <PanelRightIcon className="h-4 w-4 text-stone-500" />
-                  <span>Открыть профиль</span>
-                </button>
-                {isGroupChat ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowConversationMenu(false);
-                      setShowGroupMembersPanel((current) => !current);
-                    }}
-                    data-testid="group-members-toggle"
-                    className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
-                  >
-                    <UsersIcon className="h-4 w-4 text-stone-500" />
-                    <span>{showGroupMembersPanel ? "Скрыть участников" : "Показать участников"}</span>
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={toggleMessageSearch}
-                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
-                >
-                  <SearchIcon className="h-4 w-4 text-stone-500" />
-                  <span>{showMessageSearch || hasSearchInput ? "Скрыть поиск" : "Искать в чате"}</span>
-                </button>
+                <div className="px-3 pb-2 pt-3">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-stone-400">
+                    Быстрые действия
+                  </p>
+                </div>
+                <div className="space-y-1 px-1 pb-2">
+                  <ConversationMenuRow
+                    icon={PanelRightIcon}
+                    label="Открыть профиль"
+                    onClick={openConversationProfile}
+                    showChevron
+                  />
+                  <ConversationMenuRow
+                    icon={SearchIcon}
+                    label={showMessageSearch || hasSearchInput ? "Скрыть поиск" : "Искать в чате"}
+                    onClick={toggleMessageSearch}
+                  />
+                  {isGroupChat ? (
+                    <ConversationMenuRow
+                      icon={UsersIcon}
+                      label={showGroupMembersPanel ? "Скрыть участников" : "Показать участников"}
+                      onClick={() => {
+                        setShowConversationMenu(false);
+                        setShowGroupMembersPanel((current) => !current);
+                      }}
+                      showChevron
+                    />
+                  ) : null}
+                </div>
+                <div className="mx-3 h-px bg-black/6" />
+                <div className="space-y-1 px-1 py-2">
+                  <ConversationMenuRow
+                    icon={BellOffIcon}
+                    label="Выключить уведомления"
+                    onClick={() =>
+                      announceConversationAction("Настройки уведомлений добавим следующим шагом.")
+                    }
+                    showChevron
+                  />
+                  <ConversationMenuRow
+                    icon={WallpaperIcon}
+                    label="Установить обои"
+                    onClick={() =>
+                      announceConversationAction("Выбор обоев добавим следующим шагом.")
+                    }
+                  />
+                  <ConversationMenuRow
+                    icon={CopySlashIcon}
+                    label="Запретить копирование"
+                    onClick={() =>
+                      announceConversationAction("Ограничение копирования добавим следующим шагом.")
+                    }
+                  />
+                  <ConversationMenuRow
+                    icon={ExportIcon}
+                    label="Экспорт истории чата"
+                    onClick={() =>
+                      announceConversationAction("Экспорт чата добавим следующим шагом.")
+                    }
+                    showChevron
+                  />
+                  <ConversationMenuRow
+                    icon={BroomIcon}
+                    label="Очистить историю"
+                    onClick={() =>
+                      announceConversationAction("Очистку истории добавим следующим шагом.")
+                    }
+                  />
+                </div>
+                <div className="mx-3 h-px bg-black/6" />
+                <div className="px-1 pb-1 pt-2">
+                  <ConversationMenuRow
+                    icon={TrashIcon}
+                    label={destructiveConversationLabel}
+                    onClick={handleConversationDangerAction}
+                    destructive
+                  />
+                </div>
               </div>
             ) : null}
           </div>
+        </div>
         </div>
       </header>
 
@@ -1689,20 +2085,38 @@ export function ConversationView({ chatId }: { chatId: string }) {
         </div>
       ) : null}
 
-      {showConversationProfile ? (
+      {isConversationProfileMounted ? (
         <>
-          <button
-            type="button"
-            onClick={() => setShowConversationProfile(false)}
-            className="absolute inset-0 z-20 bg-black/10"
-            aria-label="Закрыть профиль чата"
-          />
+          {isDesktopLayout ? (
+            <button
+              type="button"
+              onPointerDown={handleRightPanelResizeStart}
+              onDoubleClick={() => setRightPanelWidth(CHAT_RIGHT_PANEL_DEFAULT_WIDTH)}
+              className="absolute bottom-0 top-0 z-30 hidden w-3 translate-x-1/2 cursor-col-resize border-0 bg-transparent lg:block"
+              style={{ right: `${rightPanelWidth}px` }}
+              aria-label="Изменить ширину правой панели"
+              title="Изменить ширину правой панели"
+            >
+              <span className="mx-auto block h-full w-[3px] rounded-full bg-black/6 transition hover:bg-black/18" />
+            </button>
+          ) : null}
           <aside
             ref={conversationProfileRef}
-            className="absolute right-0 top-0 z-30 flex h-full w-full max-w-[380px] flex-col overflow-y-auto border-l border-black/8 bg-[#f7f7f5] text-[#171717] shadow-[-24px_0_60px_rgba(17,24,39,0.14)]"
+            className={clsx(
+              "scroll-region-y scroll-region-overlay-right absolute right-0 top-0 z-30 flex h-full w-full max-w-[90vw] flex-col overflow-y-auto border-l border-black/8 bg-[#f7f7f5] text-[#171717] transition-[transform,opacity,box-shadow] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+              isConversationProfileVisible
+                ? "pointer-events-auto translate-x-0 opacity-100 shadow-[-24px_0_60px_rgba(17,24,39,0.14)]"
+                : "pointer-events-none translate-x-10 opacity-0 shadow-[-12px_0_26px_rgba(17,24,39,0.08)]",
+            )}
+            style={isDesktopLayout ? { width: `${rightPanelWidth}px` } : undefined}
             data-testid="conversation-profile-panel"
           >
-            <div className="border-b border-black/8 bg-white px-6 py-6">
+            <div
+              className={clsx(
+                "border-b border-black/8 bg-white px-5 py-6 transition-[transform,opacity] duration-[320ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+                isConversationProfileVisible ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0",
+              )}
+            >
               <div className="flex items-start justify-between gap-4">
                 <UserAvatar
                   user={conversationProfileUser}
@@ -1722,45 +2136,60 @@ export function ConversationView({ chatId }: { chatId: string }) {
               <h3 className="mt-5 text-[28px] font-semibold leading-none tracking-tight text-[#171717]">
                 {conversationTitle}
               </h3>
+              {conversationProfileHandle ? (
+                <p className="mt-2 text-sm font-semibold tracking-[0.16em] text-stone-400">
+                  {conversationProfileHandle}
+                </p>
+              ) : null}
               <p className="mt-2 text-base text-stone-500">{profileSummaryStatus}</p>
-              <div className="mt-5 grid grid-cols-3 gap-3">
-                <button
-                  type="button"
+              <div className="mt-5 grid grid-cols-3 gap-2.5">
+                <ProfileActionTile
+                  icon={ChatBubbleIcon}
+                  label="Чат"
                   onClick={() => setShowConversationProfile(false)}
-                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
-                >
-                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
-                    <ChatBubbleIcon className="h-4 w-4" />
-                  </span>
-                  <span className="mt-2 block text-sm">Чат</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConversationCall}
-                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
-                >
-                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
-                    <PhoneIcon className="h-4 w-4" />
-                  </span>
-                  <span className="mt-2 block text-sm">Звонок</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowConversationProfile(false);
-                    setShowMessageSearch(true);
-                  }}
-                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
-                >
-                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
-                    <SearchIcon className="h-4 w-4" />
-                  </span>
-                  <span className="mt-2 block text-sm">Поиск</span>
-                </button>
+                />
+                <ProfileActionTile
+                  icon={BellIcon}
+                  label="Звук"
+                  onClick={() =>
+                    announceConversationAction("Настройки звука добавим следующим шагом.", {
+                      closeMenu: false,
+                    })
+                  }
+                />
+                <ProfileActionTile
+                  icon={GiftIcon}
+                  label="Подарок"
+                  onClick={() =>
+                    announceConversationAction("Подарки добавим следующим шагом.", {
+                      closeMenu: false,
+                    })
+                  }
+                />
+              </div>
+              <div className="mt-5 rounded-[24px] border border-black/8 bg-[#fafaf9] p-4">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Обзор</p>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <div className="rounded-[18px] border border-black/8 bg-white px-4 py-3">
+                    <p className="text-lg font-semibold text-[#171717]">{messageItems.length}</p>
+                    <p className="mt-1 text-sm text-stone-500">Сообщений в чате</p>
+                  </div>
+                  <div className="rounded-[18px] border border-black/8 bg-white px-4 py-3">
+                    <p className="text-lg font-semibold text-[#171717]">
+                      {mediaStats.reduce((total, item) => total + item.value, 0)}
+                    </p>
+                    <p className="mt-1 text-sm text-stone-500">Материалов и ссылок</p>
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div className="space-y-6 px-6 py-6">
+            <div
+              className={clsx(
+                "space-y-6 px-5 py-6 transition-[transform,opacity] duration-[340ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+                isConversationProfileVisible ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0",
+              )}
+            >
               <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
                 <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Информация</p>
                 <div className="mt-4 space-y-4">
@@ -1770,6 +2199,116 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       <p className="mt-1 text-sm text-stone-500">{row.label}</p>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">
+                    Материалы
+                  </p>
+                  <span className="rounded-full border border-black/8 bg-[#fafaf9] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-stone-500">
+                    {mediaStats.reduce((total, item) => total + item.value, 0)}
+                  </span>
+                </div>
+                <div className="mt-4 space-y-2">
+                  {mediaStats.map((item) => (
+                    <ProfileStatRow
+                      key={item.key}
+                      icon={item.icon}
+                      label={item.label}
+                      value={item.value}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">
+                    Управление
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowConversationProfile(false);
+                      setShowConversationMenu(true);
+                    }}
+                    className="text-xs text-stone-500 transition hover:text-black"
+                  >
+                    Открыть меню
+                  </button>
+                </div>
+                <div className="mt-4 space-y-1">
+                  <ConversationMenuRow
+                    icon={BellOffIcon}
+                    label="Выключить уведомления"
+                    onClick={() =>
+                      announceConversationAction(
+                        "Настройки уведомлений добавим следующим шагом.",
+                        { closeMenu: false },
+                      )
+                    }
+                    compact
+                  />
+                  <ConversationMenuRow
+                    icon={WallpaperIcon}
+                    label="Установить обои"
+                    onClick={() =>
+                      announceConversationAction("Выбор обоев добавим следующим шагом.", {
+                        closeMenu: false,
+                      })
+                    }
+                    compact
+                  />
+                  <ConversationMenuRow
+                    icon={CopySlashIcon}
+                    label="Запретить копирование"
+                    onClick={() =>
+                      announceConversationAction(
+                        "Ограничение копирования добавим следующим шагом.",
+                        { closeMenu: false },
+                      )
+                    }
+                    compact
+                  />
+                  <ConversationMenuRow
+                    icon={ExportIcon}
+                    label="Экспорт истории чата"
+                    onClick={() =>
+                      announceConversationAction("Экспорт чата добавим следующим шагом.", {
+                        closeMenu: false,
+                      })
+                    }
+                    compact
+                    showChevron
+                  />
+                  <ConversationMenuRow
+                    icon={BroomIcon}
+                    label="Очистить историю"
+                    onClick={() =>
+                      announceConversationAction("Очистку истории добавим следующим шагом.", {
+                        closeMenu: false,
+                      })
+                    }
+                    compact
+                  />
+                  {isGroupChat ? (
+                    <ConversationMenuRow
+                      icon={UsersIcon}
+                      label="Участники группы"
+                      onClick={openGroupMembersPanel}
+                      compact
+                      showChevron
+                    />
+                  ) : null}
+                  <ConversationMenuRow
+                    icon={TrashIcon}
+                    label={destructiveConversationLabel}
+                    onClick={handleConversationDangerAction}
+                    destructive
+                    compact
+                  />
                 </div>
               </div>
 
@@ -1805,7 +2344,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
                               {member.user.displayName}
                             </p>
                             <p className="truncate text-sm text-stone-500">
-                              {formatGroupRole(member.role)}
+                              {member.user.username
+                                ? `${formatGroupRole(member.role)} · #${member.user.username}`
+                                : formatGroupRole(member.role)}
                             </p>
                           </div>
                         </div>
@@ -1833,6 +2374,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       <p className="truncate text-base font-medium text-[#171717]">
                         {conversationProfileUser.displayName}
                       </p>
+                      {conversationProfileHandle ? (
+                        <p className="truncate text-xs font-semibold tracking-[0.16em] text-stone-400">
+                          {conversationProfileHandle}
+                        </p>
+                      ) : null}
                       <p className="truncate text-sm text-stone-500">
                         {conversationProfileUser.email}
                       </p>
@@ -1996,9 +2542,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
       <div
         ref={messageListRef}
         onScroll={updateStickToBottomState}
-        className="scroll-region-y relative z-10 flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
+        className="scroll-region-y relative z-10 flex-1 min-h-0 overflow-y-auto px-3 py-5 transition-[padding] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)] sm:px-4"
+        style={conversationProfileOffsetStyle}
         data-testid="message-list"
       >
+        <div className="w-full space-y-3">
         {renderItems.map((item) => {
           if (item.type === "date") {
             return (
@@ -2037,12 +2585,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           const shortTextOnlyBubble =
             inlineMetaBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
           const currentUserId = user?.id ?? null;
-          const currentUserReaction =
-            currentUserId
-              ? message.reactions.find((reaction) => reaction.userIds.includes(currentUserId))?.emoji ??
-                null
-              : null;
-
+          const bubbleOnRight = usesSplitConversationLayout && isMine;
           return (
             <div
               key={item.key}
@@ -2051,75 +2594,48 @@ export function ConversationView({ chatId }: { chatId: string }) {
               data-message-owner={isMine ? "self" : "other"}
               data-message-search-match={isSearchMatch ? "true" : "false"}
               data-message-search-active={isActiveSearchMatch ? "true" : "false"}
-              onMouseLeave={() => {
-                setRecentlyReactedMessageId((current) =>
-                  current === message.id ? null : current,
-                );
+              onContextMenu={(event) => {
+                if (message.isDeleted) {
+                  return;
+                }
+
+                event.preventDefault();
+                openMessageContextMenu(message, event.clientX, event.clientY);
               }}
-              className={clsx("group flex w-full", isMine ? "justify-end" : "justify-start")}
+              className={clsx("group flex w-full", bubbleOnRight ? "justify-end" : "justify-start")}
             >
               <div
                 className={clsx(
                   "relative",
-                  isMine ? "ml-auto max-w-[85%] sm:max-w-[70%]" : "max-w-[85%] sm:max-w-[70%]",
+                  bubbleOnRight
+                    ? "ml-auto max-w-[94%] sm:max-w-[88%] xl:max-w-[80%] 2xl:max-w-[78%]"
+                    : "max-w-[94%] sm:max-w-[88%] xl:max-w-[80%] 2xl:max-w-[78%]",
                 )}
               >
-                {!message.isDeleted ? (
-                  <div
-                    className={clsx(
-                      "pointer-events-none absolute top-0 z-20 flex min-w-[120px] flex-col gap-1 rounded-[14px] border border-black/10 bg-white/95 p-1 shadow-[0_12px_28px_rgba(17,24,39,0.12)] backdrop-blur-sm opacity-0 transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
-                      isMine ? "right-full mr-2" : "left-full ml-2",
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => handleReplyMessage(message)}
-                      data-testid="reply-message-button"
-                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
-                    >
-                      Ответ
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleStartForwardMessage(message)}
-                      data-testid="forward-message-button"
-                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
-                    >
-                      Переслать
-                    </button>
-                    {isMine ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleStartEditingMessage(message)}
-                          data-testid="edit-message-button"
-                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
-                        >
-                          Изменить
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteMessage(message)}
-                          data-testid="delete-message-button"
-                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
-                        >
-                          {deleteMessageMutation.isPending ? "..." : "Удалить"}
-                        </button>
-                      </>
-                    ) : null}
-                  </div>
-                ) : null}
-                <div className={clsx("flex max-w-full flex-col gap-1.5", isMine ? "items-end" : "items-start")}>
+                <div
+                  className={clsx(
+                    "flex max-w-full flex-col gap-1.5",
+                    bubbleOnRight ? "items-end" : "items-start",
+                  )}
+                >
                   <div
                     className={clsx(
                       "w-fit max-w-full shadow-sm transition-[box-shadow]",
                       shortTextOnlyBubble
-                        ? "rounded-[13px] px-2.5 py-0.5"
+                        ? bubbleOnRight
+                          ? "rounded-[18px] rounded-br-[7px] px-3 py-1"
+                          : "rounded-[18px] rounded-bl-[7px] px-3 py-1"
                         : compactBubble
-                          ? "rounded-[17px] px-2.5 py-1"
+                          ? bubbleOnRight
+                            ? "rounded-[22px] rounded-br-[8px] px-3 py-1.5"
+                            : "rounded-[22px] rounded-bl-[8px] px-3 py-1.5"
                           : attachmentOnlyBubble
-                            ? "rounded-[20px] px-3 py-[2px]"
-                            : "rounded-[22px] px-4 py-2.5",
+                            ? bubbleOnRight
+                              ? "rounded-[24px] rounded-br-[10px] px-3 py-[2px]"
+                              : "rounded-[24px] rounded-bl-[10px] px-3 py-[2px]"
+                            : bubbleOnRight
+                              ? "rounded-[24px] rounded-br-[9px] px-4 py-2.5"
+                              : "rounded-[24px] rounded-bl-[9px] px-4 py-2.5",
                       isMine
                         ? "bg-[#111111] text-white"
                         : "border border-black/8 bg-white text-[#171717]",
@@ -2212,65 +2728,61 @@ export function ConversationView({ chatId }: { chatId: string }) {
                         {messageMetaLabel}
                       </p>
                     ) : null}
+                    {message.reactions.length > 0 ? (
+                      <div
+                        className={clsx(
+                          "mt-2 flex max-w-full flex-wrap gap-1",
+                          bubbleOnRight ? "justify-end" : "justify-start",
+                        )}
+                      >
+                        {message.reactions.map((reaction) => {
+                          const reactedByCurrentUser =
+                            currentUserId ? reaction.userIds.includes(currentUserId) : false;
+
+                          return (
+                            <button
+                              key={`${message.id}-${reaction.emoji}`}
+                              type="button"
+                              onClick={() =>
+                                handleToggleMessageReaction(
+                                  message,
+                                  reaction.emoji as (typeof QUICK_REACTIONS)[number],
+                                )
+                              }
+                              className={clsx(
+                                "inline-flex items-center gap-1 rounded-full px-1.5 py-[3px] text-[11px] font-medium transition",
+                                reactedByCurrentUser
+                                  ? isMine
+                                    ? "bg-[#58aeea] text-white"
+                                    : "border border-[#c6def2] bg-[#eef7ff] text-[#1d5f93]"
+                                  : isMine
+                                    ? "bg-white/14 text-white hover:bg-white/18"
+                                    : "border border-black/8 bg-black/[0.04] text-stone-600 hover:border-black/18 hover:text-black",
+                              )}
+                              data-testid="message-reaction-chip"
+                            >
+                              <span className="text-[14px] leading-none">{reaction.emoji}</span>
+                              <span
+                                className={clsx(
+                                  "inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none",
+                                  reactedByCurrentUser
+                                    ? isMine
+                                      ? "bg-white/22 text-white"
+                                      : "bg-[#48a7ea]/16 text-[#1d5f93]"
+                                    : isMine
+                                      ? "bg-white/14 text-white/92"
+                                      : "bg-black/[0.06] text-stone-500",
+                                )}
+                              >
+                                {reaction.count}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                   </div>
 
-                  {message.reactions.length > 0 ? (
-                    <div className="flex max-w-full flex-wrap gap-1">
-                      {message.reactions.map((reaction) => {
-                        const reactedByCurrentUser =
-                          currentUserId ? reaction.userIds.includes(currentUserId) : false;
-
-                        return (
-                          <button
-                            key={`${message.id}-${reaction.emoji}`}
-                            type="button"
-                            onClick={() =>
-                              handleToggleMessageReaction(
-                                message,
-                                reaction.emoji as (typeof QUICK_REACTIONS)[number],
-                              )
-                            }
-                            className={clsx(
-                              "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
-                              reactedByCurrentUser
-                                ? "border-black bg-black text-white"
-                                : "border-black/10 bg-white text-stone-600 hover:border-black/25 hover:text-black",
-                            )}
-                            data-testid="message-reaction-chip"
-                          >
-                            <span>{reaction.emoji}</span>
-                            <span>{reaction.count}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-
-                  {!message.isDeleted && recentlyReactedMessageId !== message.id ? (
-                    <div
-                      className="pointer-events-none flex max-h-0 max-w-full flex-wrap gap-1 overflow-hidden rounded-[14px] border border-black/10 bg-white px-2 py-0 opacity-0 shadow-sm -translate-y-1 transition-all duration-150 ease-out group-hover:pointer-events-auto group-hover:max-h-16 group-hover:translate-y-0 group-hover:py-1.5 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:max-h-16 group-focus-within:translate-y-0 group-focus-within:py-1.5 group-focus-within:opacity-100"
-                      data-testid="message-reaction-picker"
-                    >
-                      {QUICK_REACTIONS.map((emoji) => (
-                        <button
-                          key={`${message.id}-${emoji}-quick-reaction`}
-                          type="button"
-                          onClick={() => handleToggleMessageReaction(message, emoji)}
-                          disabled={toggleReactionMutation.isPending}
-                          className={clsx(
-                            "rounded-full border px-2 py-1 text-sm transition disabled:cursor-not-allowed disabled:opacity-50",
-                            currentUserReaction === emoji
-                              ? "border-black bg-black text-white"
-                              : "border-black/10 bg-white text-stone-700 hover:border-black/25 hover:text-black",
-                          )}
-                          data-testid="quick-reaction-button"
-                          aria-label={`Поставить реакцию ${emoji}`}
-                        >
-                          {emoji}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
                 </div>
               </div>
             </div>
@@ -2287,9 +2799,15 @@ export function ConversationView({ chatId }: { chatId: string }) {
           </div>
         ) : null}
         <div ref={messageListEndRef} aria-hidden="true" />
+        </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="relative z-10 flex-none border-t border-black/8 p-4 sm:p-5">
+      <form
+        onSubmit={handleSubmit}
+        className="relative z-10 flex-none border-t border-black/8 p-4 transition-[padding] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)] sm:p-5"
+        style={conversationProfileOffsetStyle}
+      >
+        <div className="w-full">
         <input
           ref={fileInputRef}
           type="file"
@@ -2510,7 +3028,101 @@ export function ConversationView({ chatId }: { chatId: string }) {
             </button>
           </div>
         </div>
+        </div>
       </form>
+
+      {contextMenuMessage && messageContextMenuPosition
+        ? createPortal(
+            <div className="fixed inset-0 z-[220]" data-testid="message-context-menu-layer">
+              <button
+                type="button"
+                aria-label="Закрыть контекстное меню"
+                className="absolute inset-0 cursor-default bg-transparent"
+                onClick={closeMessageContextMenu}
+              />
+              <div
+                className="absolute w-[276px] overflow-hidden rounded-[22px] border border-black/10 bg-white text-[#171717] shadow-[0_24px_48px_rgba(17,24,39,0.18)]"
+                style={{
+                  left: messageContextMenuPosition.left,
+                  top: messageContextMenuPosition.top,
+                }}
+                role="menu"
+                aria-label="Действия с сообщением"
+                onClick={(event) => event.stopPropagation()}
+                onContextMenu={(event) => event.preventDefault()}
+              >
+                <div className="flex items-center gap-1.5 border-b border-black/8 bg-white px-3 py-2.5">
+                  {QUICK_REACTIONS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => handleToggleMessageReaction(contextMenuMessage, emoji)}
+                      className={clsx(
+                        "flex h-9 min-w-9 items-center justify-center rounded-full border px-2 text-lg transition",
+                        contextMenuCurrentUserReaction === emoji
+                          ? "border-black bg-[#111111] text-white"
+                          : "border-black/10 bg-white text-[#171717] hover:border-black/20 hover:bg-black/[0.04]",
+                      )}
+                      aria-label={`Поставить реакцию ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="space-y-0.5 px-2 py-2">
+                  <MessageContextMenuRow
+                    icon={ReplyArrowIcon}
+                    label="Ответить"
+                    onClick={() => handleReplyMessage(contextMenuMessage)}
+                  />
+                  <MessageContextMenuRow
+                    icon={PinIcon}
+                    label="Закрепить"
+                    onClick={() => handlePinMessageStub(contextMenuMessage)}
+                  />
+                  <MessageContextMenuRow
+                    icon={CopyIcon}
+                    label="Копировать текст"
+                    onClick={() => {
+                      void handleCopyMessageText(contextMenuMessage);
+                    }}
+                    disabled={!contextMenuMessage.body?.trim()}
+                  />
+                  <MessageContextMenuRow
+                    icon={ExportIcon}
+                    label="Переслать"
+                    onClick={() => handleStartForwardMessage(contextMenuMessage)}
+                  />
+                  {contextMenuMessage.senderId === user?.id ? (
+                    <MessageContextMenuRow
+                      icon={EditPencilIcon}
+                      label="Изменить"
+                      onClick={() => handleStartEditingMessage(contextMenuMessage)}
+                    />
+                  ) : null}
+                  <MessageContextMenuRow
+                    icon={TrashIcon}
+                    label="Удалить"
+                    onClick={() => handleDeleteMessage(contextMenuMessage)}
+                    destructive
+                  />
+                  <MessageContextMenuRow
+                    icon={SelectCheckIcon}
+                    label="Выделить"
+                    onClick={() => handleSelectMessageStub(contextMenuMessage)}
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 border-t border-black/8 bg-[#fafaf9] px-3 py-2 text-xs text-stone-500">
+                  <ClockIcon className="h-4 w-4 shrink-0" />
+                  <span className="truncate">{contextMenuTimestampLabel}</span>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {forwardingMessage ? (
         <div
@@ -2597,21 +3209,19 @@ export function ConversationView({ chatId }: { chatId: string }) {
         </div>
       ) : null}
 
-      <ConfirmDialog
+      <DeleteMessageDialog
         open={Boolean(confirmingMessage)}
         title="Удалить это сообщение?"
-        description="Сообщение исчезнет из переписки у участников этого чата."
+        description="Выберите, нужно ли удалить сообщение только у вас или у всех участников этого чата."
         isLoading={deleteMessageMutation.isPending}
+        allowDeleteForEveryone={confirmingMessage?.senderId === user?.id}
         onCancel={() => {
           if (!deleteMessageMutation.isPending) {
             setConfirmingMessage(null);
           }
         }}
-        onConfirm={() => {
-          if (confirmingMessage) {
-            deleteMessageMutation.mutate(confirmingMessage.id);
-          }
-        }}
+        onDeleteForSelf={() => handleDeleteMessageMode("self")}
+        onDeleteForEveryone={() => handleDeleteMessageMode("everyone")}
       />
 
       <ConfirmDialog
@@ -2650,7 +3260,159 @@ export function ConversationView({ chatId }: { chatId: string }) {
           leaveGroupMutation.mutate();
         }}
       />
+
+      <ConfirmDialog
+        open={confirmingChatDeletion}
+        title={isGroupChat ? "Удалить группу?" : "Удалить этот чат?"}
+        description={
+          isGroupChat
+            ? `Группа «${conversationTitle}» будет удалена для всех участников.`
+            : `Диалог «${conversationTitle}» будет удален целиком.`
+        }
+        confirmLabel="Удалить"
+        isLoading={deleteChatMutation.isPending}
+        onCancel={() => {
+          if (!deleteChatMutation.isPending) {
+            setConfirmingChatDeletion(false);
+          }
+        }}
+        onConfirm={() => {
+          deleteChatMutation.mutate();
+        }}
+      />
     </section>
+  );
+}
+
+function ConversationMenuRow({
+  icon: Icon,
+  label,
+  onClick,
+  destructive = false,
+  showChevron = false,
+  compact = false,
+}: {
+  icon: IconComponent;
+  label: string;
+  onClick: () => void;
+  destructive?: boolean;
+  showChevron?: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        "flex w-full items-center gap-3 rounded-[18px] text-left transition hover:bg-black/[0.035]",
+        compact ? "px-3 py-2.5" : "px-3 py-3",
+      )}
+    >
+      <span
+        className={clsx(
+          "flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] border",
+          destructive
+            ? "border-red-500/15 bg-red-50 text-red-500"
+            : "border-black/8 bg-[#f7f7f5] text-stone-600",
+        )}
+      >
+        <Icon className="h-5 w-5" />
+      </span>
+      <span
+        className={clsx(
+          "min-w-0 flex-1 truncate text-[15px] leading-none",
+          destructive ? "text-red-500" : "text-[#171717]",
+        )}
+      >
+        {label}
+      </span>
+      {showChevron ? (
+        <ChevronRightIcon
+          className={clsx("h-4 w-4 shrink-0", destructive ? "text-red-300" : "text-stone-400")}
+        />
+      ) : null}
+    </button>
+  );
+}
+
+function MessageContextMenuRow({
+  icon: Icon,
+  label,
+  onClick,
+  destructive = false,
+  disabled = false,
+}: {
+  icon: IconComponent;
+  label: string;
+  onClick: () => void;
+  destructive?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={clsx(
+        "flex w-full items-center gap-3 rounded-[14px] px-3 py-2.5 text-left text-[15px] transition disabled:cursor-not-allowed disabled:opacity-45",
+        destructive
+          ? "text-[#d43c33] hover:bg-[#fff1ef]"
+          : "text-[#171717] hover:bg-black/[0.04]",
+      )}
+    >
+      <Icon
+        className={clsx(
+          "h-[18px] w-[18px] shrink-0",
+          destructive ? "text-[#d43c33]" : "text-stone-500",
+        )}
+      />
+      <span className="min-w-0 truncate">{label}</span>
+    </button>
+  );
+}
+
+function ProfileActionTile({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: IconComponent;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex min-h-[86px] flex-col items-center justify-center gap-2 rounded-[20px] border border-black/8 bg-[#fafaf9] px-3 py-4 text-center text-stone-600 transition hover:border-black/16 hover:bg-white hover:text-black"
+    >
+      <span className="flex h-10 w-10 items-center justify-center rounded-full border border-black/8 bg-white text-[#171717]">
+        <Icon className="h-5 w-5" />
+      </span>
+      <span className="text-xs font-medium tracking-[0.04em]">{label}</span>
+    </button>
+  );
+}
+
+function ProfileStatRow({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: IconComponent;
+  label: string;
+  value: number;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-[18px] border border-black/8 bg-[#fafaf9] px-4 py-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] border border-black/8 bg-white text-stone-600">
+          <Icon className="h-5 w-5" />
+        </span>
+        <p className="truncate text-sm text-[#171717]">{label}</p>
+      </div>
+      <span className="shrink-0 text-sm font-semibold text-[#171717]">{value}</span>
+    </div>
   );
 }
 
@@ -3195,19 +3957,401 @@ function SearchIcon({ className }: { className?: string }) {
   );
 }
 
+function ReplyArrowIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M9 8 4 12l5 4" />
+      <path d="M20 18c0-4.42-3.58-8-8-8H4" />
+    </svg>
+  );
+}
+
+function PinIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m14.5 4.5 5 5" />
+      <path d="M10 9 19 18" />
+      <path d="m9.5 14.5-4 5" />
+      <path d="M7 6.5 17.5 17" />
+      <path d="m7 6.5 2.5-2.5 7 7L14 13.5" />
+    </svg>
+  );
+}
+
+function CopyIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="10" height="10" rx="2" />
+      <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function EditPencilIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M12 20h9" />
+      <path d="m16.5 3.5 4 4L8 20l-5 1 1-5 12.5-12.5Z" />
+    </svg>
+  );
+}
+
+function SelectCheckIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12.5 2.3 2.3 4.7-5.1" />
+    </svg>
+  );
+}
+
+function ClockIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.8v4.7l3.2 1.8" />
+    </svg>
+  );
+}
+
+function BellOffIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M9.22 5.23A6 6 0 0 1 18 10v3.8l1.4 2.3a1 1 0 0 1-.85 1.5H7.6" />
+      <path d="M4.71 4.71 19.29 19.29" />
+      <path d="M5.45 17.6A1 1 0 0 1 4.6 16.1L6 13.8V10a6 6 0 0 1 .38-2.11" />
+      <path d="M10 20a2 2 0 0 0 4 0" />
+    </svg>
+  );
+}
+
+function BellIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M6.8 8.5a5.2 5.2 0 1 1 10.4 0v2.1c0 .9.26 1.78.75 2.53l.95 1.48a1.2 1.2 0 0 1-1.01 1.85H6.07a1.2 1.2 0 0 1-1.01-1.85l.95-1.48c.49-.75.75-1.63.75-2.53V8.5Z" />
+      <path d="M9.75 18.4a2.25 2.25 0 0 0 4.5 0" />
+    </svg>
+  );
+}
+
+function GiftIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="9" width="17" height="11" rx="2.2" />
+      <path d="M12 9v11" />
+      <path d="M4 9h16" />
+      <path d="M7.9 9c-1.53 0-2.9-.9-2.9-2.35C5 5.43 5.95 4.5 7.3 4.5c2.08 0 3.38 2.3 4.7 4.5H7.9Z" />
+      <path d="M16.1 9c1.53 0 2.9-.9 2.9-2.35 0-1.22-.95-2.15-2.3-2.15-2.08 0-3.38 2.3-4.7 4.5h4.1Z" />
+    </svg>
+  );
+}
+
+function WallpaperIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
+      <path d="m6.5 16 3.5-3.5 2.6 2.6 3.9-4.1 3 3" />
+      <circle cx="9" cy="9" r="1.2" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function CopySlashIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="10" height="10" rx="2" />
+      <path d="M15 5H8a2 2 0 0 0-2 2v7" />
+      <path d="M4.71 4.71 19.29 19.29" />
+    </svg>
+  );
+}
+
+function ExportIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M12 3v10" />
+      <path d="m8.5 9.5 3.5 3.5 3.5-3.5" />
+      <path d="M5 15.5v1.75A2.75 2.75 0 0 0 7.75 20h8.5A2.75 2.75 0 0 0 19 17.25V15.5" />
+    </svg>
+  );
+}
+
+function BroomIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m14 4 6 6" />
+      <path d="m4 14 6 6" />
+      <path d="m13 5-8 8a2 2 0 0 0 0 2.83L8.17 19a2 2 0 0 0 2.83 0l8-8" />
+      <path d="m2 22 5-5" />
+    </svg>
+  );
+}
+
+function TrashIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M4 7h16" />
+      <path d="M10 3h4" />
+      <path d="M6 7v11a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7" />
+      <path d="M10 11v5" />
+      <path d="M14 11v5" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m9 6 6 6-6 6" />
+    </svg>
+  );
+}
+
+function GalleryIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
+      <circle cx="9" cy="10" r="1.3" fill="currentColor" stroke="none" />
+      <path d="m6.5 17 4-4 2.8 2.8 2.2-2.3 2 2.5" />
+    </svg>
+  );
+}
+
+function VideoIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="6" width="12.5" height="12" rx="2.5" />
+      <path d="m16 10 4-2.2v8.4L16 14" />
+    </svg>
+  );
+}
+
+function FileStackIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M8 3.5h7l3 3V18a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2Z" />
+      <path d="M15 3.5V7h3" />
+      <path d="M9 12h6" />
+      <path d="M9 15h6" />
+    </svg>
+  );
+}
+
+function AudioBarsIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M5 15v-3" />
+      <path d="M9 18v-9" />
+      <path d="M13 15v-3" />
+      <path d="M17 20V4" />
+      <path d="M21 14v-4" />
+    </svg>
+  );
+}
+
+function LinkChainIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M10 14 8.5 15.5a3 3 0 0 1-4.24-4.24l3-3A3 3 0 0 1 11.5 8" />
+      <path d="M14 10 15.5 8.5a3 3 0 1 1 4.24 4.24l-3 3A3 3 0 0 1 12.5 16" />
+      <path d="m9 15 6-6" />
+    </svg>
+  );
+}
+
 function PhoneIcon({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2.2"
+      strokeWidth="2.8"
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
       aria-hidden="true"
     >
-      <path d="M22 16.92v2a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 3.18 2 2 0 0 1 4.11 1h2a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.1 8.91a16 16 0 0 0 6 6l1.27-1.26a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
+      <path d="M21.2 16.6v2a1.8 1.8 0 0 1-1.96 1.8 17.88 17.88 0 0 1-7.78-2.77 17.45 17.45 0 0 1-5.42-5.42A17.88 17.88 0 0 1 3.27 4.43 1.8 1.8 0 0 1 5.06 2.5h1.95a1.8 1.8 0 0 1 1.77 1.49c.13.9.43 1.76.88 2.56a1.8 1.8 0 0 1-.4 2.08L8.1 9.8a14.2 14.2 0 0 0 6.1 6.1l1.17-1.16a1.8 1.8 0 0 1 2.08-.4c.8.45 1.66.75 2.56.88A1.8 1.8 0 0 1 21.2 16.6Z" />
     </svg>
   );
 }
