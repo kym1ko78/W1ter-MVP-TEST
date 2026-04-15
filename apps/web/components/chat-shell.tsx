@@ -8,9 +8,8 @@ import {
 import clsx from "clsx";
 import Link from "next/link";
 import {
-  type PointerEvent as ReactPointerEvent,
-  useCallback,
   startTransition,
+  useCallback,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -19,6 +18,7 @@ import {
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
+import { SOCKET_EVENTS } from "@repo/shared/events";
 import { ConfirmDialog } from "./confirm-dialog";
 import { readJson, useAuth } from "../lib/auth-context";
 import {
@@ -33,30 +33,12 @@ import {
   getChatTitle,
   getLastMessagePreviewText,
 } from "../lib/utils";
-import {
-  RealtimeContext,
-  type NotificationPermissionState,
-  type RealtimeConnectionState,
-} from "../lib/realtime-context";
-import {
-  ChatLayoutProvider,
-  CHAT_CENTER_MIN_WIDTH,
-  CHAT_LEFT_SIDEBAR_DEFAULT_WIDTH,
-  CHAT_LEFT_SIDEBAR_MAX_WIDTH,
-  CHAT_LEFT_SIDEBAR_MIN_WIDTH,
-  CHAT_RIGHT_PANEL_DEFAULT_WIDTH,
-  CHAT_RIGHT_PANEL_MAX_WIDTH,
-  CHAT_RIGHT_PANEL_MIN_WIDTH,
-} from "../lib/chat-layout-context";
+import type { RealtimeEventName } from "../lib/realtime-context";
+import { RealtimeContext } from "../lib/realtime-context";
 import type { ChatListItem, ChatMessage, MessagePage, SafeUser } from "../types/api";
 import { UserAvatar } from "./user-avatar";
 
 const CHAT_PAGE_LOCK_CLASS = "chat-page-locked";
-const TYPING_TTL_MS = 6_000;
-const NOTIFICATIONS_PREFERENCE_KEY = "w1ter.notifications.enabled";
-const MAX_NOTIFIED_MESSAGE_IDS = 200;
-const LEFT_SIDEBAR_WIDTH_STORAGE_KEY = "w1ter.layout.left-sidebar-width";
-const RIGHT_PANEL_WIDTH_STORAGE_KEY = "w1ter.layout.right-panel-width";
 
 type ChatDeletedPayload = {
   chatId: string;
@@ -67,15 +49,15 @@ type PresenceChangedPayload = {
   isOnline: boolean;
 };
 
+type PresenceSyncResponse = {
+  ok: boolean;
+  statuses?: PresenceChangedPayload[];
+};
+
 type TypingChangedPayload = {
   chatId: string;
   userId: string;
   isTyping: boolean;
-};
-
-type PresenceSyncResponse = {
-  ok: boolean;
-  statuses: Array<{ userId: string; isOnline: boolean }>;
 };
 
 type DeleteChatResponse = {
@@ -116,9 +98,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const socketRef = useRef<Socket | null>(null);
   const sidebarMenuRef = useRef<HTMLDivElement | null>(null);
   const sidebarMenuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const desktopLayoutRef = useRef(false);
-  const leftSidebarWidthRef = useRef(CHAT_LEFT_SIDEBAR_DEFAULT_WIDTH);
-  const rightPanelWidthRef = useRef(CHAT_RIGHT_PANEL_DEFAULT_WIDTH);
   const { accessToken, authorizedFetch, isAuthenticated, isLoading, logout, user } = useAuth();
   const [isSidebarMenuOpen, setIsSidebarMenuOpen] = useState(false);
   const [isGroupComposerOpen, setIsGroupComposerOpen] = useState(false);
@@ -132,18 +111,24 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     chatId: string;
     mode: ChatActionMode;
   } | null>(null);
-  const [connectionState, setConnectionState] = useState<RealtimeConnectionState>("disconnected");
-  const [isOffline, setIsOffline] = useState(false);
-  const [onlineUserIds, setOnlineUserIds] = useState<Record<string, true>>({});
-  const [typingByChat, setTypingByChat] = useState<Record<string, Record<string, number>>>({});
-  const [notificationPermission, setNotificationPermission] =
-    useState<NotificationPermissionState>("unsupported");
+  const [realtimeConnectionState, setRealtimeConnectionState] = useState<
+    "connecting" | "connected" | "disconnected"
+  >("disconnected");
+  const [onlineUsersMap, setOnlineUsersMap] = useState<Record<string, true>>({});
+  const [typingByChat, setTypingByChat] = useState<Record<string, Record<string, true>>>({});
+  const [isOffline, setIsOffline] = useState(() =>
+    typeof navigator !== "undefined" ? !navigator.onLine : false,
+  );
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      return "unsupported";
+    }
+
+    return window.Notification.permission;
+  });
   const [notificationsEnabled, setNotificationsEnabledState] = useState(false);
-  const [isDesktopLayout, setIsDesktopLayout] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(CHAT_LEFT_SIDEBAR_DEFAULT_WIDTH);
-  const [rightPanelWidth, setRightPanelWidth] = useState(CHAT_RIGHT_PANEL_DEFAULT_WIDTH);
-  const notifiedMessageIdsRef = useRef<string[]>([]);
-  const localTypingByChatRef = useRef<Map<string, boolean>>(new Map());
   const deferredGroupSearch = useDeferredValue(groupSearch);
   const deferredGlobalSearch = useDeferredValue(globalSearch);
   const normalizedGroupSearch = deferredGroupSearch.trim();
@@ -158,199 +143,76 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     return null;
   }, [safePathname]);
   const currentChatIdRef = useRef<string | null>(currentChatId);
-  const notificationsSupported =
-    typeof window !== "undefined" && typeof window.Notification !== "undefined";
-  const statusesMayBeStale = connectionState !== "connected";
-  const updateOnlineUsers = useCallback((userId: string, isOnline: boolean) => {
-    setOnlineUserIds((current) => {
-      const hasUser = Boolean(current[userId]);
-      if (isOnline && hasUser) {
-        return current;
-      }
+  const notificationsStorageKey = "w1ter.notifications.enabled";
 
-      if (!isOnline && !hasUser) {
-        return current;
-      }
+  const applyPresenceChange = useCallback((payload: PresenceChangedPayload) => {
+    if (!payload.userId) {
+      return;
+    }
 
-      if (isOnline) {
+    setOnlineUsersMap((current) => {
+      if (payload.isOnline) {
+        if (current[payload.userId]) {
+          return current;
+        }
+
         return {
           ...current,
-          [userId]: true,
+          [payload.userId]: true,
         };
       }
 
-      const next = { ...current };
-      delete next[userId];
-      return next;
+      if (!current[payload.userId]) {
+        return current;
+      }
+
+      const nextMap = { ...current };
+      delete nextMap[payload.userId];
+      return nextMap;
     });
   }, []);
-  const isUserOnline = useCallback(
-    (userId: string | null | undefined) => (userId ? Boolean(onlineUserIds[userId]) : false),
-    [onlineUserIds],
-  );
-  const isUserTyping = useCallback(
-    (chatId: string, userId: string | null | undefined) => {
-      if (!userId) {
-        return false;
-      }
 
-      const updatedAt = typingByChat[chatId]?.[userId];
-      if (!updatedAt) {
-        return false;
-      }
-
-      return Date.now() - updatedAt < TYPING_TTL_MS;
-    },
-    [typingByChat],
-  );
-  const setNotificationsEnabled = useCallback((value: boolean) => {
-    setNotificationsEnabledState(value);
-    if (typeof window === "undefined") {
+  const applyTypingChange = useCallback((payload: TypingChangedPayload) => {
+    if (!payload.chatId || !payload.userId) {
       return;
     }
 
-    window.localStorage.setItem(NOTIFICATIONS_PREFERENCE_KEY, value ? "1" : "0");
-  }, []);
-  const requestNotificationPermission = useCallback(async () => {
-    if (typeof window === "undefined" || typeof window.Notification === "undefined") {
-      setNotificationPermission("unsupported");
-      setNotificationsEnabled(false);
-      return;
-    }
+    setTypingByChat((current) => {
+      const existingChatTyping = current[payload.chatId] ?? {};
 
-    try {
-      const permission = await window.Notification.requestPermission();
-      setNotificationPermission(permission);
+      if (payload.isTyping) {
+        if (existingChatTyping[payload.userId]) {
+          return current;
+        }
 
-      if (permission === "granted") {
-        setNotificationsEnabled(true);
-        return;
+        return {
+          ...current,
+          [payload.chatId]: {
+            ...existingChatTyping,
+            [payload.userId]: true,
+          },
+        };
       }
 
-      setNotificationsEnabled(false);
-    } catch {
-      setNotificationPermission("denied");
-      setNotificationsEnabled(false);
-    }
-  }, [setNotificationsEnabled]);
-  const markMessageAsNotified = useCallback((messageId: string) => {
-    const knownMessageIds = notifiedMessageIdsRef.current;
-    if (knownMessageIds.includes(messageId)) {
-      return false;
-    }
-
-    knownMessageIds.push(messageId);
-    if (knownMessageIds.length > MAX_NOTIFIED_MESSAGE_IDS) {
-      knownMessageIds.splice(0, knownMessageIds.length - MAX_NOTIFIED_MESSAGE_IDS);
-    }
-
-    return true;
-  }, []);
-  const updateTyping = useCallback((chatId: string, isTyping: boolean) => {
-    if (!chatId) {
-      return;
-    }
-
-    const nextValue = Boolean(isTyping);
-    const currentValue = localTypingByChatRef.current.get(chatId) ?? false;
-
-    if (currentValue === nextValue) {
-      return;
-    }
-
-    if (nextValue) {
-      localTypingByChatRef.current.set(chatId, true);
-    } else {
-      localTypingByChatRef.current.delete(chatId);
-    }
-
-    socketRef.current?.emit("typing:update", { chatId, isTyping: nextValue });
-  }, []);
-
-  useEffect(() => {
-    leftSidebarWidthRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
-
-  useEffect(() => {
-    rightPanelWidthRef.current = rightPanelWidth;
-  }, [rightPanelWidth]);
-
-  useEffect(() => {
-    desktopLayoutRef.current = isDesktopLayout;
-  }, [isDesktopLayout]);
-
-  const clampLeftSidebarWidth = useCallback((value: number) => {
-    if (typeof window === "undefined") {
-      return Math.min(
-        Math.max(value, CHAT_LEFT_SIDEBAR_MIN_WIDTH),
-        CHAT_LEFT_SIDEBAR_MAX_WIDTH,
-      );
-    }
-
-    const viewportWidth = window.innerWidth;
-    const maxWidth = Math.max(
-      CHAT_LEFT_SIDEBAR_MIN_WIDTH,
-      Math.min(
-        CHAT_LEFT_SIDEBAR_MAX_WIDTH,
-        viewportWidth - rightPanelWidthRef.current - CHAT_CENTER_MIN_WIDTH,
-      ),
-    );
-
-    return Math.min(Math.max(value, CHAT_LEFT_SIDEBAR_MIN_WIDTH), maxWidth);
-  }, []);
-
-  const clampRightPanelWidth = useCallback((value: number) => {
-    if (typeof window === "undefined") {
-      return Math.min(
-        Math.max(value, CHAT_RIGHT_PANEL_MIN_WIDTH),
-        CHAT_RIGHT_PANEL_MAX_WIDTH,
-      );
-    }
-
-    const viewportWidth = window.innerWidth;
-    const maxWidth = Math.max(
-      CHAT_RIGHT_PANEL_MIN_WIDTH,
-      Math.min(
-        CHAT_RIGHT_PANEL_MAX_WIDTH,
-        viewportWidth - leftSidebarWidthRef.current - CHAT_CENTER_MIN_WIDTH,
-      ),
-    );
-
-    return Math.min(Math.max(value, CHAT_RIGHT_PANEL_MIN_WIDTH), maxWidth);
-  }, []);
-
-  const startLeftSidebarResize = useCallback(
-    (event: ReactPointerEvent<HTMLButtonElement>) => {
-      if (!desktopLayoutRef.current || typeof window === "undefined") {
-        return;
+      if (!existingChatTyping[payload.userId]) {
+        return current;
       }
 
-      event.preventDefault();
-      const startX = event.clientX;
-      const initialWidth = leftSidebarWidthRef.current;
-      const previousUserSelect = document.body.style.userSelect;
-      const previousCursor = document.body.style.cursor;
+      const nextChatTyping = { ...existingChatTyping };
+      delete nextChatTyping[payload.userId];
 
-      document.body.style.userSelect = "none";
-      document.body.style.cursor = "col-resize";
+      if (Object.keys(nextChatTyping).length === 0) {
+        const nextTypingByChat = { ...current };
+        delete nextTypingByChat[payload.chatId];
+        return nextTypingByChat;
+      }
 
-      const handlePointerMove = (moveEvent: PointerEvent) => {
-        const nextWidth = clampLeftSidebarWidth(initialWidth + (moveEvent.clientX - startX));
-        setLeftSidebarWidth(nextWidth);
+      return {
+        ...current,
+        [payload.chatId]: nextChatTyping,
       };
-
-      const stopResize = () => {
-        document.body.style.userSelect = previousUserSelect;
-        document.body.style.cursor = previousCursor;
-        window.removeEventListener("pointermove", handlePointerMove);
-        window.removeEventListener("pointerup", stopResize);
-      };
-
-      window.addEventListener("pointermove", handlePointerMove);
-      window.addEventListener("pointerup", stopResize);
-    },
-    [clampLeftSidebarWidth],
-  );
+    });
+  }, []);
 
   const chatsQuery = useQuery({
     queryKey: ["chats"],
@@ -577,72 +439,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }, [isAuthenticated, isLoading, router]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const mediaQuery = window.matchMedia("(min-width: 1024px)");
-
-    const syncDesktopLayout = () => {
-      const nextIsDesktop = mediaQuery.matches;
-      setIsDesktopLayout(nextIsDesktop);
-      desktopLayoutRef.current = nextIsDesktop;
-
-      if (!nextIsDesktop) {
-        return;
-      }
-
-      const storedLeftWidth = Number(window.localStorage.getItem(LEFT_SIDEBAR_WIDTH_STORAGE_KEY));
-      const storedRightWidth = Number(window.localStorage.getItem(RIGHT_PANEL_WIDTH_STORAGE_KEY));
-
-      if (Number.isFinite(storedLeftWidth) && storedLeftWidth > 0) {
-        setLeftSidebarWidth(clampLeftSidebarWidth(storedLeftWidth));
-      }
-
-      if (Number.isFinite(storedRightWidth) && storedRightWidth > 0) {
-        setRightPanelWidth(clampRightPanelWidth(storedRightWidth));
-      }
-    };
-
-    syncDesktopLayout();
-    mediaQuery.addEventListener("change", syncDesktopLayout);
-
-    return () => mediaQuery.removeEventListener("change", syncDesktopLayout);
-  }, [clampLeftSidebarWidth, clampRightPanelWidth]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !isDesktopLayout) {
-      return;
-    }
-
-    window.localStorage.setItem(LEFT_SIDEBAR_WIDTH_STORAGE_KEY, String(leftSidebarWidth));
-  }, [isDesktopLayout, leftSidebarWidth]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !isDesktopLayout) {
-      return;
-    }
-
-    window.localStorage.setItem(RIGHT_PANEL_WIDTH_STORAGE_KEY, String(rightPanelWidth));
-  }, [isDesktopLayout, rightPanelWidth]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !isDesktopLayout) {
-      return;
-    }
-
-    const syncPanelWidths = () => {
-      setLeftSidebarWidth((current) => clampLeftSidebarWidth(current));
-      setRightPanelWidth((current) => clampRightPanelWidth(current));
-    };
-
-    syncPanelWidths();
-    window.addEventListener("resize", syncPanelWidths);
-
-    return () => window.removeEventListener("resize", syncPanelWidths);
-  }, [clampLeftSidebarWidth, clampRightPanelWidth, isDesktopLayout]);
-
-  useEffect(() => {
     const rootElement = document.documentElement;
     const bodyElement = document.body;
 
@@ -660,69 +456,56 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }, [currentChatId]);
 
   useEffect(() => {
+    if (accessToken) {
+      return;
+    }
+
+    setRealtimeConnectionState("disconnected");
+    setOnlineUsersMap({});
+    setTypingByChat({});
+  }, [accessToken]);
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
 
-    const updateOfflineState = () => {
+    const rawValue = window.localStorage.getItem(notificationsStorageKey);
+    if (!rawValue) {
+      return;
+    }
+
+    setNotificationsEnabledState(rawValue === "1");
+  }, [notificationsStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(
+      notificationsStorageKey,
+      notificationsEnabled ? "1" : "0",
+    );
+  }, [notificationPermission, notificationsEnabled, notificationsStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const syncConnectionStatus = () => {
       setIsOffline(!window.navigator.onLine);
     };
 
-    updateOfflineState();
-    window.addEventListener("online", updateOfflineState);
-    window.addEventListener("offline", updateOfflineState);
+    syncConnectionStatus();
+    window.addEventListener("online", syncConnectionStatus);
+    window.addEventListener("offline", syncConnectionStatus);
 
     return () => {
-      window.removeEventListener("online", updateOfflineState);
-      window.removeEventListener("offline", updateOfflineState);
+      window.removeEventListener("online", syncConnectionStatus);
+      window.removeEventListener("offline", syncConnectionStatus);
     };
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.Notification === "undefined") {
-      setNotificationPermission("unsupported");
-      setNotificationsEnabled(false);
-      return;
-    }
-
-    const permission = window.Notification.permission;
-    setNotificationPermission(permission);
-
-    if (permission !== "granted") {
-      setNotificationsEnabled(false);
-      return;
-    }
-
-    const persistedPreference = window.localStorage.getItem(NOTIFICATIONS_PREFERENCE_KEY);
-    setNotificationsEnabled(persistedPreference !== "0");
-  }, [setNotificationsEnabled]);
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      setTypingByChat((current) => {
-        const now = Date.now();
-        let changed = false;
-        const next: Record<string, Record<string, number>> = {};
-
-        for (const [chatId, userMap] of Object.entries(current)) {
-          const freshEntries = Object.entries(userMap).filter(
-            ([, updatedAt]) => now - updatedAt < TYPING_TTL_MS,
-          );
-
-          if (freshEntries.length > 0) {
-            next[chatId] = Object.fromEntries(freshEntries);
-          }
-
-          if (freshEntries.length !== Object.keys(userMap).length) {
-            changed = true;
-          }
-        }
-
-        return changed ? next : current;
-      });
-    }, 1_500);
-
-    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
@@ -730,7 +513,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    setConnectionState("connecting");
+    setRealtimeConnectionState("connecting");
     const socket = io(SOCKET_URL, {
       transports: ["websocket"],
       withCredentials: true,
@@ -740,14 +523,14 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     });
 
     const handleConnect = () => {
-      setConnectionState("connected");
       const chatId = currentChatIdRef.current;
+      setRealtimeConnectionState("connected");
 
       if (!chatId) {
         return;
       }
 
-      socket.emit("join_chat_room", { chatId });
+      socket.emit(SOCKET_EVENTS.joinChatRoom, { chatId });
     };
 
     const handleMessageNew = (message: ChatMessage) => {
@@ -757,51 +540,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", message.chatId] });
-
-      if (
-        message.senderId === user?.id ||
-        notificationPermission !== "granted" ||
-        !notificationsEnabled ||
-        typeof document === "undefined"
-      ) {
-        return;
-      }
-
-      const isCurrentChatVisible =
-        currentChatIdRef.current === message.chatId &&
-        document.visibilityState === "visible" &&
-        document.hasFocus();
-
-      if (isCurrentChatVisible || !markMessageAsNotified(message.id)) {
-        return;
-      }
-
-      const knownChats = queryClient.getQueryData<ChatListItem[]>(["chats"]) ?? [];
-      const targetChat = knownChats.find((chat) => chat.id === message.chatId);
-      const title = targetChat
-        ? getChatTitle(targetChat.members, user?.id, {
-            type: targetChat.type,
-            title: targetChat.title,
-          })
-        : message.sender.displayName;
-      const body = getLastMessagePreviewText(message);
-
-      try {
-        const notification = new window.Notification(title, {
-          body,
-          tag: `chat:${message.chatId}`,
-        });
-
-        notification.onclick = () => {
-          window.focus();
-          startTransition(() => {
-            router.push(`/chat/${message.chatId}`);
-          });
-          notification.close();
-        };
-      } catch {
-        setNotificationsEnabled(false);
-      }
     };
 
     const handleMessageUpdated = (message: ChatMessage) => {
@@ -834,23 +572,8 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
     };
 
-    const handleDisconnect = () => {
-      setConnectionState("disconnected");
-    };
-
-    const handleConnectError = () => {
-      setConnectionState("disconnected");
-    };
-
-    const handleReconnectAttempt = () => {
-      setConnectionState("connecting");
-    };
-
     const handlePresenceChanged = (payload: PresenceChangedPayload) => {
-      if (payload?.userId) {
-        updateOnlineUsers(payload.userId, Boolean(payload.isOnline));
-      }
-
+      applyPresenceChange(payload);
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
       if (currentChatIdRef.current) {
         void queryClient.invalidateQueries({ queryKey: ["chat", currentChatIdRef.current] });
@@ -858,68 +581,37 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     };
 
     const handleTypingChanged = (payload: TypingChangedPayload) => {
-      if (!payload?.chatId || !payload?.userId) {
-        return;
-      }
+      applyTypingChange(payload);
+    };
 
-      setTypingByChat((current) => {
-        const next = { ...current };
-        const currentChatTyping = { ...(next[payload.chatId] ?? {}) };
-
-        if (payload.isTyping) {
-          currentChatTyping[payload.userId] = Date.now();
-          next[payload.chatId] = currentChatTyping;
-          return next;
-        }
-
-        if (!currentChatTyping[payload.userId]) {
-          return current;
-        }
-
-        delete currentChatTyping[payload.userId];
-        if (Object.keys(currentChatTyping).length > 0) {
-          next[payload.chatId] = currentChatTyping;
-        } else {
-          delete next[payload.chatId];
-        }
-
-        return next;
-      });
+    const handleDisconnect = () => {
+      setRealtimeConnectionState("disconnected");
     };
 
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
-    socket.on("connect_error", handleConnectError);
-    socket.on("message:new", handleMessageNew);
+    socket.on("connect_error", handleDisconnect);
+    socket.on(SOCKET_EVENTS.messageNew, handleMessageNew);
     socket.on("message:updated", handleMessageUpdated);
-    socket.on("chat:updated", handleChatUpdated);
+    socket.on(SOCKET_EVENTS.chatUpdated, handleChatUpdated);
     socket.on("chat:deleted", handleChatDeleted);
-    socket.on("chat:read", handleChatRead);
-    socket.on("presence:changed", handlePresenceChanged);
-    socket.on("typing:changed", handleTypingChanged);
-    socket.io.on("reconnect_attempt", handleReconnectAttempt);
+    socket.on(SOCKET_EVENTS.chatRead, handleChatRead);
+    socket.on(SOCKET_EVENTS.presenceChanged, handlePresenceChanged);
+    socket.on(SOCKET_EVENTS.typingChanged, handleTypingChanged);
 
     socketRef.current = socket;
 
     return () => {
-      for (const [chatId, isTyping] of localTypingByChatRef.current.entries()) {
-        if (isTyping) {
-          socket.emit("typing:update", { chatId, isTyping: false });
-        }
-      }
-
-      localTypingByChatRef.current.clear();
       socket.off("connect", handleConnect);
       socket.off("disconnect", handleDisconnect);
-      socket.off("connect_error", handleConnectError);
-      socket.off("message:new", handleMessageNew);
+      socket.off("connect_error", handleDisconnect);
+      socket.off(SOCKET_EVENTS.messageNew, handleMessageNew);
       socket.off("message:updated", handleMessageUpdated);
-      socket.off("chat:updated", handleChatUpdated);
+      socket.off(SOCKET_EVENTS.chatUpdated, handleChatUpdated);
       socket.off("chat:deleted", handleChatDeleted);
-      socket.off("chat:read", handleChatRead);
-      socket.off("presence:changed", handlePresenceChanged);
-      socket.off("typing:changed", handleTypingChanged);
-      socket.io.off("reconnect_attempt", handleReconnectAttempt);
+      socket.off(SOCKET_EVENTS.chatRead, handleChatRead);
+      socket.off(SOCKET_EVENTS.presenceChanged, handlePresenceChanged);
+      socket.off(SOCKET_EVENTS.typingChanged, handleTypingChanged);
       socket.io.opts.reconnection = false;
 
       if (socket.connected) {
@@ -931,70 +623,17 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       }
 
       socketRef.current = null;
-      setConnectionState("disconnected");
+      setRealtimeConnectionState("disconnected");
     };
-  }, [
-    accessToken,
-    markMessageAsNotified,
-    notificationPermission,
-    notificationsEnabled,
-    queryClient,
-    router,
-    setNotificationsEnabled,
-    updateOnlineUsers,
-    user?.id,
-  ]);
+  }, [accessToken, applyPresenceChange, applyTypingChange, queryClient, router]);
 
   useEffect(() => {
-    if (!currentChatId || !socketRef.current || connectionState !== "connected") {
+    if (!currentChatId || !socketRef.current || !socketRef.current.connected) {
       return;
     }
 
-    socketRef.current.emit("join_chat_room", { chatId: currentChatId });
-  }, [connectionState, currentChatId]);
-
-  useEffect(() => {
-    if (connectionState !== "connected" || !socketRef.current) {
-      return;
-    }
-
-    const userIds = Array.from(
-      new Set(
-        (chatsQuery.data ?? [])
-          .flatMap((chat) => chat.members.map((member) => member.id))
-          .filter((memberId) => memberId && memberId !== user?.id),
-      ),
-    );
-
-    if (userIds.length === 0) {
-      return;
-    }
-
-    socketRef.current.emit(
-      "presence:sync",
-      { userIds },
-      (payload?: PresenceSyncResponse) => {
-        if (!payload?.ok || !Array.isArray(payload.statuses)) {
-          return;
-        }
-
-        setOnlineUserIds((current) => {
-          const next = { ...current };
-          for (const userId of userIds) {
-            delete next[userId];
-          }
-
-          for (const status of payload.statuses) {
-            if (status.isOnline) {
-              next[status.userId] = true;
-            }
-          }
-
-          return next;
-        });
-      },
-    );
-  }, [chatsQuery.data, connectionState, user?.id]);
+    socketRef.current.emit(SOCKET_EVENTS.joinChatRoom, { chatId: currentChatId });
+  }, [currentChatId]);
 
   useEffect(() => {
     setIsSidebarMenuOpen(false);
@@ -1076,49 +715,139 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       memberIds: selectedGroupMemberIds,
     });
   };
-  const connectionStatusCopy = isOffline
-    ? "Оффлайн. Соединение восстановится автоматически."
-    : connectionState === "connected"
-      ? "Realtime подключен."
-      : connectionState === "connecting"
-        ? "Подключаемся к realtime..."
-        : "Связь потеряна. Статусы могут запаздывать.";
-  const notificationStatusCopy =
-    notificationPermission === "unsupported"
-      ? "Браузер не поддерживает web-notifications."
-      : notificationPermission === "denied"
-        ? "Уведомления заблокированы в браузере."
-        : notificationPermission === "granted"
-          ? notificationsEnabled
-            ? "Уведомления о новых сообщениях включены."
-            : "Уведомления выключены."
-          : "Разрешение на уведомления еще не выдано.";
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    const chats = chatsQuery.data;
+
+    if (!socket || !socket.connected || !chats?.length) {
+      return;
+    }
+
+    const userIds = Array.from(
+      new Set(
+        chats
+          .flatMap((chat) => chat.members.map((member) => member.id))
+          .filter((memberId) => Boolean(memberId) && memberId !== user?.id),
+      ),
+    ).slice(0, 300);
+
+    if (!userIds.length) {
+      return;
+    }
+
+    socket.emit(
+      SOCKET_EVENTS.presenceSync,
+      { userIds },
+      (response?: PresenceSyncResponse) => {
+        if (!response?.ok || !response.statuses?.length) {
+          return;
+        }
+
+        for (const status of response.statuses) {
+          applyPresenceChange(status);
+        }
+      },
+    );
+  }, [applyPresenceChange, chatsQuery.data, realtimeConnectionState, user?.id]);
+
+  const requestNotificationPermission = useCallback(async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      return;
+    }
+
+    const nextPermission = await window.Notification.requestPermission();
+    setNotificationPermission(nextPermission);
+  }, []);
+
+  const setNotificationsEnabled = useCallback(
+    (value: boolean) => {
+      if (notificationPermission === "unsupported") {
+        return;
+      }
+
+      if (notificationPermission === "denied") {
+        setNotificationsEnabledState(false);
+        return;
+      }
+
+      setNotificationsEnabledState(Boolean(value));
+    },
+    [notificationPermission],
+  );
+
   const realtimeContextValue = useMemo(
     () => ({
-      connectionState,
+      connectionState: realtimeConnectionState,
       isOffline,
-      statusesMayBeStale,
+      statusesMayBeStale: isOffline || realtimeConnectionState !== "connected",
       notificationPermission,
-      notificationsEnabled,
-      notificationsSupported,
+      notificationsEnabled:
+        notificationsEnabled &&
+        notificationPermission !== "unsupported" &&
+        notificationPermission !== "denied",
+      notificationsSupported: notificationPermission !== "unsupported",
       requestNotificationPermission,
       setNotificationsEnabled,
-      isUserOnline,
-      isUserTyping,
-      updateTyping,
+      isUserOnline: (userId: string | null | undefined) =>
+        Boolean(userId && onlineUsersMap[userId]),
+      isUserTyping: (chatId: string, userId: string | null | undefined) =>
+        Boolean(chatId && userId && typingByChat[chatId]?.[userId]),
+      updateTyping: (chatId: string, isTyping: boolean) => {
+        const socket = socketRef.current;
+        const currentUserId = user?.id;
+
+        if (!socket || !socket.connected || !chatId || !currentUserId) {
+          return;
+        }
+
+        socket.emit(SOCKET_EVENTS.typingUpdate, {
+          chatId,
+          isTyping,
+        });
+        applyTypingChange({
+          chatId,
+          userId: currentUserId,
+          isTyping,
+        });
+      },
+      emitSocketEvent: (eventName: string, payload: unknown) => {
+        const socket = socketRef.current;
+        if (!socket || !socket.connected) {
+          return;
+        }
+
+        socket.emit(eventName, payload);
+      },
+      subscribeSocketEvent: <TName extends RealtimeEventName>(
+        eventName: TName,
+        handler: (payload: unknown) => void,
+      ) => {
+        const socket = socketRef.current;
+        if (!socket) {
+          return () => undefined;
+        }
+
+        const listener = ((payload: unknown) => {
+          handler(payload);
+        }) as (...args: any[]) => void;
+
+        socket.on(eventName as string, listener);
+        return () => socket.off(eventName as string, listener);
+      },
     }),
     [
-      connectionState,
+      applyTypingChange,
       isOffline,
-      isUserOnline,
-      isUserTyping,
       notificationPermission,
       notificationsEnabled,
-      notificationsSupported,
+      onlineUsersMap,
+      realtimeConnectionState,
       requestNotificationPermission,
       setNotificationsEnabled,
-      statusesMayBeStale,
-      updateTyping,
+      typingByChat,
+      user?.id,
     ],
   );
 
@@ -1133,24 +862,15 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <RealtimeContext.Provider value={realtimeContextValue}>
-      <ChatLayoutProvider
-        value={{
-          isDesktopLayout,
-          leftSidebarWidth,
-          rightPanelWidth,
-          setLeftSidebarWidth,
-          setRightPanelWidth,
-        }}
-      >
+    <RealtimeContext.Provider value={realtimeContextValue as any}>
       <main className="chat-scene grain relative h-[100dvh] overflow-hidden" data-testid="chat-shell">
-      <div
-        className={clsx(
-          "pointer-events-none absolute inset-0 z-20 bg-black/18 transition-opacity duration-300",
-          isSidebarMenuOpen ? "opacity-100" : "opacity-0",
-        )}
-        aria-hidden="true"
-      />
+        <div
+          className={clsx(
+            "pointer-events-none absolute inset-0 z-20 bg-black/18 transition-opacity duration-300",
+            isSidebarMenuOpen ? "opacity-100" : "opacity-0",
+          )}
+          aria-hidden="true"
+        />
 
       <div
         ref={sidebarMenuRef}
@@ -1356,14 +1076,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
         </div>
       </div>
 
-      <div
-        className="relative grid h-full min-h-0 grid-rows-[360px_minmax(0,1fr)] gap-0 lg:grid-rows-1"
-        style={
-          isDesktopLayout
-            ? { gridTemplateColumns: `${leftSidebarWidth}px minmax(0, 1fr)` }
-            : undefined
-        }
-      >
+      <div className="grid h-full min-h-0 grid-rows-[360px_minmax(0,1fr)] gap-0 lg:grid-cols-[380px_minmax(0,1fr)] lg:grid-rows-1">
         <aside
           className="chat-shell-panel flex min-h-0 flex-col overflow-hidden rounded-none border-0 border-r border-black/8 p-4 sm:p-5"
           data-testid="chat-sidebar"
@@ -1432,7 +1145,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                               <Link
                                 key={chat.id}
                                 href={`/chat/${chat.id}`}
-                                className="block rounded-[16px] border border-transparent px-3 py-2 text-sm transition-[transform,border-color,background-color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] hover:border-black/10 hover:bg-[#f7f7f5] active:scale-[0.99] active:translate-y-[1px]"
+                                className="block rounded-[16px] border border-transparent px-3 py-2 text-sm transition hover:border-black/10 hover:bg-[#f7f7f5]"
                               >
                                 <p className="truncate font-semibold text-[#171717]">{title}</p>
                                 <p className="truncate text-xs text-stone-500">
@@ -1474,9 +1187,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                   <p className="truncate text-sm font-semibold text-[#171717]">
                                     {foundUser.displayName}
                                   </p>
-                                  <p className="truncate text-xs text-stone-500">
-                                    #{foundUser.username} · {foundUser.email}
-                                  </p>
+                                  <p className="truncate text-xs text-stone-500">{foundUser.email}</p>
                                 </div>
                               </div>
                               <span className="shrink-0 rounded-full border border-black/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.15em] text-stone-500">
@@ -1501,7 +1212,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                             <Link
                               key={result.messageId}
                               href={`/chat/${result.chatId}?message=${encodeURIComponent(result.messageId)}&q=${encodeURIComponent(normalizedGlobalSearch)}`}
-                              className="block rounded-[16px] border border-transparent px-3 py-2 transition-[transform,border-color,background-color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] hover:border-black/10 hover:bg-[#f7f7f5] active:scale-[0.99] active:translate-y-[1px]"
+                              className="block rounded-[16px] border border-transparent px-3 py-2 transition hover:border-black/10 hover:bg-[#f7f7f5]"
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <p className="truncate text-xs font-semibold uppercase tracking-[0.12em] text-stone-500">
@@ -1528,60 +1239,6 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                 ) : null}
               </div>
             ) : null}
-
-            <div className="rounded-[22px] border border-black/8 bg-white/95 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[11px] uppercase tracking-[0.2em] text-stone-400">
-                  Realtime
-                </p>
-                <span
-                  className={clsx(
-                    "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]",
-                    connectionState === "connected" && !isOffline
-                      ? "border-black/12 bg-[#111111] text-white"
-                      : "border-black/12 bg-white text-stone-500",
-                  )}
-                >
-                  {isOffline
-                    ? "offline"
-                    : connectionState === "connected"
-                      ? "online"
-                      : connectionState}
-                </span>
-              </div>
-              <p className="mt-2 text-xs text-stone-500">{connectionStatusCopy}</p>
-              <p className="mt-3 text-[11px] uppercase tracking-[0.2em] text-stone-400">
-                Notifications
-              </p>
-              <p className="mt-2 text-xs text-stone-500">{notificationStatusCopy}</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {notificationPermission === "default" ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void requestNotificationPermission();
-                    }}
-                    className="rounded-full border border-black/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black"
-                  >
-                    Включить
-                  </button>
-                ) : null}
-                {notificationPermission === "granted" ? (
-                  <button
-                    type="button"
-                    onClick={() => setNotificationsEnabled(!notificationsEnabled)}
-                    className="rounded-full border border-black/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black"
-                  >
-                    {notificationsEnabled ? "Отключить" : "Включить"}
-                  </button>
-                ) : null}
-                {notificationPermission === "denied" ? (
-                  <span className="rounded-full border border-black/10 px-3 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-500">
-                    Разрешите в настройках браузера
-                  </span>
-                ) : null}
-              </div>
-            </div>
           </div>
 
           <div className="relative z-10 mt-6 flex min-h-0 flex-1 flex-col">
@@ -1593,7 +1250,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
             </div>
 
             <div
-              className="scroll-region-y scroll-region-overlay-right -mx-4 min-h-0 flex-1 overflow-y-auto sm:-mx-5"
+              className="scroll-region-y -mx-4 min-h-0 flex-1 overflow-y-auto sm:-mx-5"
               data-testid="chat-list"
             >
               {chatsQuery.isLoading ? (
@@ -1615,40 +1272,13 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                       isGroup && chat.currentUserRole !== "creator" ? "leave" : "delete";
                     const isActive = currentChatId === chat.id;
                     const isDeleting = deletingChatId === chat.id;
-                    const onlineMembersCount = chat.members.filter(
-                      (member) => member.id !== user?.id && isUserOnline(member.id),
-                    ).length;
-                    const typingMembers = chat.members.filter(
-                      (member) => member.id !== user?.id && isUserTyping(chat.id, member.id),
-                    );
-                    const hasTyping = typingMembers.length > 0;
-                    const statusText = isGroup
-                      ? hasTyping
-                        ? typingMembers.length === 1
-                          ? `${typingMembers[0]?.displayName ?? "Кто-то"} печатает...`
-                          : `${typingMembers.length} печатают...`
-                        : `${chat.members.length} участников${onlineMembersCount > 0 ? ` · ${onlineMembersCount} онлайн` : ""}`
-                      : hasTyping
-                        ? "Печатает..."
-                        : partner && isUserOnline(partner.id)
-                          ? "В сети"
-                          : partner?.lastSeenAt
-                            ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
-                            : statusesMayBeStale
-                              ? "Статус может быть устаревшим"
-                              : "Личный чат";
-                    const lastMessagePreview = hasTyping
-                      ? typingMembers.length > 1
-                        ? `${typingMembers.length} печатают...`
-                        : "Печатает..."
-                      : getLastMessagePreviewText(chat.lastMessage);
 
                     return (
                       <div
                         key={chat.id}
                         data-testid="chat-list-entry"
                         className={clsx(
-                          "group px-4 py-3 transition-[transform,background-color,box-shadow] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] active:translate-y-[1px] active:scale-[0.988]",
+                          "group px-4 py-3 transition",
                           isActive ? "bg-[#151515] text-white" : "bg-white/92 hover:bg-white",
                         )}
                       >
@@ -1660,7 +1290,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                 : partner ?? { displayName: title, email: title, avatarUrl: null }
                             }
                             accessToken={accessToken}
-                            className="h-12 w-12 shrink-0 rounded-[16px] transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.01] group-active:scale-[0.96]"
+                            className="h-12 w-12 shrink-0 rounded-[16px]"
                             fallbackClassName={clsx(
                               "text-sm",
                               isActive ? "bg-white text-[#111111]" : "bg-[#111111] text-white",
@@ -1672,7 +1302,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                               <Link
                                 data-testid="chat-list-item"
                                 href={`/chat/${chat.id}`}
-                                className="min-w-0 flex-1 rounded-[18px] transition-transform duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-[0.995]"
+                                className="min-w-0 flex-1"
                               >
                                 <p
                                   className={clsx(
@@ -1688,7 +1318,11 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                                     isActive ? "text-white/60" : "text-stone-500",
                                   )}
                                 >
-                                  {statusText}
+                                  {isGroup
+                                    ? `${chat.members.length} участников`
+                                    : partner?.lastSeenAt
+                                      ? `Был(а) ${formatRelativeLastSeen(partner.lastSeenAt)}`
+                                      : "Личный чат"}
                                 </p>
                               </Link>
 
@@ -1738,11 +1372,11 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                             <Link
                               href={`/chat/${chat.id}`}
                               className={clsx(
-                                "mt-3 block truncate text-sm transition-transform duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-[0.995]",
+                                "mt-3 block truncate text-sm",
                                 isActive ? "text-white/76" : "text-stone-600",
                               )}
                             >
-                              {lastMessagePreview}
+                              {getLastMessagePreviewText(chat.lastMessage)}
                             </Link>
                           </div>
                         </div>
@@ -1762,65 +1396,50 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
           </div>
         </aside>
 
-        {isDesktopLayout ? (
-          <button
-            type="button"
-            onPointerDown={startLeftSidebarResize}
-            onDoubleClick={() => setLeftSidebarWidth(CHAT_LEFT_SIDEBAR_DEFAULT_WIDTH)}
-            className="absolute bottom-0 top-0 z-20 hidden w-3 -translate-x-1/2 cursor-col-resize border-0 bg-transparent lg:block"
-            style={{ left: `${leftSidebarWidth}px` }}
-            aria-label="Изменить ширину левой панели"
-            title="Изменить ширину левой панели"
-          >
-            <span className="mx-auto block h-full w-[3px] rounded-full bg-black/6 transition hover:bg-black/18" />
-          </button>
-        ) : null}
-
         <section className="min-h-0 min-w-0">{children}</section>
       </div>
 
-      <ConfirmDialog
-        open={Boolean(confirmingChatAction)}
-        title={
-          confirmingChatAction?.mode === "leave"
-            ? "Выйти из группы?"
-            : confirmingChat?.type === "group"
-              ? "Удалить группу?"
-              : "Удалить этот чат?"
-        }
-        description={
-          confirmingChat
-            ? confirmingChatAction?.mode === "leave"
-              ? `Вы выйдете из «${getChatTitle(confirmingChat.members, user?.id, { type: confirmingChat.type, title: confirmingChat.title })}» и потеряете доступ к сообщениям этой группы.`
-              : confirmingChat.type === "group"
-                ? `Группа «${getChatTitle(confirmingChat.members, user?.id, { type: confirmingChat.type, title: confirmingChat.title })}» будет удалена для всех участников.`
-                : `Диалог с ${getChatTitle(confirmingChat.members, user?.id, { type: confirmingChat.type, title: confirmingChat.title })} будет удален целиком.`
-            : confirmingChatAction?.mode === "leave"
-              ? "Вы выйдете из группы."
-              : "Диалог будет удален целиком."
-        }
-        confirmLabel={confirmingChatAction?.mode === "leave" ? "Выйти" : "Удалить"}
-        isLoading={deleteChatMutation.isPending || leaveGroupMutation.isPending}
-        onCancel={() => {
-          if (!deleteChatMutation.isPending && !leaveGroupMutation.isPending) {
-            setConfirmingChatAction(null);
+        <ConfirmDialog
+          open={Boolean(confirmingChatAction)}
+          title={
+            confirmingChatAction?.mode === "leave"
+              ? "Выйти из группы?"
+              : confirmingChat?.type === "group"
+                ? "Удалить группу?"
+                : "Удалить этот чат?"
           }
-        }}
-        onConfirm={() => {
-          if (!confirmingChatAction) {
-            return;
+          description={
+            confirmingChat
+              ? confirmingChatAction?.mode === "leave"
+                ? `Вы выйдете из «${getChatTitle(confirmingChat.members, user?.id, { type: confirmingChat.type, title: confirmingChat.title })}» и потеряете доступ к сообщениям этой группы.`
+                : confirmingChat.type === "group"
+                  ? `Группа «${getChatTitle(confirmingChat.members, user?.id, { type: confirmingChat.type, title: confirmingChat.title })}» будет удалена для всех участников.`
+                  : `Диалог с ${getChatTitle(confirmingChat.members, user?.id, { type: confirmingChat.type, title: confirmingChat.title })} будет удален целиком.`
+              : confirmingChatAction?.mode === "leave"
+                ? "Вы выйдете из группы."
+                : "Диалог будет удален целиком."
           }
+          confirmLabel={confirmingChatAction?.mode === "leave" ? "Выйти" : "Удалить"}
+          isLoading={deleteChatMutation.isPending || leaveGroupMutation.isPending}
+          onCancel={() => {
+            if (!deleteChatMutation.isPending && !leaveGroupMutation.isPending) {
+              setConfirmingChatAction(null);
+            }
+          }}
+          onConfirm={() => {
+            if (!confirmingChatAction) {
+              return;
+            }
 
-          if (confirmingChatAction.mode === "leave") {
-            leaveGroupMutation.mutate(confirmingChatAction.chatId);
-            return;
-          }
+            if (confirmingChatAction.mode === "leave") {
+              leaveGroupMutation.mutate(confirmingChatAction.chatId);
+              return;
+            }
 
-          deleteChatMutation.mutate(confirmingChatAction.chatId);
-        }}
-      />
+            deleteChatMutation.mutate(confirmingChatAction.chatId);
+          }}
+        />
       </main>
-      </ChatLayoutProvider>
     </RealtimeContext.Provider>
   );
 }
