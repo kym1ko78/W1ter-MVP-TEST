@@ -1,6 +1,7 @@
 export interface SafeUser {
   id: string;
   email: string;
+  username: string;
   displayName: string;
   avatarUrl: string | null;
   emailVerifiedAt: string | null;
@@ -46,6 +47,7 @@ export interface ChatMessage {
   sender: SafeUser;
   attachments: ChatAttachment[];
   reactions: MessageReactionSummary[];
+  isHiddenForCurrentUser: boolean;
 }
 
 export type ChatType = "direct" | "group";

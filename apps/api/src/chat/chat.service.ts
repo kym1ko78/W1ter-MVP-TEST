@@ -197,6 +197,11 @@ export class ChatService {
         messages: {
           where: {
             deletedAt: null,
+            hiddenFor: {
+              none: {
+                userId: currentUserId,
+              },
+            },
           },
           orderBy: { createdAt: "desc" },
           take: 1,
@@ -232,6 +237,11 @@ export class ChatService {
         messages: {
           where: {
             deletedAt: null,
+            hiddenFor: {
+              none: {
+                userId: currentUserId,
+              },
+            },
           },
           orderBy: { createdAt: "desc" },
           take: 1,
@@ -546,6 +556,11 @@ export class ChatService {
     const messages = await this.prisma.message.findMany({
       where: {
         chatId,
+        hiddenFor: {
+          none: {
+            userId: currentUserId,
+          },
+        },
       },
       include: {
         sender: true,
@@ -582,7 +597,7 @@ export class ChatService {
     if (!body) {
       throw new BadRequestException("Сообщение не должно быть пустым.");
     }
-    const replyToMessage = await this.resolveReplyTarget(chatId, dto.replyToMessageId);
+    const replyToMessage = await this.resolveReplyTarget(chatId, currentUserId, dto.replyToMessageId);
 
     const message = await this.prisma.$transaction(async (transaction) => {
       const createdMessage = await transaction.message.create({
@@ -636,6 +651,11 @@ export class ChatService {
       where: {
         id: messageId,
         chatId,
+        hiddenFor: {
+          none: {
+            userId: currentUserId,
+          },
+        },
       },
       include: {
         sender: true,
@@ -692,7 +712,12 @@ export class ChatService {
     return payload;
   }
 
-  async deleteMessage(chatId: string, messageId: string, currentUserId: string) {
+  async deleteMessage(
+    chatId: string,
+    messageId: string,
+    currentUserId: string,
+    mode: "self" | "everyone" = "everyone",
+  ) {
     await this.ensureMembership(chatId, currentUserId);
 
     const [message, chat] = await Promise.all([
@@ -705,6 +730,14 @@ export class ChatService {
           sender: true,
           attachments: true,
           reactions: true,
+          hiddenFor: {
+            where: {
+              userId: currentUserId,
+            },
+            select: {
+              userId: true,
+            },
+          },
           replyTo: {
             include: {
               sender: true,
@@ -722,8 +755,40 @@ export class ChatService {
       throw new NotFoundException("Message not found");
     }
 
-    if (message.senderId !== currentUserId) {
+    if (mode === "everyone" && message.senderId !== currentUserId) {
       throw new ForbiddenException("Вы можете удалить только свое сообщение.");
+    }
+
+    if (mode === "self") {
+      if (message.hiddenFor.length > 0 || message.deletedAt) {
+        return {
+          ...this.toMessagePayload(message),
+          isHiddenForCurrentUser: true,
+        };
+      }
+
+      await this.prisma.messageHidden.upsert({
+        where: {
+          messageId_userId: {
+            messageId: message.id,
+            userId: currentUserId,
+          },
+        },
+        update: {
+          hiddenAt: new Date(),
+        },
+        create: {
+          messageId: message.id,
+          userId: currentUserId,
+        },
+      });
+
+      this.logger.log(`Hidden message ${message.id} in chat ${chatId} for user ${currentUserId}`);
+
+      return {
+        ...this.toMessagePayload(message),
+        isHiddenForCurrentUser: true,
+      };
     }
 
     if (message.deletedAt) {
@@ -795,6 +860,11 @@ export class ChatService {
       where: {
         id: messageId,
         chatId,
+        hiddenFor: {
+          none: {
+            userId: currentUserId,
+          },
+        },
       },
       include: {
         sender: true,
@@ -928,6 +998,11 @@ export class ChatService {
       where: {
         id: messageId,
         chatId,
+        hiddenFor: {
+          none: {
+            userId: currentUserId,
+          },
+        },
       },
       select: {
         id: true,
@@ -985,10 +1060,15 @@ export class ChatService {
       }
 
       return transaction.message.findFirst({
-        where: {
-          id: messageId,
-          chatId,
+      where: {
+        id: messageId,
+        chatId,
+        hiddenFor: {
+          none: {
+            userId: currentUserId,
+          },
         },
+      },
         include: {
           sender: true,
           attachments: true,
@@ -1030,7 +1110,7 @@ export class ChatService {
     }
 
     const trimmedBody = body?.trim() ?? "";
-    const replyToMessage = await this.resolveReplyTarget(chatId, replyToMessageId);
+    const replyToMessage = await this.resolveReplyTarget(chatId, currentUserId, replyToMessageId);
     const mimeType = resolveAttachmentMimeType(uploadedFile.mimetype, uploadedFile.originalname);
 
     if (!mimeType) {
@@ -1166,7 +1246,11 @@ export class ChatService {
     return { success: true };
   }
 
-  private async resolveReplyTarget(chatId: string, replyToMessageId?: string) {
+  private async resolveReplyTarget(
+    chatId: string,
+    currentUserId: string,
+    replyToMessageId?: string,
+  ) {
     const normalizedReplyToMessageId = replyToMessageId?.trim();
 
     if (!normalizedReplyToMessageId) {
@@ -1177,6 +1261,11 @@ export class ChatService {
       where: {
         id: normalizedReplyToMessageId,
         chatId,
+        hiddenFor: {
+          none: {
+            userId: currentUserId,
+          },
+        },
       },
       include: {
         sender: true,
@@ -1319,8 +1408,11 @@ export class ChatService {
     return {
       id: user.id,
       email: user.email,
+      username: user.username,
       displayName: user.displayName,
       avatarUrl: user.avatarUrl,
+      emailVerifiedAt: user.emailVerifiedAt?.toISOString() ?? null,
+      emailVerificationSentAt: user.emailVerificationSentAt?.toISOString() ?? null,
       lastSeenAt: user.lastSeenAt?.toISOString() ?? null,
     };
   }
@@ -1376,6 +1468,7 @@ export class ChatService {
         ? []
         : message.attachments.map((attachment) => this.toAttachmentPayload(attachment)),
       reactions: isDeleted ? [] : this.toMessageReactionsPayload(message.reactions),
+      isHiddenForCurrentUser: false,
     };
   }
 

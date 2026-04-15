@@ -20,6 +20,7 @@ import { RegisterDto } from "./dto/register.dto";
 type SafeAuthUser = {
   id: string;
   email: string;
+  username: string;
   displayName: string;
   avatarUrl: string | null;
   emailVerifiedAt: Date | null;
@@ -56,10 +57,12 @@ export class AuthService {
   async register(dto: RegisterDto, metadata: SessionMetadata) {
     try {
       const passwordHash = await bcrypt.hash(dto.password, 10);
+      const generatedUsername = await this.usersService.generateUniqueUsername(dto.displayName);
 
       const user = await this.prisma.user.create({
         data: {
           email: dto.email.toLowerCase(),
+          username: generatedUsername,
           displayName: dto.displayName.trim(),
           passwordHash,
         },
@@ -80,7 +83,7 @@ export class AuthService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2002"
       ) {
-        throw new ConflictException("Email is already in use");
+        throw new ConflictException("Email or username is already in use");
       }
 
       throw error;
@@ -377,6 +380,7 @@ export class AuthService {
     return {
       id: user.id,
       email: user.email,
+      username: user.username,
       displayName: user.displayName,
       avatarUrl: user.avatarUrl,
       emailVerifiedAt: user.emailVerifiedAt?.toISOString() ?? null,

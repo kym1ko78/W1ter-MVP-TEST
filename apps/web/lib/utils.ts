@@ -152,6 +152,10 @@ export function getLastMessagePreviewText(
 
   const firstAttachment = message.attachments?.[0];
   if (firstAttachment) {
+    if (firstAttachment.mimeType?.startsWith("image/")) {
+      return "Фото";
+    }
+
     if (firstAttachment.mimeType?.startsWith("audio/")) {
       return "Голосовое сообщение";
     }
@@ -160,15 +164,7 @@ export function getLastMessagePreviewText(
       return "Видео";
     }
 
-    if (firstAttachment.mimeType === "application/pdf") {
-      return "PDF документ";
-    }
-
-    if (firstAttachment.mimeType?.startsWith("text/")) {
-      return "Текстовый файл";
-    }
-
-    return `Вложение: ${firstAttachment.originalName}`;
+    return "Файл";
   }
 
   return "Сообщений пока нет";
