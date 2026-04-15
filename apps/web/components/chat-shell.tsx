@@ -8,6 +8,7 @@ import {
 import clsx from "clsx";
 import Link from "next/link";
 import {
+  type PointerEvent as ReactPointerEvent,
   startTransition,
   useCallback,
   useDeferredValue,
@@ -33,12 +34,24 @@ import {
   getChatTitle,
   getLastMessagePreviewText,
 } from "../lib/utils";
+import {
+  ChatLayoutProvider,
+  CHAT_CENTER_MIN_WIDTH,
+  CHAT_LEFT_SIDEBAR_DEFAULT_WIDTH,
+  CHAT_LEFT_SIDEBAR_MAX_WIDTH,
+  CHAT_LEFT_SIDEBAR_MIN_WIDTH,
+  CHAT_RIGHT_PANEL_DEFAULT_WIDTH,
+  CHAT_RIGHT_PANEL_MAX_WIDTH,
+  CHAT_RIGHT_PANEL_MIN_WIDTH,
+} from "../lib/chat-layout-context";
 import type { RealtimeEventName } from "../lib/realtime-context";
 import { RealtimeContext } from "../lib/realtime-context";
 import type { ChatListItem, ChatMessage, MessagePage, SafeUser } from "../types/api";
 import { UserAvatar } from "./user-avatar";
 
 const CHAT_PAGE_LOCK_CLASS = "chat-page-locked";
+const LEFT_SIDEBAR_WIDTH_STORAGE_KEY = "w1ter.layout.left-sidebar-width";
+const RIGHT_PANEL_WIDTH_STORAGE_KEY = "w1ter.layout.right-panel-width";
 
 type ChatDeletedPayload = {
   chatId: string;
@@ -98,6 +111,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const socketRef = useRef<Socket | null>(null);
   const sidebarMenuRef = useRef<HTMLDivElement | null>(null);
   const sidebarMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const desktopLayoutRef = useRef(false);
+  const leftSidebarWidthRef = useRef(CHAT_LEFT_SIDEBAR_DEFAULT_WIDTH);
+  const rightPanelWidthRef = useRef(CHAT_RIGHT_PANEL_DEFAULT_WIDTH);
   const { accessToken, authorizedFetch, isAuthenticated, isLoading, logout, user } = useAuth();
   const [isSidebarMenuOpen, setIsSidebarMenuOpen] = useState(false);
   const [isGroupComposerOpen, setIsGroupComposerOpen] = useState(false);
@@ -129,6 +145,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     return window.Notification.permission;
   });
   const [notificationsEnabled, setNotificationsEnabledState] = useState(false);
+  const [isDesktopLayout, setIsDesktopLayout] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(CHAT_LEFT_SIDEBAR_DEFAULT_WIDTH);
+  const [rightPanelWidth, setRightPanelWidth] = useState(CHAT_RIGHT_PANEL_DEFAULT_WIDTH);
   const deferredGroupSearch = useDeferredValue(groupSearch);
   const deferredGlobalSearch = useDeferredValue(globalSearch);
   const normalizedGroupSearch = deferredGroupSearch.trim();
@@ -213,6 +232,91 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       };
     });
   }, []);
+
+  useEffect(() => {
+    leftSidebarWidthRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  useEffect(() => {
+    rightPanelWidthRef.current = rightPanelWidth;
+  }, [rightPanelWidth]);
+
+  useEffect(() => {
+    desktopLayoutRef.current = isDesktopLayout;
+  }, [isDesktopLayout]);
+
+  const clampLeftSidebarWidth = useCallback((value: number) => {
+    if (typeof window === "undefined") {
+      return Math.min(
+        Math.max(value, CHAT_LEFT_SIDEBAR_MIN_WIDTH),
+        CHAT_LEFT_SIDEBAR_MAX_WIDTH,
+      );
+    }
+
+    const viewportWidth = window.innerWidth;
+    const maxWidth = Math.max(
+      CHAT_LEFT_SIDEBAR_MIN_WIDTH,
+      Math.min(
+        CHAT_LEFT_SIDEBAR_MAX_WIDTH,
+        viewportWidth - rightPanelWidthRef.current - CHAT_CENTER_MIN_WIDTH,
+      ),
+    );
+
+    return Math.min(Math.max(value, CHAT_LEFT_SIDEBAR_MIN_WIDTH), maxWidth);
+  }, []);
+
+  const clampRightPanelWidth = useCallback((value: number) => {
+    if (typeof window === "undefined") {
+      return Math.min(
+        Math.max(value, CHAT_RIGHT_PANEL_MIN_WIDTH),
+        CHAT_RIGHT_PANEL_MAX_WIDTH,
+      );
+    }
+
+    const viewportWidth = window.innerWidth;
+    const maxWidth = Math.max(
+      CHAT_RIGHT_PANEL_MIN_WIDTH,
+      Math.min(
+        CHAT_RIGHT_PANEL_MAX_WIDTH,
+        viewportWidth - leftSidebarWidthRef.current - CHAT_CENTER_MIN_WIDTH,
+      ),
+    );
+
+    return Math.min(Math.max(value, CHAT_RIGHT_PANEL_MIN_WIDTH), maxWidth);
+  }, []);
+
+  const startLeftSidebarResize = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (!desktopLayoutRef.current || typeof window === "undefined") {
+        return;
+      }
+
+      event.preventDefault();
+      const startX = event.clientX;
+      const initialWidth = leftSidebarWidthRef.current;
+      const previousUserSelect = document.body.style.userSelect;
+      const previousCursor = document.body.style.cursor;
+
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "col-resize";
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const nextWidth = clampLeftSidebarWidth(initialWidth + (moveEvent.clientX - startX));
+        setLeftSidebarWidth(nextWidth);
+      };
+
+      const stopResize = () => {
+        document.body.style.userSelect = previousUserSelect;
+        document.body.style.cursor = previousCursor;
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", stopResize);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", stopResize);
+    },
+    [clampLeftSidebarWidth],
+  );
 
   const chatsQuery = useQuery({
     queryKey: ["chats"],
@@ -437,6 +541,72 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       router.replace("/login");
     }
   }, [isAuthenticated, isLoading, router]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(min-width: 1024px)");
+
+    const syncDesktopLayout = () => {
+      const nextIsDesktop = mediaQuery.matches;
+      setIsDesktopLayout(nextIsDesktop);
+      desktopLayoutRef.current = nextIsDesktop;
+
+      if (!nextIsDesktop) {
+        return;
+      }
+
+      const storedLeftWidth = Number(window.localStorage.getItem(LEFT_SIDEBAR_WIDTH_STORAGE_KEY));
+      const storedRightWidth = Number(window.localStorage.getItem(RIGHT_PANEL_WIDTH_STORAGE_KEY));
+
+      if (Number.isFinite(storedLeftWidth) && storedLeftWidth > 0) {
+        setLeftSidebarWidth(clampLeftSidebarWidth(storedLeftWidth));
+      }
+
+      if (Number.isFinite(storedRightWidth) && storedRightWidth > 0) {
+        setRightPanelWidth(clampRightPanelWidth(storedRightWidth));
+      }
+    };
+
+    syncDesktopLayout();
+    mediaQuery.addEventListener("change", syncDesktopLayout);
+
+    return () => mediaQuery.removeEventListener("change", syncDesktopLayout);
+  }, [clampLeftSidebarWidth, clampRightPanelWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !isDesktopLayout) {
+      return;
+    }
+
+    window.localStorage.setItem(LEFT_SIDEBAR_WIDTH_STORAGE_KEY, String(leftSidebarWidth));
+  }, [isDesktopLayout, leftSidebarWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !isDesktopLayout) {
+      return;
+    }
+
+    window.localStorage.setItem(RIGHT_PANEL_WIDTH_STORAGE_KEY, String(rightPanelWidth));
+  }, [isDesktopLayout, rightPanelWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !isDesktopLayout) {
+      return;
+    }
+
+    const syncPanelWidths = () => {
+      setLeftSidebarWidth((current) => clampLeftSidebarWidth(current));
+      setRightPanelWidth((current) => clampRightPanelWidth(current));
+    };
+
+    syncPanelWidths();
+    window.addEventListener("resize", syncPanelWidths);
+
+    return () => window.removeEventListener("resize", syncPanelWidths);
+  }, [clampLeftSidebarWidth, clampRightPanelWidth, isDesktopLayout]);
 
   useEffect(() => {
     const rootElement = document.documentElement;
@@ -863,6 +1033,15 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
   return (
     <RealtimeContext.Provider value={realtimeContextValue as any}>
+      <ChatLayoutProvider
+        value={{
+          isDesktopLayout,
+          leftSidebarWidth,
+          rightPanelWidth,
+          setLeftSidebarWidth,
+          setRightPanelWidth,
+        }}
+      >
       <main className="chat-scene grain relative h-[100dvh] overflow-hidden" data-testid="chat-shell">
         <div
           className={clsx(
@@ -1076,7 +1255,14 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
         </div>
       </div>
 
-      <div className="grid h-full min-h-0 grid-rows-[360px_minmax(0,1fr)] gap-0 lg:grid-cols-[380px_minmax(0,1fr)] lg:grid-rows-1">
+      <div
+        className="relative grid h-full min-h-0 grid-rows-[360px_minmax(0,1fr)] gap-0 lg:grid-rows-1"
+        style={
+          isDesktopLayout
+            ? { gridTemplateColumns: `${leftSidebarWidth}px minmax(0, 1fr)` }
+            : undefined
+        }
+      >
         <aside
           className="chat-shell-panel flex min-h-0 flex-col overflow-hidden rounded-none border-0 border-r border-black/8 p-4 sm:p-5"
           data-testid="chat-sidebar"
@@ -1250,7 +1436,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
             </div>
 
             <div
-              className="scroll-region-y -mx-4 min-h-0 flex-1 overflow-y-auto sm:-mx-5"
+              className="scroll-region-y scroll-region-overlay-right -mx-4 min-h-0 flex-1 overflow-y-auto sm:-mx-5"
               data-testid="chat-list"
             >
               {chatsQuery.isLoading ? (
@@ -1396,7 +1582,21 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
           </div>
         </aside>
 
-        <section className="min-h-0 min-w-0">{children}</section>
+          {isDesktopLayout ? (
+            <button
+              type="button"
+              onPointerDown={startLeftSidebarResize}
+              onDoubleClick={() => setLeftSidebarWidth(CHAT_LEFT_SIDEBAR_DEFAULT_WIDTH)}
+              className="absolute bottom-0 top-0 z-20 hidden w-3 -translate-x-1/2 cursor-col-resize border-0 bg-transparent lg:block"
+              style={{ left: `${leftSidebarWidth}px` }}
+              aria-label="Изменить ширину левой панели"
+              title="Изменить ширину левой панели"
+            >
+              <span className="mx-auto block h-full w-[3px] rounded-full bg-black/6 transition hover:bg-black/18" />
+            </button>
+          ) : null}
+
+          <section className="min-h-0 min-w-0">{children}</section>
       </div>
 
         <ConfirmDialog
@@ -1440,6 +1640,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
           }}
         />
       </main>
+      </ChatLayoutProvider>
     </RealtimeContext.Provider>
   );
 }

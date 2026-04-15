@@ -5,8 +5,10 @@ import clsx from "clsx";
 import { SOCKET_EVENTS } from "@repo/shared/events";
 import {
   ChangeEvent,
+  type ComponentType,
   FormEvent,
   KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   startTransition,
   useCallback,
   useDeferredValue,
@@ -33,6 +35,13 @@ import {
   type RealtimeCallIncomingPayload,
   type RealtimeCallSignalPayload,
 } from "../lib/realtime-context";
+import {
+  CHAT_CENTER_MIN_WIDTH,
+  CHAT_RIGHT_PANEL_DEFAULT_WIDTH,
+  CHAT_RIGHT_PANEL_MAX_WIDTH,
+  CHAT_RIGHT_PANEL_MIN_WIDTH,
+  useChatLayout,
+} from "../lib/chat-layout-context";
 import {
   formatConversationDateLabel,
   formatFileSize,
@@ -83,6 +92,7 @@ const ATTACHMENT_ALLOWED_TYPES = new Set([
 const VOICE_RECORDER_MIME_TYPE = "audio/webm";
 const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
 const SCROLL_BOTTOM_THRESHOLD = 180;
+const PROFILE_PANEL_TRANSITION_MS = 280;
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🔥", "😮", "😢"] as const;
 const CALL_ICE_SERVERS: RTCIceServer[] = [
   {
@@ -148,6 +158,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const queryClient = useQueryClient();
   const { accessToken, authorizedFetch, isAuthenticated, user } = useAuth();
   const { connectionState, emitSocketEvent, subscribeSocketEvent } = useRealtime();
+  const { isDesktopLayout, leftSidebarWidth, rightPanelWidth, setRightPanelWidth } =
+    useChatLayout();
   const [draft, setDraft] = useState("");
   const [messageSearch, setMessageSearch] = useState("");
   const [showGroupMembersPanel, setShowGroupMembersPanel] = useState(false);
@@ -174,6 +186,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [showMessageSearch, setShowMessageSearch] = useState(false);
   const [showConversationMenu, setShowConversationMenu] = useState(false);
   const [showConversationProfile, setShowConversationProfile] = useState(false);
+  const [isConversationProfileMounted, setIsConversationProfileMounted] = useState(false);
+  const [isConversationProfileVisible, setIsConversationProfileVisible] = useState(false);
   const [headerStatusMessage, setHeaderStatusMessage] = useState<string | null>(null);
   const [callSession, setCallSession] = useState<CallSession | null>(null);
   const [callError, setCallError] = useState<string | null>(null);
@@ -764,6 +778,28 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, [headerStatusMessage]);
 
   useEffect(() => {
+    if (showConversationProfile) {
+      setIsConversationProfileMounted(true);
+      const frameId = window.requestAnimationFrame(() => {
+        setIsConversationProfileVisible(true);
+      });
+
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
+    if (!isConversationProfileMounted) {
+      return;
+    }
+
+    setIsConversationProfileVisible(false);
+    const timeoutId = window.setTimeout(() => {
+      setIsConversationProfileMounted(false);
+    }, PROFILE_PANEL_TRANSITION_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isConversationProfileMounted, showConversationProfile]);
+
+  useEffect(() => {
     if (!showConversationMenu && !showConversationProfile) {
       return;
     }
@@ -781,14 +817,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
         !conversationMenuButtonRef.current?.contains(target)
       ) {
         setShowConversationMenu(false);
-      }
-
-      if (
-        showConversationProfile &&
-        !conversationProfileRef.current?.contains(target) &&
-        !conversationProfileButtonRef.current?.contains(target)
-      ) {
-        setShowConversationProfile(false);
       }
     };
 
@@ -954,13 +982,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const conversationProfileUser: SafeUser = otherUser ?? {
     id: chatId,
     displayName: conversationTitle,
-    username: "",
+    username: isGroupChat ? `chat_${chatId.slice(0, 8)}` : `user_${chatId.slice(0, 8)}`,
     email: isGroupChat ? `${groupMembersCount} участников` : conversationTitle,
     avatarUrl: null,
     emailVerifiedAt: null,
     emailVerificationSentAt: null,
     lastSeenAt: null,
   };
+  const conversationProfileHandle =
+    !isGroupChat && conversationProfileUser.username
+      ? `#${conversationProfileUser.username}`
+      : null;
   const profileDetailRows = isGroupChat
     ? [
         { label: "Тип", value: "Групповой чат" },
@@ -2020,11 +2052,66 @@ export function ConversationView({ chatId }: { chatId: string }) {
     return member.role !== "admin";
   };
 
+  const materialsCount = useMemo(
+    () =>
+      messageItems.reduce((total, message) => {
+        const linkCount = (message.body?.match(/(?:https?:\/\/|www\.)\S+/gi) ?? []).length;
+        return total + message.attachments.length + linkCount;
+      }, 0),
+    [messageItems],
+  );
+
   const profileSummaryStatus = isGroupChat
     ? `${groupMembersCount} участников`
     : otherUser?.lastSeenAt
       ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
       : "Личный чат";
+  const usesSplitConversationLayout = isConversationProfileMounted;
+  const conversationProfileOffsetStyle =
+    isDesktopLayout && isConversationProfileMounted
+      ? { paddingRight: `${rightPanelWidth}px` }
+      : undefined;
+  const handleRightPanelResizeStart = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (!isDesktopLayout || typeof window === "undefined") {
+        return;
+      }
+
+      event.preventDefault();
+      const startX = event.clientX;
+      const initialWidth = rightPanelWidth;
+      const previousUserSelect = document.body.style.userSelect;
+      const previousCursor = document.body.style.cursor;
+
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "col-resize";
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const viewportWidth = window.innerWidth;
+        const rawWidth = initialWidth - (moveEvent.clientX - startX);
+        const maxWidth = Math.max(
+          CHAT_RIGHT_PANEL_MIN_WIDTH,
+          Math.min(
+            CHAT_RIGHT_PANEL_MAX_WIDTH,
+            viewportWidth - leftSidebarWidth - CHAT_CENTER_MIN_WIDTH,
+          ),
+        );
+        const nextWidth = Math.min(Math.max(rawWidth, CHAT_RIGHT_PANEL_MIN_WIDTH), maxWidth);
+        setRightPanelWidth(nextWidth);
+      };
+
+      const stopResize = () => {
+        document.body.style.userSelect = previousUserSelect;
+        document.body.style.cursor = previousCursor;
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", stopResize);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", stopResize);
+    },
+    [isDesktopLayout, leftSidebarWidth, rightPanelWidth, setRightPanelWidth],
+  );
   const callPartnerName = otherUser?.displayName ?? conversationTitle;
   const hasCallSession = Boolean(callSession);
   const isIncomingCall = callSession?.status === "incoming";
@@ -2089,7 +2176,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
       className="chat-shell-panel chat-thread-surface relative flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0"
       data-testid="conversation-view"
     >
-      <header className="relative z-20 flex flex-none items-start justify-between gap-4 border-b border-black/8 bg-white px-4 py-3 sm:px-5">
+      <header
+        className="relative z-20 flex flex-none items-start justify-between gap-4 border-b border-black/8 bg-white px-4 py-3 transition-[padding] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)] sm:px-5"
+        style={conversationProfileOffsetStyle}
+      >
         <div className="min-w-0 flex-1">
           <h2
             className="truncate text-[21px] font-semibold leading-none tracking-tight text-[#171717]"
@@ -2359,7 +2449,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
       ) : null}
 
       {showMessageSearch ? (
-        <div className="relative z-10 border-b border-black/8 bg-white px-4 py-3 sm:px-6">
+        <div
+          className="relative z-10 border-b border-black/8 bg-white px-4 py-3 sm:px-6"
+          style={conversationProfileOffsetStyle}
+        >
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <input
@@ -2438,6 +2531,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
             "border-b border-black/8 bg-white px-4 py-2 text-xs sm:px-6",
             hasSearchMatches ? "text-stone-500" : "text-stone-600",
           )}
+          style={conversationProfileOffsetStyle}
           data-testid="message-search-state"
         >
           {hasSearchMatches
@@ -2446,20 +2540,40 @@ export function ConversationView({ chatId }: { chatId: string }) {
         </div>
       ) : null}
 
-      {showConversationProfile ? (
+      {isConversationProfileMounted ? (
         <>
-          <button
-            type="button"
-            onClick={() => setShowConversationProfile(false)}
-            className="absolute inset-0 z-20 bg-black/10"
-            aria-label="Закрыть профиль чата"
-          />
+          {isDesktopLayout ? (
+            <button
+              type="button"
+              onPointerDown={handleRightPanelResizeStart}
+              onDoubleClick={() => setRightPanelWidth(CHAT_RIGHT_PANEL_DEFAULT_WIDTH)}
+              className="absolute bottom-0 top-0 z-30 hidden w-3 translate-x-1/2 cursor-col-resize border-0 bg-transparent lg:block"
+              style={{ right: `${rightPanelWidth}px` }}
+              aria-label="Изменить ширину правой панели"
+              title="Изменить ширину правой панели"
+            >
+              <span className="mx-auto block h-full w-[3px] rounded-full bg-black/6 transition hover:bg-black/18" />
+            </button>
+          ) : null}
           <aside
             ref={conversationProfileRef}
-            className="absolute right-0 top-0 z-30 flex h-full w-full max-w-[380px] flex-col overflow-y-auto border-l border-black/8 bg-[#f7f7f5] text-[#171717] shadow-[-24px_0_60px_rgba(17,24,39,0.14)]"
+            className={clsx(
+              "scroll-region-y scroll-region-overlay-right absolute right-0 top-0 z-30 flex h-full w-full max-w-[90vw] flex-col overflow-y-auto border-l border-black/8 bg-[#f7f7f5] text-[#171717] transition-[transform,opacity,box-shadow] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+              isConversationProfileVisible
+                ? "pointer-events-auto translate-x-0 opacity-100 shadow-[-24px_0_60px_rgba(17,24,39,0.14)]"
+                : "pointer-events-none translate-x-10 opacity-0 shadow-[-12px_0_26px_rgba(17,24,39,0.08)]",
+            )}
+            style={isDesktopLayout ? { width: `${rightPanelWidth}px` } : undefined}
             data-testid="conversation-profile-panel"
           >
-            <div className="border-b border-black/8 bg-white px-6 py-6">
+            <div
+              className={clsx(
+                "border-b border-black/8 bg-white px-5 py-6 transition-[transform,opacity] duration-[320ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+                isConversationProfileVisible
+                  ? "translate-y-0 opacity-100"
+                  : "translate-y-3 opacity-0",
+              )}
+            >
               <div className="flex items-start justify-between gap-4">
                 <UserAvatar
                   user={conversationProfileUser}
@@ -2479,45 +2593,45 @@ export function ConversationView({ chatId }: { chatId: string }) {
               <h3 className="mt-5 text-[28px] font-semibold leading-none tracking-tight text-[#171717]">
                 {conversationTitle}
               </h3>
+              {conversationProfileHandle ? (
+                <p className="mt-2 text-sm font-semibold tracking-[0.16em] text-stone-400">
+                  {conversationProfileHandle}
+                </p>
+              ) : null}
               <p className="mt-2 text-base text-stone-500">{profileSummaryStatus}</p>
-              <div className="mt-5 grid grid-cols-3 gap-3">
-                <button
-                  type="button"
+              <div className="mt-5 grid grid-cols-3 gap-2.5">
+                <ProfileActionTile
+                  icon={ChatBubbleIcon}
+                  label="Чат"
                   onClick={() => setShowConversationProfile(false)}
-                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
-                >
-                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
-                    <ChatBubbleIcon className="h-4 w-4" />
-                  </span>
-                  <span className="mt-2 block text-sm">Чат</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConversationCall}
-                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
-                >
-                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
-                    <PhoneIcon className="h-4 w-4" />
-                  </span>
-                  <span className="mt-2 block text-sm">Звонок</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowConversationProfile(false);
-                    setShowMessageSearch(true);
-                  }}
-                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
-                >
-                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
-                    <SearchIcon className="h-4 w-4" />
-                  </span>
-                  <span className="mt-2 block text-sm">Поиск</span>
-                </button>
+                />
+                <ProfileActionTile
+                  icon={BellIcon}
+                  label="Звук"
+                  onClick={() => setHeaderStatusMessage("Настройки звука добавим следующим шагом.")}
+                />
+                <ProfileActionTile
+                  icon={GiftIcon}
+                  label="Подарок"
+                  onClick={() => setHeaderStatusMessage("Подарки добавим следующим шагом.")}
+                />
+              </div>
+              <div className="mt-5 rounded-[24px] border border-black/8 bg-[#fafaf9] p-4">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Обзор</p>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <div className="rounded-[18px] border border-black/8 bg-white px-4 py-3">
+                    <p className="text-lg font-semibold text-[#171717]">{messageItems.length}</p>
+                    <p className="mt-1 text-sm text-stone-500">Сообщений в чате</p>
+                  </div>
+                  <div className="rounded-[18px] border border-black/8 bg-white px-4 py-3">
+                    <p className="text-lg font-semibold text-[#171717]">{materialsCount}</p>
+                    <p className="mt-1 text-sm text-stone-500">Материалов и ссылок</p>
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div className="space-y-6 px-6 py-6">
+            <div className="space-y-6 px-5 py-6">
               <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
                 <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Информация</p>
                 <div className="mt-4 space-y-4">
@@ -2754,6 +2868,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
         ref={messageListRef}
         onScroll={updateStickToBottomState}
         className="scroll-region-y relative z-10 flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
+        style={conversationProfileOffsetStyle}
         data-testid="message-list"
       >
         {renderItems.map((item) => {
@@ -2794,7 +2909,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           const shortTextOnlyBubble =
             inlineMetaBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
           const currentUserId = user?.id ?? null;
-          const bubbleOnRight = isMine;
+          const bubbleOnRight = usesSplitConversationLayout && isMine;
           const currentUserReaction =
             currentUserId
               ? message.reactions.find((reaction) => reaction.userIds.includes(currentUserId))?.emoji ??
@@ -2872,7 +2987,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     ) : null}
                   </div>
                 ) : null}
-                <div className={clsx("flex max-w-full flex-col gap-1.5", isMine ? "items-end" : "items-start")}>
+                <div
+                  className={clsx(
+                    "flex max-w-full flex-col gap-1.5",
+                    bubbleOnRight ? "items-end" : "items-start",
+                  )}
+                >
                   <div
                     className={clsx(
                       "w-fit max-w-full shadow-sm transition-[box-shadow]",
@@ -2881,10 +3001,16 @@ export function ConversationView({ chatId }: { chatId: string }) {
                           ? "rounded-[18px] rounded-br-[7px] px-3 py-1.5"
                           : "rounded-[18px] rounded-bl-[7px] px-3 py-1.5"
                         : compactBubble
-                          ? "rounded-[17px] px-2.5 py-1"
+                          ? bubbleOnRight
+                            ? "rounded-[22px] rounded-br-[8px] px-3 py-1.5"
+                            : "rounded-[22px] rounded-bl-[8px] px-3 py-1.5"
                           : attachmentOnlyBubble
-                            ? "rounded-[20px] px-3 py-[2px]"
-                            : "rounded-[22px] px-4 py-2.5",
+                            ? bubbleOnRight
+                              ? "rounded-[24px] rounded-br-[10px] px-3 py-[2px]"
+                              : "rounded-[24px] rounded-bl-[10px] px-3 py-[2px]"
+                            : bubbleOnRight
+                              ? "rounded-[24px] rounded-br-[9px] px-4 py-2.5"
+                              : "rounded-[24px] rounded-bl-[9px] px-4 py-2.5",
                       isMine
                         ? "bg-[#111111] text-white"
                         : "border border-black/8 bg-white text-[#171717]",
@@ -2980,7 +3106,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
                   </div>
 
                   {message.reactions.length > 0 ? (
-                    <div className="flex max-w-full flex-wrap gap-1">
+                    <div
+                      className={clsx(
+                        "flex max-w-full flex-wrap gap-1",
+                        bubbleOnRight ? "justify-end" : "justify-start",
+                      )}
+                    >
                       {message.reactions.map((reaction) => {
                         const reactedByCurrentUser =
                           currentUserId ? reaction.userIds.includes(currentUserId) : false;
@@ -3044,7 +3175,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
         <div ref={messageListEndRef} aria-hidden="true" />
       </div>
 
-      <form onSubmit={handleSubmit} className="relative z-10 flex-none border-t border-black/8 p-4 sm:p-5">
+      <form
+        onSubmit={handleSubmit}
+        className="relative z-10 flex-none border-t border-black/8 p-4 sm:p-5"
+        style={conversationProfileOffsetStyle}
+      >
         <input
           ref={fileInputRef}
           type="file"
@@ -3968,6 +4103,68 @@ function UsersIcon({ className }: { className?: string }) {
       <circle cx="9.5" cy="7" r="3.5" />
       <path d="M20 21v-2a4 4 0 0 0-3-3.87" />
       <path d="M14 4.13a3.5 3.5 0 0 1 0 5.74" />
+    </svg>
+  );
+}
+
+function ProfileActionTile({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex min-h-[86px] flex-col items-center justify-center gap-2 rounded-[20px] border border-black/8 bg-[#fafaf9] px-3 py-4 text-center text-stone-600 transition hover:border-black/16 hover:bg-white hover:text-black"
+    >
+      <span className="flex h-10 w-10 items-center justify-center rounded-full border border-black/8 bg-white text-[#171717]">
+        <Icon className="h-5 w-5" />
+      </span>
+      <span className="text-xs font-medium tracking-[0.04em]">{label}</span>
+    </button>
+  );
+}
+
+function BellIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M6.8 8.5a5.2 5.2 0 1 1 10.4 0v2.1c0 .9.26 1.78.75 2.53l.95 1.48a1.2 1.2 0 0 1-1.01 1.85H6.07a1.2 1.2 0 0 1-1.01-1.85l.95-1.48c.49-.75.75-1.63.75-2.53V8.5Z" />
+      <path d="M9.75 18.4a2.25 2.25 0 0 0 4.5 0" />
+    </svg>
+  );
+}
+
+function GiftIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="9" width="17" height="11" rx="2.2" />
+      <path d="M12 9v11" />
+      <path d="M4 9h16" />
+      <path d="M7.9 9c-1.53 0-2.9-.9-2.9-2.35C5 5.43 5.95 4.5 7.3 4.5c2.08 0 3.38 2.3 4.7 4.5H7.9Z" />
+      <path d="M16.1 9c1.53 0 2.9-.9 2.9-2.35 0-1.22-.95-2.15-2.3-2.15-2.08 0-3.38 2.3-4.7 4.5h4.1Z" />
     </svg>
   );
 }
