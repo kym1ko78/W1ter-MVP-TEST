@@ -2,12 +2,11 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
+import { SOCKET_EVENTS } from "@repo/shared/events";
 import {
   ChangeEvent,
   FormEvent,
   KeyboardEvent,
-  type ComponentType,
-  type PointerEvent as ReactPointerEvent,
   startTransition,
   useCallback,
   useDeferredValue,
@@ -16,24 +15,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import { readJson, useAuth } from "../lib/auth-context";
-import {
-  ATTACHMENT_ACCEPT,
-  ATTACHMENT_MAX_MB,
-  getAttachmentKind,
-  getAttachmentTypeLabel,
-  validateAttachmentFile,
-} from "../lib/attachment-rules";
-import { useRealtime } from "../lib/realtime-context";
-import {
-  CHAT_CENTER_MIN_WIDTH,
-  CHAT_RIGHT_PANEL_DEFAULT_WIDTH,
-  CHAT_RIGHT_PANEL_MAX_WIDTH,
-  CHAT_RIGHT_PANEL_MIN_WIDTH,
-  useChatLayout,
-} from "../lib/chat-layout-context";
 import {
   appendMessageUnique,
   dedupeMessages,
@@ -41,6 +24,15 @@ import {
   upsertMessage,
 } from "../lib/message-cache";
 import { buildAttachmentUrl } from "../lib/config";
+import {
+  useRealtime,
+  type CallMode,
+  type RealtimeCallAcceptedPayload,
+  type RealtimeCallDeclinedPayload,
+  type RealtimeCallEndedPayload,
+  type RealtimeCallIncomingPayload,
+  type RealtimeCallSignalPayload,
+} from "../lib/realtime-context";
 import {
   formatConversationDateLabel,
   formatFileSize,
@@ -59,43 +51,55 @@ import type {
   MessagePage,
   SafeUser,
 } from "../types/api";
-import { ConfirmDialog, DeleteMessageDialog } from "./confirm-dialog";
+import { ConfirmDialog } from "./confirm-dialog";
 import { UserAvatar } from "./user-avatar";
 
 const MESSAGE_MAX_LENGTH = 4000;
 const COMPOSER_MIN_HEIGHT = 56;
 const COMPOSER_MAX_HEIGHT = 200;
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_ACCEPT = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+  "audio/webm",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/mpeg",
+].join(",");
+const ATTACHMENT_ALLOWED_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+  "audio/webm",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/mpeg",
+]);
 const VOICE_RECORDER_MIME_TYPE = "audio/webm";
 const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
 const SCROLL_BOTTOM_THRESHOLD = 180;
-const PROFILE_PANEL_TRANSITION_MS = 280;
-const MESSAGE_CONTEXT_MENU_WIDTH = 276;
-const MESSAGE_CONTEXT_MENU_MIN_HEIGHT = 360;
-const MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN = 12;
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🔥", "😮", "😢"] as const;
+const CALL_ICE_SERVERS: RTCIceServer[] = [
+  {
+    urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"],
+  },
+];
+const CALL_STATUS_MESSAGES: Record<CallSessionStatus, string> = {
+  incoming: "Входящий вызов",
+  outgoing: "Исходящий вызов",
+  connecting: "Соединяем",
+  active: "Вызов активен",
+};
 
 type ComposerPayload = {
   body: string;
   file: File | null;
   replyToMessageId?: string | null;
-};
-
-type DeleteChatResponse = {
-  success: boolean;
-  chatId: string;
-};
-
-type DeleteMessageMode = "self" | "everyone";
-
-type DeleteMessagePayload = {
-  messageId: string;
-  mode: DeleteMessageMode;
-};
-
-type MessageContextMenuState = {
-  message: ChatMessage;
-  x: number;
-  y: number;
 };
 
 type RecordingState = "idle" | "recording" | "stopping";
@@ -127,22 +131,23 @@ type ConversationRenderItem =
       message: ChatMessage;
     };
 
-type IconComponent = ComponentType<{ className?: string }>;
+type CallSessionStatus = "incoming" | "outgoing" | "connecting" | "active";
+
+type CallSession = {
+  callId: string;
+  mode: CallMode;
+  status: CallSessionStatus;
+  initiatorUserId: string;
+  peerUserId: string | null;
+  createdAt: string;
+};
 
 export function ConversationView({ chatId }: { chatId: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const { accessToken, authorizedFetch, isAuthenticated, user } = useAuth();
-  const {
-    connectionState,
-    isOffline,
-    statusesMayBeStale,
-    isUserOnline,
-    isUserTyping,
-    updateTyping,
-  } = useRealtime();
-  const { isDesktopLayout, leftSidebarWidth, rightPanelWidth, setRightPanelWidth } = useChatLayout();
+  const { connectionState, emitSocketEvent, subscribeSocketEvent } = useRealtime();
   const [draft, setDraft] = useState("");
   const [messageSearch, setMessageSearch] = useState("");
   const [showGroupMembersPanel, setShowGroupMembersPanel] = useState(false);
@@ -153,7 +158,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     displayName: string;
   } | null>(null);
   const [confirmingGroupLeave, setConfirmingGroupLeave] = useState(false);
-  const [confirmingChatDeletion, setConfirmingChatDeletion] = useState(false);
   const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -162,6 +166,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
   const [forwardSearch, setForwardSearch] = useState("");
   const [forwardPanelError, setForwardPanelError] = useState<string | null>(null);
+  const [recentlyReactedMessageId, setRecentlyReactedMessageId] = useState<string | null>(null);
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
@@ -169,10 +174,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [showMessageSearch, setShowMessageSearch] = useState(false);
   const [showConversationMenu, setShowConversationMenu] = useState(false);
   const [showConversationProfile, setShowConversationProfile] = useState(false);
-  const [messageContextMenu, setMessageContextMenu] = useState<MessageContextMenuState | null>(null);
   const [headerStatusMessage, setHeaderStatusMessage] = useState<string | null>(null);
-  const [isConversationProfileMounted, setIsConversationProfileMounted] = useState(false);
-  const [isConversationProfileVisible, setIsConversationProfileVisible] = useState(false);
+  const [callSession, setCallSession] = useState<CallSession | null>(null);
+  const [callError, setCallError] = useState<string | null>(null);
+  const [isCallMicMuted, setIsCallMicMuted] = useState(false);
+  const [isCallLocalCameraEnabled, setIsCallLocalCameraEnabled] = useState(true);
+  const [callDurationSeconds, setCallDurationSeconds] = useState(0);
   const deferredMessageSearch = useDeferredValue(messageSearch);
   const deferredGroupMemberSearch = useDeferredValue(groupMemberSearch);
   const deferredForwardSearch = useDeferredValue(forwardSearch);
@@ -194,9 +201,14 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const recordedChunksRef = useRef<BlobPart[]>([]);
   const prefilledSearchQueryRef = useRef<string | null>(null);
   const focusedFromSearchParamRef = useRef<string | null>(null);
-  const typingStopTimeoutRef = useRef<number | null>(null);
-  const isLocalUserTypingRef = useRef(false);
-  const shouldRefocusComposerRef = useRef(false);
+  const callSessionRef = useRef<CallSession | null>(null);
+  const callStartedAtRef = useRef<string | null>(null);
+  const callPeerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const callLocalStreamRef = useRef<MediaStream | null>(null);
+  const callRemoteStreamRef = useRef<MediaStream | null>(null);
+  const callRemoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const callLocalVideoRef = useRef<HTMLVideoElement | null>(null);
+  const callRemoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const chatQuery = useQuery({
     queryKey: ["chat", chatId],
@@ -312,22 +324,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     });
   }, []);
 
-  const focusComposer = useCallback(() => {
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-
-      if (!textarea || textarea.disabled) {
-        return;
-      }
-
-      textarea.focus();
-      const caretPosition = textarea.value.length;
-      textarea.setSelectionRange(caretPosition, caretPosition);
-      });
-    });
-  }, []);
-
   const focusMessageById = useCallback((messageId: string, behavior: ScrollBehavior = "smooth") => {
     const listElement = messageListRef.current;
 
@@ -368,18 +364,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
 
     shouldStickToBottomRef.current = distanceToBottom <= SCROLL_BOTTOM_THRESHOLD;
   }, []);
-
-  const setLocalTypingState = useCallback(
-    (nextValue: boolean) => {
-      if (isLocalUserTypingRef.current === nextValue) {
-        return;
-      }
-
-      isLocalUserTypingRef.current = nextValue;
-      updateTyping(chatId, nextValue);
-    },
-    [chatId, updateTyping],
-  );
 
   const sendMessageMutation = useMutation({
     mutationFn: async ({ body, file, replyToMessageId }: ComposerPayload) => {
@@ -470,14 +454,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
   });
 
   const deleteMessageMutation = useMutation({
-    mutationFn: async ({ messageId, mode }: DeleteMessagePayload) =>
+    mutationFn: async (messageId: string) =>
       readJson<ChatMessage>(
         await authorizedFetch(`/chats/${chatId}/messages/${messageId}`, {
           method: "DELETE",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ mode }),
         }),
       ),
     onSuccess: (message) => {
@@ -543,6 +523,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       queryClient.setQueryData<MessagePage>(["messages", chatId], (old) =>
         upsertMessage(old, message),
       );
+      setRecentlyReactedMessageId(variables.messageId);
       setComposerError(null);
       setForwardPanelError(null);
     },
@@ -647,34 +628,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
   });
 
-  const deleteChatMutation = useMutation({
-    mutationFn: async () =>
-      readJson<DeleteChatResponse>(
-        await authorizedFetch(`/chats/${chatId}`, {
-          method: "DELETE",
-        }),
-      ),
-    onSuccess: ({ chatId: deletedChatId }) => {
-      queryClient.removeQueries({ queryKey: ["group-members", deletedChatId] });
-      queryClient.removeQueries({ queryKey: ["chat", deletedChatId] });
-      queryClient.removeQueries({ queryKey: ["messages", deletedChatId] });
-      void queryClient.invalidateQueries({ queryKey: ["chats"] });
-      setShowConversationMenu(false);
-      setShowConversationProfile(false);
-      startTransition(() => {
-        router.replace("/chat");
-      });
-    },
-    onError: (error) => {
-      setHeaderStatusMessage(
-        error instanceof Error ? error.message : "Не удалось удалить этот чат.",
-      );
-    },
-    onSettled: () => {
-      setConfirmingChatDeletion(false);
-    },
-  });
-
   useEffect(() => {
     const element = textareaRef.current;
 
@@ -691,44 +644,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     element.style.height = `${nextHeight}px`;
     element.style.overflowY = element.scrollHeight > COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
   }, [draft]);
-
-  useEffect(() => {
-    const hasTypingSignal = recordingState === "idle" && draft.trim().length > 0;
-
-    if (!hasTypingSignal) {
-      if (typingStopTimeoutRef.current !== null) {
-        window.clearTimeout(typingStopTimeoutRef.current);
-        typingStopTimeoutRef.current = null;
-      }
-
-      setLocalTypingState(false);
-      return;
-    }
-
-    setLocalTypingState(true);
-
-    if (typingStopTimeoutRef.current !== null) {
-      window.clearTimeout(typingStopTimeoutRef.current);
-    }
-
-    typingStopTimeoutRef.current = window.setTimeout(() => {
-      typingStopTimeoutRef.current = null;
-      setLocalTypingState(false);
-    }, 1_800);
-  }, [draft, recordingState, setLocalTypingState]);
-
-  useEffect(
-    () => () => {
-      if (typingStopTimeoutRef.current !== null) {
-        window.clearTimeout(typingStopTimeoutRef.current);
-        typingStopTimeoutRef.current = null;
-      }
-
-      setLocalTypingState(false);
-      isLocalUserTypingRef.current = false;
-    },
-    [setLocalTypingState],
-  );
 
   useEffect(() => {
     const lastMessage = messageItems[messageItems.length - 1];
@@ -751,6 +666,33 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, [chatId, normalizedMessageSearch]);
 
   useEffect(() => {
+    const peerConnection = callPeerConnectionRef.current;
+    if (peerConnection) {
+      peerConnection.onicecandidate = null;
+      peerConnection.ontrack = null;
+      peerConnection.onconnectionstatechange = null;
+      peerConnection.close();
+      callPeerConnectionRef.current = null;
+    }
+
+    callLocalStreamRef.current?.getTracks().forEach((track) => track.stop());
+    callLocalStreamRef.current = null;
+    callRemoteStreamRef.current = null;
+    callStartedAtRef.current = null;
+    setCallDurationSeconds(0);
+    setCallSession(null);
+    setCallError(null);
+    setIsCallMicMuted(false);
+    setIsCallLocalCameraEnabled(true);
+    if (callRemoteAudioRef.current) {
+      callRemoteAudioRef.current.srcObject = null;
+    }
+    if (callLocalVideoRef.current) {
+      callLocalVideoRef.current.srcObject = null;
+    }
+    if (callRemoteVideoRef.current) {
+      callRemoteVideoRef.current.srcObject = null;
+    }
     setShowGroupMembersPanel(false);
     setShowMessageSearch(false);
     setShowConversationMenu(false);
@@ -765,6 +707,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
     setForwardingMessage(null);
     setForwardSearch("");
     setForwardPanelError(null);
+    setRecentlyReactedMessageId(null);
   }, [chatId]);
 
   useEffect(() => {
@@ -821,37 +764,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, [headerStatusMessage]);
 
   useEffect(() => {
-    if (showConversationProfile) {
-      setIsConversationProfileMounted(true);
-      const frameId = window.requestAnimationFrame(() => {
-        setIsConversationProfileVisible(true);
-      });
-
-      return () => window.cancelAnimationFrame(frameId);
-    }
-
-    if (!isConversationProfileMounted) {
-      return;
-    }
-
-    setIsConversationProfileVisible(false);
-    const timeoutId = window.setTimeout(() => {
-      setIsConversationProfileMounted(false);
-    }, PROFILE_PANEL_TRANSITION_MS);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [isConversationProfileMounted, showConversationProfile]);
-
-  useEffect(() => {
-    const handleWindowBlur = () => {
-      setLocalTypingState(false);
-    };
-
-    window.addEventListener("blur", handleWindowBlur);
-    return () => window.removeEventListener("blur", handleWindowBlur);
-  }, [setLocalTypingState]);
-
-  useEffect(() => {
     if (!showConversationMenu && !showConversationProfile) {
       return;
     }
@@ -869,6 +781,14 @@ export function ConversationView({ chatId }: { chatId: string }) {
         !conversationMenuButtonRef.current?.contains(target)
       ) {
         setShowConversationMenu(false);
+      }
+
+      if (
+        showConversationProfile &&
+        !conversationProfileRef.current?.contains(target) &&
+        !conversationProfileButtonRef.current?.contains(target)
+      ) {
+        setShowConversationProfile(false);
       }
     };
 
@@ -889,33 +809,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [showConversationMenu, showConversationProfile]);
-
-  useEffect(() => {
-    if (!messageContextMenu) {
-      return;
-    }
-
-    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMessageContextMenu(null);
-      }
-    };
-
-    const handleResize = () => {
-      setMessageContextMenu(null);
-    };
-
-    const listElement = messageListRef.current;
-    listElement?.addEventListener("scroll", handleResize, { passive: true });
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("resize", handleResize);
-
-    return () => {
-      listElement?.removeEventListener("scroll", handleResize);
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("resize", handleResize);
-    };
-  }, [messageContextMenu]);
 
   useEffect(() => {
     if (!activeSearchMessage) {
@@ -1036,52 +929,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     [existingGroupMemberIds, groupUsersSearchQuery.data, user?.id],
   );
   const groupMembersCount = groupMembersQuery.data?.members.length ?? chatMembers.length;
-  const onlineGroupMembersCount = chatMembers.filter(
-    (member) => member.id !== user?.id && isUserOnline(member.id),
-  ).length;
-  const typingGroupMembers = chatMembers.filter(
-    (member) => member.id !== user?.id && isUserTyping(chatId, member.id),
-  );
-  const isDirectUserOnline = Boolean(otherUser?.id && isUserOnline(otherUser.id));
-  const isDirectUserTyping = Boolean(otherUser?.id && isUserTyping(chatId, otherUser.id));
-  const directStatusText = isDirectUserTyping
-    ? "Печатает..."
-    : isDirectUserOnline
-      ? "В сети"
-      : otherUser?.lastSeenAt
-        ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
-        : statusesMayBeStale
-          ? "Статус может быть устаревшим"
-          : "Личный чат";
-  const groupStatusText = typingGroupMembers.length
-    ? typingGroupMembers.length === 1
-      ? `${typingGroupMembers[0]?.displayName ?? "Кто-то"} печатает...`
-      : `${typingGroupMembers.length} печатают...`
-    : `${groupMembersCount} участников${onlineGroupMembersCount > 0 ? ` · ${onlineGroupMembersCount} онлайн` : ""}`;
-  const profileSummaryStatus = isGroupChat ? groupStatusText : directStatusText;
-  const realtimeStateCopy = isOffline
-    ? "Оффлайн. Соединение восстановится автоматически."
-    : connectionState === "connected"
-      ? null
-      : connectionState === "connecting"
-        ? "Подключаемся к realtime..."
-        : "Связь потеряна. Статусы могут быть устаревшими.";
-  const typingIndicatorLabel = isGroupChat
-    ? typingGroupMembers.length === 1
-      ? `${typingGroupMembers[0]?.displayName ?? "Кто-то"} печатает...`
-      : typingGroupMembers.length > 1
-        ? `${typingGroupMembers.length} печатают...`
-        : null
-    : isDirectUserTyping
-      ? `${otherUser?.displayName ?? "Собеседник"} печатает...`
-      : null;
-  const pendingAttachmentTypeLabel = pendingFile
-    ? getAttachmentTypeLabel({
-        mimeType: pendingFile.type,
-        isImage: pendingFile.type.startsWith("image/"),
-        originalName: pendingFile.name,
-      })
-    : null;
   const isEditingMessage = Boolean(editingMessage);
   const composerText = draft.trim();
   const isComposerSubmitPending = sendMessageMutation.isPending || editMessageMutation.isPending;
@@ -1107,164 +954,663 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const conversationProfileUser: SafeUser = otherUser ?? {
     id: chatId,
     displayName: conversationTitle,
-    username: isGroupChat ? `chat_${chatId.slice(0, 8)}` : `user_${chatId.slice(0, 8)}`,
     email: isGroupChat ? `${groupMembersCount} участников` : conversationTitle,
     avatarUrl: null,
     emailVerifiedAt: null,
     emailVerificationSentAt: null,
     lastSeenAt: null,
   };
-  const conversationProfileHandle =
-    !isGroupChat && conversationProfileUser.username ? `#${conversationProfileUser.username}` : null;
-  const usesSplitConversationLayout = isConversationProfileMounted;
-  const conversationProfileOffsetStyle =
-    isDesktopLayout && isConversationProfileMounted
-      ? { paddingRight: `${rightPanelWidth}px` }
-      : undefined;
-  const handleRightPanelResizeStart = useCallback(
-    (event: ReactPointerEvent<HTMLButtonElement>) => {
-      if (!isDesktopLayout || typeof window === "undefined") {
-        return;
-      }
-
-      event.preventDefault();
-      const startX = event.clientX;
-      const initialWidth = rightPanelWidth;
-      const previousUserSelect = document.body.style.userSelect;
-      const previousCursor = document.body.style.cursor;
-
-      document.body.style.userSelect = "none";
-      document.body.style.cursor = "col-resize";
-
-      const handlePointerMove = (moveEvent: PointerEvent) => {
-        const viewportWidth = window.innerWidth;
-        const rawWidth = initialWidth - (moveEvent.clientX - startX);
-        const maxWidth = Math.max(
-          CHAT_RIGHT_PANEL_MIN_WIDTH,
-          Math.min(
-            CHAT_RIGHT_PANEL_MAX_WIDTH,
-            viewportWidth - leftSidebarWidth - CHAT_CENTER_MIN_WIDTH,
-          ),
-        );
-        const nextWidth = Math.min(Math.max(rawWidth, CHAT_RIGHT_PANEL_MIN_WIDTH), maxWidth);
-        setRightPanelWidth(nextWidth);
-      };
-
-      const stopResize = () => {
-        document.body.style.userSelect = previousUserSelect;
-        document.body.style.cursor = previousCursor;
-        window.removeEventListener("pointermove", handlePointerMove);
-        window.removeEventListener("pointerup", stopResize);
-      };
-
-      window.addEventListener("pointermove", handlePointerMove);
-      window.addEventListener("pointerup", stopResize);
-    },
-    [isDesktopLayout, leftSidebarWidth, rightPanelWidth, setRightPanelWidth],
-  );
-  const messageContextMenuPosition = useMemo(() => {
-    if (!messageContextMenu || typeof window === "undefined") {
-      return null;
-    }
-
-    const maxLeft = Math.max(
-      MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
-      window.innerWidth - MESSAGE_CONTEXT_MENU_WIDTH - MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
-    );
-    const maxTop = Math.max(
-      MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
-      window.innerHeight - MESSAGE_CONTEXT_MENU_MIN_HEIGHT - MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
-    );
-
-    return {
-      left: Math.min(Math.max(messageContextMenu.x, MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN), maxLeft),
-      top: Math.min(Math.max(messageContextMenu.y, MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN), maxTop),
-    };
-  }, [messageContextMenu]);
   const profileDetailRows = isGroupChat
     ? [
         { label: "Тип", value: "Групповой чат" },
         { label: "Участники", value: String(groupMembersCount) },
-        { label: "Онлайн", value: String(onlineGroupMembersCount) },
         {
           label: "Ваша роль",
           value: formatGroupRole(chatQuery.data?.currentUserRole ?? "member"),
         },
       ]
     : [
-        { label: "Ник", value: conversationProfileHandle ?? "Не задан" },
         { label: "Email", value: conversationProfileUser.email },
         {
           label: "Статус",
-          value: directStatusText,
+          value: otherUser?.lastSeenAt
+            ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
+            : "Личный чат",
         },
         {
           label: "Последняя активность",
-          value: isDirectUserOnline
-            ? "Сейчас в сети"
-            : otherUser?.lastSeenAt
-              ? formatTime(otherUser.lastSeenAt)
-              : statusesMayBeStale
-                ? "Данные могут быть устаревшими"
-                : "Сейчас недоступно",
+          value: otherUser?.lastSeenAt
+            ? formatTime(otherUser.lastSeenAt)
+            : "Сейчас недоступно",
         },
       ];
   const visibleGroupMembers = groupMembersQuery.data?.members ?? [];
-  const canDeleteConversation = !isGroupChat || chatQuery.data?.currentUserRole === "creator";
-  const destructiveConversationLabel = canDeleteConversation
-    ? isGroupChat
-      ? "Удалить группу"
-      : "Удалить чат"
-    : "Выйти из группы";
-  const mediaStats = useMemo(() => {
-    let imageCount = 0;
-    let videoCount = 0;
-    let audioCount = 0;
-    let fileCount = 0;
-    let linkCount = 0;
 
-    for (const message of messageItems) {
-      linkCount += (message.body?.match(/(?:https?:\/\/|www\.)\S+/gi) ?? []).length;
+  const clearCallSessionLocally = useCallback(
+    (statusMessage?: string | null) => {
+      const peerConnection = callPeerConnectionRef.current;
+      if (peerConnection) {
+        peerConnection.onicecandidate = null;
+        peerConnection.ontrack = null;
+        peerConnection.onconnectionstatechange = null;
+        peerConnection.close();
+        callPeerConnectionRef.current = null;
+      }
 
-      for (const attachment of message.attachments) {
-        const kind = getAttachmentKind(attachment);
+      callLocalStreamRef.current?.getTracks().forEach((track) => track.stop());
+      callLocalStreamRef.current = null;
+      callRemoteStreamRef.current = null;
+      callStartedAtRef.current = null;
+      setCallDurationSeconds(0);
+      setIsCallMicMuted(false);
+      setIsCallLocalCameraEnabled(true);
+      setCallSession(null);
+      setCallError(null);
 
-        if (kind === "image") {
-          imageCount += 1;
-          continue;
-        }
+      if (callRemoteAudioRef.current) {
+        callRemoteAudioRef.current.srcObject = null;
+      }
 
-        if (kind === "video") {
-          videoCount += 1;
-          continue;
-        }
+      if (callLocalVideoRef.current) {
+        callLocalVideoRef.current.srcObject = null;
+      }
 
-        if (kind === "audio") {
-          audioCount += 1;
-          continue;
-        }
+      if (callRemoteVideoRef.current) {
+        callRemoteVideoRef.current.srcObject = null;
+      }
 
-        fileCount += 1;
+      if (statusMessage) {
+        setHeaderStatusMessage(statusMessage);
+      }
+    },
+    [],
+  );
+
+  const ensureLocalCallStream = useCallback(async (mode: CallMode) => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Браузер не поддерживает getUserMedia.");
+    }
+
+    if (callLocalStreamRef.current) {
+      return callLocalStreamRef.current;
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: mode === "video",
+    });
+
+    callLocalStreamRef.current = stream;
+    setIsCallMicMuted(false);
+    setIsCallLocalCameraEnabled(mode === "video");
+
+    if (callLocalVideoRef.current) {
+      callLocalVideoRef.current.srcObject = stream;
+      if (mode === "video") {
+        void callLocalVideoRef.current.play().catch(() => undefined);
       }
     }
 
-    return [
-      { key: "images", label: "Фотографии", value: imageCount, icon: GalleryIcon },
-      { key: "videos", label: "Видео", value: videoCount, icon: VideoIcon },
-      { key: "files", label: "Файлы", value: fileCount, icon: FileStackIcon },
-      { key: "audio", label: "Аудио", value: audioCount, icon: AudioBarsIcon },
-      { key: "links", label: "Ссылки", value: linkCount, icon: LinkChainIcon },
+    return stream;
+  }, []);
+
+  const ensureCallPeerConnection = useCallback(
+    (callId: string, targetUserId: string | null) => {
+      if (typeof RTCPeerConnection === "undefined") {
+        throw new Error("WebRTC не поддерживается в этом браузере.");
+      }
+
+      const existingConnection = callPeerConnectionRef.current;
+      if (existingConnection) {
+        return existingConnection;
+      }
+
+      const nextConnection = new RTCPeerConnection({
+        iceServers: CALL_ICE_SERVERS,
+      });
+
+      const remoteStream = new MediaStream();
+      callRemoteStreamRef.current = remoteStream;
+
+      if (callRemoteAudioRef.current) {
+        callRemoteAudioRef.current.srcObject = remoteStream;
+      }
+
+      if (callRemoteVideoRef.current) {
+        callRemoteVideoRef.current.srcObject = remoteStream;
+      }
+
+      nextConnection.ontrack = (event) => {
+        const stream = callRemoteStreamRef.current;
+        if (!stream) {
+          return;
+        }
+
+        const incomingTracks =
+          event.streams[0]?.getTracks().length
+            ? event.streams[0].getTracks()
+            : [event.track];
+
+        for (const track of incomingTracks) {
+          stream.addTrack(track);
+        }
+
+        if (callRemoteAudioRef.current) {
+          void callRemoteAudioRef.current.play().catch(() => undefined);
+        }
+
+        if (callRemoteVideoRef.current) {
+          void callRemoteVideoRef.current.play().catch(() => undefined);
+        }
+      };
+
+      nextConnection.onicecandidate = (event) => {
+        if (!event.candidate) {
+          return;
+        }
+
+        emitSocketEvent(SOCKET_EVENTS.callSignal, {
+          chatId,
+          callId,
+          targetUserId: targetUserId ?? undefined,
+          signalType: "ice-candidate",
+          payload: event.candidate.toJSON(),
+        });
+      };
+
+      nextConnection.onconnectionstatechange = () => {
+        const state = nextConnection.connectionState;
+
+        if (state === "connected") {
+          setCallSession((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "active",
+                }
+              : current,
+          );
+
+          if (!callStartedAtRef.current) {
+            callStartedAtRef.current = new Date().toISOString();
+          }
+          return;
+        }
+
+        if (state === "failed" || state === "closed" || state === "disconnected") {
+          const activeSession = callSessionRef.current;
+          if (activeSession) {
+            emitSocketEvent(SOCKET_EVENTS.callEnd, {
+              chatId,
+              callId: activeSession.callId,
+              reason: "connection_lost",
+            });
+          }
+          clearCallSessionLocally("Соединение звонка прервано.");
+        }
+      };
+
+      callPeerConnectionRef.current = nextConnection;
+      return nextConnection;
+    },
+    [chatId, clearCallSessionLocally, emitSocketEvent],
+  );
+
+  const prepareCallConnection = useCallback(
+    async (session: CallSession, targetUserId: string | null) => {
+      const localStream = await ensureLocalCallStream(session.mode);
+      const connection = ensureCallPeerConnection(session.callId, targetUserId);
+      const senderTrackIds = new Set(
+        connection
+          .getSenders()
+          .map((sender) => sender.track?.id)
+          .filter((trackId): trackId is string => Boolean(trackId)),
+      );
+
+      for (const track of localStream.getTracks()) {
+        if (senderTrackIds.has(track.id)) {
+          continue;
+        }
+
+        connection.addTrack(track, localStream);
+      }
+
+      return connection;
+    },
+    [ensureCallPeerConnection, ensureLocalCallStream],
+  );
+
+  const startOfferForCall = useCallback(
+    async (session: CallSession, targetUserId: string | null) => {
+      try {
+        const connection = await prepareCallConnection(session, targetUserId);
+        const offer = await connection.createOffer();
+        await connection.setLocalDescription(offer);
+
+        emitSocketEvent(SOCKET_EVENTS.callSignal, {
+          chatId,
+          callId: session.callId,
+          targetUserId: targetUserId ?? undefined,
+          signalType: "offer",
+          payload: offer,
+        });
+      } catch (error) {
+        setCallError(error instanceof Error ? error.message : "Не удалось начать звонок.");
+        clearCallSessionLocally("Не удалось установить звонок.");
+      }
+    },
+    [chatId, clearCallSessionLocally, emitSocketEvent, prepareCallConnection],
+  );
+
+  const handleStartCall = useCallback(
+    (mode: CallMode) => {
+      if (!user?.id) {
+        setCallError("Нужно дождаться авторизации пользователя.");
+        return;
+      }
+
+      if (connectionState !== "connected") {
+        setCallError("Realtime еще не подключен. Попробуйте через пару секунд.");
+        return;
+      }
+
+      if (callSessionRef.current) {
+        setCallError("Сначала завершите текущий звонок.");
+        return;
+      }
+
+      const callId =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const createdAt = new Date().toISOString();
+      callStartedAtRef.current = createdAt;
+      setCallDurationSeconds(0);
+      setCallError(null);
+      setShowConversationMenu(false);
+      setShowConversationProfile(false);
+      setCallSession({
+        callId,
+        mode,
+        status: "outgoing",
+        initiatorUserId: user.id,
+        peerUserId: otherUser?.id ?? null,
+        createdAt,
+      });
+
+      emitSocketEvent(SOCKET_EVENTS.callStart, {
+        chatId,
+        callId,
+        mode,
+      });
+    },
+    [chatId, connectionState, emitSocketEvent, otherUser?.id, user?.id],
+  );
+
+  const handleAcceptCall = useCallback(async () => {
+    const session = callSessionRef.current;
+    if (!session || session.status !== "incoming") {
+      return;
+    }
+
+    setCallError(null);
+    setCallSession((current) =>
+      current
+        ? {
+            ...current,
+            status: "connecting",
+          }
+        : current,
+    );
+    callStartedAtRef.current = new Date().toISOString();
+    setCallDurationSeconds(0);
+
+    emitSocketEvent(SOCKET_EVENTS.callAccept, {
+      chatId,
+      callId: session.callId,
+    });
+
+    try {
+      await prepareCallConnection(session, session.peerUserId ?? session.initiatorUserId);
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : "Не удалось принять вызов.");
+      emitSocketEvent(SOCKET_EVENTS.callDecline, {
+        chatId,
+        callId: session.callId,
+        reason: "media_error",
+      });
+      clearCallSessionLocally("Не удалось принять вызов.");
+    }
+  }, [chatId, clearCallSessionLocally, emitSocketEvent, prepareCallConnection]);
+
+  const handleDeclineCall = useCallback(() => {
+    const session = callSessionRef.current;
+    if (!session) {
+      return;
+    }
+
+    emitSocketEvent(SOCKET_EVENTS.callDecline, {
+      chatId,
+      callId: session.callId,
+      reason: "declined",
+    });
+    clearCallSessionLocally("Вызов отклонен.");
+  }, [chatId, clearCallSessionLocally, emitSocketEvent]);
+
+  const handleEndCall = useCallback(() => {
+    const session = callSessionRef.current;
+    if (!session) {
+      return;
+    }
+
+    emitSocketEvent(SOCKET_EVENTS.callEnd, {
+      chatId,
+      callId: session.callId,
+      reason: "ended_by_user",
+    });
+    clearCallSessionLocally("Звонок завершен.");
+  }, [chatId, clearCallSessionLocally, emitSocketEvent]);
+
+  const toggleCallMicMute = useCallback(() => {
+    const stream = callLocalStreamRef.current;
+    if (!stream) {
+      return;
+    }
+
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length) {
+      return;
+    }
+
+    const nextMuted = !isCallMicMuted;
+    for (const track of audioTracks) {
+      track.enabled = !nextMuted;
+    }
+    setIsCallMicMuted(nextMuted);
+  }, [isCallMicMuted]);
+
+  const toggleCallCamera = useCallback(() => {
+    const stream = callLocalStreamRef.current;
+    if (!stream) {
+      return;
+    }
+
+    const videoTracks = stream.getVideoTracks();
+    if (!videoTracks.length) {
+      return;
+    }
+
+    const nextEnabled = !isCallLocalCameraEnabled;
+    for (const track of videoTracks) {
+      track.enabled = nextEnabled;
+    }
+    setIsCallLocalCameraEnabled(nextEnabled);
+  }, [isCallLocalCameraEnabled]);
+
+  const handleIncomingCallSignal = useCallback(
+    async (payload: RealtimeCallSignalPayload) => {
+      if (payload.chatId !== chatId) {
+        return;
+      }
+
+      const session = callSessionRef.current;
+      if (!session || session.callId !== payload.callId || payload.fromUserId === user?.id) {
+        return;
+      }
+
+      try {
+        if (payload.signalType === "offer") {
+          const offer = toSessionDescriptionInit(payload.payload);
+          if (!offer) {
+            return;
+          }
+
+          const targetUserId = payload.fromUserId;
+          const connection = await prepareCallConnection(session, targetUserId);
+          await connection.setRemoteDescription(offer);
+          const answer = await connection.createAnswer();
+          await connection.setLocalDescription(answer);
+
+          emitSocketEvent(SOCKET_EVENTS.callSignal, {
+            chatId,
+            callId: session.callId,
+            targetUserId,
+            signalType: "answer",
+            payload: answer,
+          });
+
+          setCallSession((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "connecting",
+                  peerUserId: targetUserId,
+                }
+              : current,
+          );
+          return;
+        }
+
+        if (payload.signalType === "answer") {
+          const answer = toSessionDescriptionInit(payload.payload);
+          const connection = callPeerConnectionRef.current;
+          if (!answer || !connection) {
+            return;
+          }
+
+          await connection.setRemoteDescription(answer);
+          setCallSession((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "active",
+                  peerUserId: payload.fromUserId,
+                }
+              : current,
+          );
+
+          if (!callStartedAtRef.current) {
+            callStartedAtRef.current = new Date().toISOString();
+          }
+          return;
+        }
+
+        if (payload.signalType === "ice-candidate") {
+          const candidate = toIceCandidateInit(payload.payload);
+          const connection = callPeerConnectionRef.current;
+          if (!candidate || !connection) {
+            return;
+          }
+
+          await connection.addIceCandidate(candidate);
+        }
+      } catch (error) {
+        setCallError(error instanceof Error ? error.message : "Ошибка обработки звонка.");
+      }
+    },
+    [chatId, emitSocketEvent, prepareCallConnection, user?.id],
+  );
+
+  useEffect(() => {
+    callSessionRef.current = callSession;
+  }, [callSession]);
+
+  useEffect(() => {
+    if (callSession?.status !== "active") {
+      return;
+    }
+
+    const updateDuration = () => {
+      if (!callStartedAtRef.current) {
+        return;
+      }
+
+      const startedAtMs = new Date(callStartedAtRef.current).getTime();
+      if (Number.isNaN(startedAtMs)) {
+        return;
+      }
+
+      const nextSeconds = Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
+      setCallDurationSeconds(nextSeconds);
+    };
+
+    updateDuration();
+    const intervalId = window.setInterval(updateDuration, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [callSession?.status]);
+
+  useEffect(() => {
+    const unsubscribers = [
+      subscribeSocketEvent("call:incoming", (payload) => {
+        const nextPayload = payload as RealtimeCallIncomingPayload;
+        if (nextPayload.chatId !== chatId || nextPayload.fromUserId === user?.id) {
+          return;
+        }
+
+        const activeSession = callSessionRef.current;
+        if (activeSession && activeSession.callId !== nextPayload.callId) {
+          emitSocketEvent(SOCKET_EVENTS.callDecline, {
+            chatId: nextPayload.chatId,
+            callId: nextPayload.callId,
+            reason: "busy",
+          });
+          return;
+        }
+
+        callStartedAtRef.current = nextPayload.createdAt;
+        setCallDurationSeconds(0);
+        setCallError(null);
+        setCallSession({
+          callId: nextPayload.callId,
+          mode: nextPayload.mode,
+          status: "incoming",
+          initiatorUserId: nextPayload.fromUserId,
+          peerUserId: nextPayload.fromUserId,
+          createdAt: nextPayload.createdAt,
+        });
+      }),
+      subscribeSocketEvent("call:accepted", (payload) => {
+        const nextPayload = payload as RealtimeCallAcceptedPayload;
+        if (nextPayload.chatId !== chatId) {
+          return;
+        }
+
+        const activeSession = callSessionRef.current;
+        if (!activeSession || activeSession.callId !== nextPayload.callId) {
+          return;
+        }
+
+        if (nextPayload.userId === user?.id) {
+          setCallSession((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "connecting",
+                }
+              : current,
+          );
+          return;
+        }
+
+        if (
+          activeSession.peerUserId &&
+          activeSession.peerUserId !== nextPayload.userId
+        ) {
+          return;
+        }
+
+        if (activeSession.status === "outgoing" || activeSession.status === "connecting") {
+          const nextSession: CallSession = {
+            ...activeSession,
+            status: "connecting",
+            peerUserId: nextPayload.userId,
+          };
+          setCallSession(nextSession);
+          void startOfferForCall(nextSession, nextPayload.userId);
+        }
+      }),
+      subscribeSocketEvent("call:declined", (payload) => {
+        const nextPayload = payload as RealtimeCallDeclinedPayload;
+        if (nextPayload.chatId !== chatId) {
+          return;
+        }
+
+        const activeSession = callSessionRef.current;
+        if (!activeSession || activeSession.callId !== nextPayload.callId) {
+          return;
+        }
+
+        if (nextPayload.userId === user?.id) {
+          return;
+        }
+
+        clearCallSessionLocally("Собеседник отклонил вызов.");
+      }),
+      subscribeSocketEvent("call:ended", (payload) => {
+        const nextPayload = payload as RealtimeCallEndedPayload;
+        if (nextPayload.chatId !== chatId) {
+          return;
+        }
+
+        const activeSession = callSessionRef.current;
+        if (!activeSession || activeSession.callId !== nextPayload.callId) {
+          return;
+        }
+
+        if (nextPayload.userId === user?.id) {
+          return;
+        }
+
+        clearCallSessionLocally("Собеседник завершил звонок.");
+      }),
+      subscribeSocketEvent("call:signal", (payload) => {
+        void handleIncomingCallSignal(payload as RealtimeCallSignalPayload);
+      }),
     ];
-  }, [messageItems]);
-  const contextMenuMessage = messageContextMenu?.message ?? null;
-  const contextMenuTimestampLabel = contextMenuMessage
-    ? `${formatConversationDateLabel(contextMenuMessage.createdAt).toLocaleLowerCase()} в ${formatTime(contextMenuMessage.createdAt)}`
-    : null;
-  const contextMenuCurrentUserReaction =
-    contextMenuMessage && user?.id
-      ? contextMenuMessage.reactions.find((reaction) => reaction.userIds.includes(user.id))?.emoji ??
-        null
-      : null;
+
+    return () => {
+      for (const unsubscribe of unsubscribers) {
+        unsubscribe();
+      }
+    };
+  }, [
+    chatId,
+    clearCallSessionLocally,
+    emitSocketEvent,
+    handleIncomingCallSignal,
+    startOfferForCall,
+    subscribeSocketEvent,
+    user?.id,
+  ]);
+
+  useEffect(
+    () => () => {
+      const peerConnection = callPeerConnectionRef.current;
+      if (peerConnection) {
+        peerConnection.onicecandidate = null;
+        peerConnection.ontrack = null;
+        peerConnection.onconnectionstatechange = null;
+        peerConnection.close();
+        callPeerConnectionRef.current = null;
+      }
+
+      callLocalStreamRef.current?.getTracks().forEach((track) => track.stop());
+      callLocalStreamRef.current = null;
+      callRemoteStreamRef.current = null;
+      callStartedAtRef.current = null;
+
+      if (callRemoteAudioRef.current) {
+        callRemoteAudioRef.current.srcObject = null;
+      }
+      if (callLocalVideoRef.current) {
+        callLocalVideoRef.current.srcObject = null;
+      }
+      if (callRemoteVideoRef.current) {
+        callRemoteVideoRef.current.srcObject = null;
+      }
+    },
+    [],
+  );
 
   const stopMediaStream = useCallback(() => {
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -1297,7 +1643,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     }
 
     try {
-      setLocalTypingState(false);
       setComposerError(null);
       setPendingFile(null);
       if (fileInputRef.current) {
@@ -1349,13 +1694,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           : "Не удалось получить доступ к микрофону.",
       );
     }
-  }, [
-    isComposerSubmitPending,
-    isEditingMessage,
-    recordingState,
-    setLocalTypingState,
-    stopMediaStream,
-  ]);
+  }, [isComposerSubmitPending, isEditingMessage, recordingState, stopMediaStream]);
 
   const finishVoiceRecording = useCallback(
     (shouldSend: boolean) => {
@@ -1403,7 +1742,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
         });
 
         shouldScrollAfterSendRef.current = true;
-        shouldRefocusComposerRef.current = true;
         sendMessageMutation.mutate({
           body: "",
           file: voiceFile,
@@ -1441,19 +1779,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
     [stopMediaStream],
   );
 
-  useEffect(() => {
-    if (recordingState !== "idle" || isComposerSubmitPending) {
-      return;
-    }
-
-    if (!shouldRefocusComposerRef.current) {
-      return;
-    }
-
-    shouldRefocusComposerRef.current = false;
-    focusComposer();
-  }, [focusComposer, isComposerSubmitPending, recordingState]);
-
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     if (isEditingMessage) {
       setComposerError("При редактировании вложения недоступны.");
@@ -1468,9 +1793,14 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    const validation = validateAttachmentFile(selectedFile);
-    if (!validation.isValid) {
-      setComposerError(validation.error);
+    if (!ATTACHMENT_ALLOWED_TYPES.has(selectedFile.type)) {
+      setComposerError("Поддерживаются PNG, JPEG, WEBP, PDF, TXT и аудио WEBM/OGG/MP4/MP3.");
+      event.target.value = "";
+      return;
+    }
+
+    if (selectedFile.size > ATTACHMENT_MAX_BYTES) {
+      setComposerError("Размер файла не должен превышать 10 MB.");
       event.target.value = "";
       return;
     }
@@ -1501,15 +1831,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    setLocalTypingState(false);
     setComposerError(null);
     if (editingMessage) {
-      shouldRefocusComposerRef.current = true;
       editMessageMutation.mutate({ messageId: editingMessage.id, body });
       return;
     }
 
-    shouldRefocusComposerRef.current = true;
     sendMessageMutation.mutate({
       body,
       file: pendingFile,
@@ -1565,33 +1892,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    setMessageContextMenu(null);
     setConfirmingMessage(message);
   };
-
-  const handleDeleteMessageMode = (mode: DeleteMessageMode) => {
-    if (!confirmingMessage) {
-      return;
-    }
-
-    deleteMessageMutation.mutate({
-      messageId: confirmingMessage.id,
-      mode,
-    });
-  };
-
-  const openMessageContextMenu = useCallback(
-    (message: ChatMessage, x: number, y: number) => {
-      setShowConversationMenu(false);
-      setShowConversationProfile(false);
-      setMessageContextMenu({ message, x, y });
-    },
-    [],
-  );
-
-  const closeMessageContextMenu = useCallback(() => {
-    setMessageContextMenu(null);
-  }, []);
 
   const handleReplyMessage = (message: ChatMessage) => {
     if (recordingState !== "idle" || isComposerSubmitPending) {
@@ -1603,7 +1905,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    setMessageContextMenu(null);
     setComposerError(null);
     setEditingMessage(null);
     setReplyingToMessage(message);
@@ -1623,7 +1924,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    setMessageContextMenu(null);
     setComposerError(null);
     setReplyingToMessage(null);
     setEditingMessage(message);
@@ -1646,7 +1946,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    setMessageContextMenu(null);
     setComposerError(null);
     setForwardPanelError(null);
     setForwardSearch("");
@@ -1672,44 +1971,11 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
-    setMessageContextMenu(null);
     toggleReactionMutation.mutate({
       messageId: message.id,
       emoji,
     });
   };
-
-  const handleCopyMessageText = useCallback(async (message: ChatMessage) => {
-    const text = message.body?.trim();
-
-    if (!text) {
-      setHeaderStatusMessage("В этом сообщении нет текста для копирования.");
-      setMessageContextMenu(null);
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(text);
-      setHeaderStatusMessage("Текст сообщения скопирован.");
-    } catch {
-      setHeaderStatusMessage("Не удалось скопировать текст сообщения.");
-    } finally {
-      setMessageContextMenu(null);
-    }
-  }, []);
-
-  const handlePinMessageStub = useCallback((message: ChatMessage) => {
-    setFocusedMessageId(message.id);
-    setHeaderStatusMessage("Закрепление сообщений добавим следующим шагом.");
-    setMessageContextMenu(null);
-  }, []);
-
-  const handleSelectMessageStub = useCallback((message: ChatMessage) => {
-    setFocusedMessageId(message.id);
-    focusMessageById(message.id, "smooth");
-    setHeaderStatusMessage("Режим выделения добавим следующим шагом.");
-    setMessageContextMenu(null);
-  }, [focusMessageById]);
 
   const cancelComposerContext = () => {
     if (editingMessage) {
@@ -1753,44 +2019,40 @@ export function ConversationView({ chatId }: { chatId: string }) {
     return member.role !== "admin";
   };
 
+  const profileSummaryStatus = isGroupChat
+    ? `${groupMembersCount} участников`
+    : otherUser?.lastSeenAt
+      ? `Был(а) ${formatRelativeLastSeen(otherUser.lastSeenAt)}`
+      : "Личный чат";
+  const callPartnerName = otherUser?.displayName ?? conversationTitle;
+  const hasCallSession = Boolean(callSession);
+  const isIncomingCall = callSession?.status === "incoming";
+  const callStatusLabel = callSession ? CALL_STATUS_MESSAGES[callSession.status] : null;
+  const callModeLabel = callSession?.mode === "video" ? "Видео" : "Аудио";
+  const callSummaryLabel = callStatusLabel
+    ? `${callStatusLabel} · ${callModeLabel.toLocaleLowerCase()}`
+    : null;
+
   const handleConversationCall = () => {
-    setHeaderStatusMessage("Звонки добавим следующим шагом.");
-    setShowConversationMenu(false);
-  };
-
-  const announceConversationAction = (
-    message: string,
-    options?: { closeMenu?: boolean; closeProfile?: boolean },
-  ) => {
-    setHeaderStatusMessage(message);
-    if (options?.closeMenu ?? true) {
+    if (hasCallSession) {
+      setHeaderStatusMessage("Сначала завершите текущий звонок.");
       setShowConversationMenu(false);
-    }
-    if (options?.closeProfile) {
-      setShowConversationProfile(false);
-    }
-  };
-
-  const openConversationProfile = () => {
-    setShowConversationMenu(false);
-    setShowConversationProfile(true);
-  };
-
-  const openGroupMembersPanel = () => {
-    setShowConversationMenu(false);
-    setShowConversationProfile(false);
-    setShowGroupMembersPanel(true);
-  };
-
-  const handleConversationDangerAction = () => {
-    setShowConversationMenu(false);
-
-    if (canDeleteConversation) {
-      setConfirmingChatDeletion(true);
       return;
     }
 
-    setConfirmingGroupLeave(true);
+    handleStartCall("audio");
+    setShowConversationMenu(false);
+  };
+
+  const handleConversationVideoCall = () => {
+    if (hasCallSession) {
+      setHeaderStatusMessage("Сначала завершите текущий звонок.");
+      setShowConversationMenu(false);
+      return;
+    }
+
+    handleStartCall("video");
+    setShowConversationMenu(false);
   };
 
   const toggleMessageSearch = () => {
@@ -1826,11 +2088,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       className="chat-shell-panel chat-thread-surface relative flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0"
       data-testid="conversation-view"
     >
-      <header
-        className="relative z-20 flex flex-none border-b border-black/8 bg-white px-4 py-3 transition-[padding] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)] sm:px-5"
-        style={conversationProfileOffsetStyle}
-      >
-        <div className="flex w-full items-start justify-between gap-4">
+      <header className="relative z-20 flex flex-none items-start justify-between gap-4 border-b border-black/8 bg-white px-4 py-3 sm:px-5">
         <div className="min-w-0 flex-1">
           <h2
             className="truncate text-[21px] font-semibold leading-none tracking-tight text-[#171717]"
@@ -1844,9 +2102,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
           >
             {profileSummaryStatus}
           </p>
-          {realtimeStateCopy ? (
-            <p className="mt-1 text-xs text-stone-500">{realtimeStateCopy}</p>
-          ) : null}
           {headerStatusMessage ? (
             <p className="mt-2 text-xs font-medium text-stone-500">{headerStatusMessage}</p>
           ) : null}
@@ -1883,11 +2138,28 @@ export function ConversationView({ chatId }: { chatId: string }) {
           <button
             type="button"
             onClick={handleConversationCall}
-            className="flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black"
+            className={clsx(
+              "flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black",
+              hasCallSession ? "border-black/12 bg-[#111111] text-white hover:bg-black hover:text-white" : null,
+            )}
             aria-label="Позвонить собеседнику"
             title="Позвонить собеседнику"
           >
             <PhoneIcon className="h-5 w-5" />
+          </button>
+          <button
+            type="button"
+            onClick={handleConversationVideoCall}
+            className={clsx(
+              "flex h-10 w-10 items-center justify-center rounded-full border border-transparent transition hover:border-black/10 hover:bg-black/[0.03] hover:text-black",
+              hasCallSession && callSession?.mode === "video"
+                ? "border-black/12 bg-[#111111] text-white hover:bg-black hover:text-white"
+                : null,
+            )}
+            aria-label="Видеозвонок"
+            title="Видеозвонок"
+          >
+            <VideoIcon className="h-5 w-5" />
           </button>
           <div className="relative">
             <button
@@ -1910,92 +2182,180 @@ export function ConversationView({ chatId }: { chatId: string }) {
             {showConversationMenu ? (
               <div
                 ref={conversationMenuRef}
-                className="absolute right-0 top-12 z-30 w-[292px] max-w-[calc(100vw-2rem)] rounded-[28px] border border-black/8 bg-[rgba(255,255,255,0.98)] p-2 text-sm text-[#171717] shadow-[0_28px_60px_rgba(17,24,39,0.16)] backdrop-blur"
+                className="absolute right-0 top-12 z-30 min-w-[220px] rounded-[22px] border border-black/8 bg-white p-2 text-sm text-[#171717] shadow-[0_24px_60px_rgba(17,24,39,0.14)]"
               >
-                <div className="px-3 pb-2 pt-3">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-stone-400">
-                    Быстрые действия
-                  </p>
-                </div>
-                <div className="space-y-1 px-1 pb-2">
-                  <ConversationMenuRow
-                    icon={PanelRightIcon}
-                    label="Открыть профиль"
-                    onClick={openConversationProfile}
-                    showChevron
-                  />
-                  <ConversationMenuRow
-                    icon={SearchIcon}
-                    label={showMessageSearch || hasSearchInput ? "Скрыть поиск" : "Искать в чате"}
-                    onClick={toggleMessageSearch}
-                  />
-                  {isGroupChat ? (
-                    <ConversationMenuRow
-                      icon={UsersIcon}
-                      label={showGroupMembersPanel ? "Скрыть участников" : "Показать участников"}
-                      onClick={() => {
-                        setShowConversationMenu(false);
-                        setShowGroupMembersPanel((current) => !current);
-                      }}
-                      showChevron
-                    />
-                  ) : null}
-                </div>
-                <div className="mx-3 h-px bg-black/6" />
-                <div className="space-y-1 px-1 py-2">
-                  <ConversationMenuRow
-                    icon={BellOffIcon}
-                    label="Выключить уведомления"
-                    onClick={() =>
-                      announceConversationAction("Настройки уведомлений добавим следующим шагом.")
-                    }
-                    showChevron
-                  />
-                  <ConversationMenuRow
-                    icon={WallpaperIcon}
-                    label="Установить обои"
-                    onClick={() =>
-                      announceConversationAction("Выбор обоев добавим следующим шагом.")
-                    }
-                  />
-                  <ConversationMenuRow
-                    icon={CopySlashIcon}
-                    label="Запретить копирование"
-                    onClick={() =>
-                      announceConversationAction("Ограничение копирования добавим следующим шагом.")
-                    }
-                  />
-                  <ConversationMenuRow
-                    icon={ExportIcon}
-                    label="Экспорт истории чата"
-                    onClick={() =>
-                      announceConversationAction("Экспорт чата добавим следующим шагом.")
-                    }
-                    showChevron
-                  />
-                  <ConversationMenuRow
-                    icon={BroomIcon}
-                    label="Очистить историю"
-                    onClick={() =>
-                      announceConversationAction("Очистку истории добавим следующим шагом.")
-                    }
-                  />
-                </div>
-                <div className="mx-3 h-px bg-black/6" />
-                <div className="px-1 pb-1 pt-2">
-                  <ConversationMenuRow
-                    icon={TrashIcon}
-                    label={destructiveConversationLabel}
-                    onClick={handleConversationDangerAction}
-                    destructive
-                  />
-                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowConversationMenu(false);
+                    setShowConversationProfile(true);
+                  }}
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                >
+                  <PanelRightIcon className="h-4 w-4 text-stone-500" />
+                  <span>Открыть профиль</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConversationCall}
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                >
+                  <PhoneIcon className="h-4 w-4 text-stone-500" />
+                  <span>{hasCallSession ? "Аудио уже активен" : "Аудио звонок"}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConversationVideoCall}
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                >
+                  <VideoIcon className="h-4 w-4 text-stone-500" />
+                  <span>{hasCallSession ? "Видео уже активен" : "Видео звонок"}</span>
+                </button>
+                {hasCallSession ? (
+                  <button
+                    type="button"
+                    onClick={handleEndCall}
+                    className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left text-stone-700 transition hover:bg-black/[0.03]"
+                  >
+                    <CloseIcon className="h-4 w-4 text-stone-500" />
+                    <span>Завершить звонок</span>
+                  </button>
+                ) : null}
+                {isGroupChat ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowConversationMenu(false);
+                      setShowGroupMembersPanel((current) => !current);
+                    }}
+                    data-testid="group-members-toggle"
+                    className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                  >
+                    <UsersIcon className="h-4 w-4 text-stone-500" />
+                    <span>{showGroupMembersPanel ? "Скрыть участников" : "Показать участников"}</span>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={toggleMessageSearch}
+                  className="flex w-full items-center gap-3 rounded-[16px] px-3 py-2.5 text-left transition hover:bg-black/[0.03]"
+                >
+                  <SearchIcon className="h-4 w-4 text-stone-500" />
+                  <span>{showMessageSearch || hasSearchInput ? "Скрыть поиск" : "Искать в чате"}</span>
+                </button>
               </div>
             ) : null}
           </div>
         </div>
-        </div>
       </header>
+
+      {callSession ? (
+        <div
+          className="relative z-10 border-b border-black/8 bg-[#f8f8f7] px-4 py-3 sm:px-6"
+          data-testid="call-panel"
+        >
+          <audio ref={callRemoteAudioRef} autoPlay playsInline className="hidden" />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-stone-500">
+                {callSummaryLabel}
+              </p>
+              <p className="mt-1 truncate text-sm text-[#171717]">
+                {isIncomingCall
+                  ? `${callPartnerName} звонит вам`
+                  : `${callPartnerName} · ${formatRecordingDuration(callDurationSeconds)}`}
+              </p>
+              <p className="mt-1 text-xs text-stone-500">
+                {connectionState === "connected"
+                  ? "Realtime активен"
+                  : "Realtime переподключается"}
+              </p>
+              {callError ? (
+                <p className="mt-2 rounded-[10px] border border-black/10 bg-white px-2.5 py-1.5 text-xs text-stone-600">
+                  {callError}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {isIncomingCall ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleDeclineCall}
+                    className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black"
+                    data-testid="call-decline-button"
+                  >
+                    Отклонить
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleAcceptCall();
+                    }}
+                    className="rounded-full bg-[#111111] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-black"
+                    data-testid="call-accept-button"
+                  >
+                    Принять
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={toggleCallMicMute}
+                    className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black"
+                    data-testid="call-toggle-mic-button"
+                  >
+                    {isCallMicMuted ? "Mic Off" : "Mic On"}
+                  </button>
+                  {callSession.mode === "video" ? (
+                    <button
+                      type="button"
+                      onClick={toggleCallCamera}
+                      className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black"
+                      data-testid="call-toggle-video-button"
+                    >
+                      {isCallLocalCameraEnabled ? "Cam On" : "Cam Off"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={handleEndCall}
+                    className="rounded-full bg-[#111111] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-black"
+                    data-testid="call-end-button"
+                  >
+                    Завершить
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {callSession.mode === "video" ? (
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <video
+                ref={callRemoteVideoRef}
+                autoPlay
+                playsInline
+                className="h-36 w-full rounded-[16px] border border-black/8 bg-black object-cover sm:h-40"
+                data-testid="call-remote-video"
+              />
+              <video
+                ref={callLocalVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className={clsx(
+                  "h-36 w-full rounded-[16px] border border-black/8 bg-black object-cover sm:h-40",
+                  !isCallLocalCameraEnabled && "opacity-60",
+                )}
+                data-testid="call-local-video"
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {showMessageSearch ? (
         <div className="relative z-10 border-b border-black/8 bg-white px-4 py-3 sm:px-6">
@@ -2085,38 +2445,20 @@ export function ConversationView({ chatId }: { chatId: string }) {
         </div>
       ) : null}
 
-      {isConversationProfileMounted ? (
+      {showConversationProfile ? (
         <>
-          {isDesktopLayout ? (
-            <button
-              type="button"
-              onPointerDown={handleRightPanelResizeStart}
-              onDoubleClick={() => setRightPanelWidth(CHAT_RIGHT_PANEL_DEFAULT_WIDTH)}
-              className="absolute bottom-0 top-0 z-30 hidden w-3 translate-x-1/2 cursor-col-resize border-0 bg-transparent lg:block"
-              style={{ right: `${rightPanelWidth}px` }}
-              aria-label="Изменить ширину правой панели"
-              title="Изменить ширину правой панели"
-            >
-              <span className="mx-auto block h-full w-[3px] rounded-full bg-black/6 transition hover:bg-black/18" />
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => setShowConversationProfile(false)}
+            className="absolute inset-0 z-20 bg-black/10"
+            aria-label="Закрыть профиль чата"
+          />
           <aside
             ref={conversationProfileRef}
-            className={clsx(
-              "scroll-region-y scroll-region-overlay-right absolute right-0 top-0 z-30 flex h-full w-full max-w-[90vw] flex-col overflow-y-auto border-l border-black/8 bg-[#f7f7f5] text-[#171717] transition-[transform,opacity,box-shadow] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
-              isConversationProfileVisible
-                ? "pointer-events-auto translate-x-0 opacity-100 shadow-[-24px_0_60px_rgba(17,24,39,0.14)]"
-                : "pointer-events-none translate-x-10 opacity-0 shadow-[-12px_0_26px_rgba(17,24,39,0.08)]",
-            )}
-            style={isDesktopLayout ? { width: `${rightPanelWidth}px` } : undefined}
+            className="absolute right-0 top-0 z-30 flex h-full w-full max-w-[380px] flex-col overflow-y-auto border-l border-black/8 bg-[#f7f7f5] text-[#171717] shadow-[-24px_0_60px_rgba(17,24,39,0.14)]"
             data-testid="conversation-profile-panel"
           >
-            <div
-              className={clsx(
-                "border-b border-black/8 bg-white px-5 py-6 transition-[transform,opacity] duration-[320ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
-                isConversationProfileVisible ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0",
-              )}
-            >
+            <div className="border-b border-black/8 bg-white px-6 py-6">
               <div className="flex items-start justify-between gap-4">
                 <UserAvatar
                   user={conversationProfileUser}
@@ -2136,60 +2478,45 @@ export function ConversationView({ chatId }: { chatId: string }) {
               <h3 className="mt-5 text-[28px] font-semibold leading-none tracking-tight text-[#171717]">
                 {conversationTitle}
               </h3>
-              {conversationProfileHandle ? (
-                <p className="mt-2 text-sm font-semibold tracking-[0.16em] text-stone-400">
-                  {conversationProfileHandle}
-                </p>
-              ) : null}
               <p className="mt-2 text-base text-stone-500">{profileSummaryStatus}</p>
-              <div className="mt-5 grid grid-cols-3 gap-2.5">
-                <ProfileActionTile
-                  icon={ChatBubbleIcon}
-                  label="Чат"
+              <div className="mt-5 grid grid-cols-3 gap-3">
+                <button
+                  type="button"
                   onClick={() => setShowConversationProfile(false)}
-                />
-                <ProfileActionTile
-                  icon={BellIcon}
-                  label="Звук"
-                  onClick={() =>
-                    announceConversationAction("Настройки звука добавим следующим шагом.", {
-                      closeMenu: false,
-                    })
-                  }
-                />
-                <ProfileActionTile
-                  icon={GiftIcon}
-                  label="Подарок"
-                  onClick={() =>
-                    announceConversationAction("Подарки добавим следующим шагом.", {
-                      closeMenu: false,
-                    })
-                  }
-                />
-              </div>
-              <div className="mt-5 rounded-[24px] border border-black/8 bg-[#fafaf9] p-4">
-                <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Обзор</p>
-                <div className="mt-3 grid grid-cols-2 gap-3">
-                  <div className="rounded-[18px] border border-black/8 bg-white px-4 py-3">
-                    <p className="text-lg font-semibold text-[#171717]">{messageItems.length}</p>
-                    <p className="mt-1 text-sm text-stone-500">Сообщений в чате</p>
-                  </div>
-                  <div className="rounded-[18px] border border-black/8 bg-white px-4 py-3">
-                    <p className="text-lg font-semibold text-[#171717]">
-                      {mediaStats.reduce((total, item) => total + item.value, 0)}
-                    </p>
-                    <p className="mt-1 text-sm text-stone-500">Материалов и ссылок</p>
-                  </div>
-                </div>
+                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
+                >
+                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
+                    <ChatBubbleIcon className="h-4 w-4" />
+                  </span>
+                  <span className="mt-2 block text-sm">Чат</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConversationCall}
+                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
+                >
+                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
+                    <PhoneIcon className="h-4 w-4" />
+                  </span>
+                  <span className="mt-2 block text-sm">Звонок</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowConversationProfile(false);
+                    setShowMessageSearch(true);
+                  }}
+                  className="rounded-[18px] border border-black/8 bg-[#fafaf9] px-3 py-3 text-center transition hover:border-black/15 hover:bg-white"
+                >
+                  <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/8 bg-white text-stone-500">
+                    <SearchIcon className="h-4 w-4" />
+                  </span>
+                  <span className="mt-2 block text-sm">Поиск</span>
+                </button>
               </div>
             </div>
 
-            <div
-              className={clsx(
-                "space-y-6 px-5 py-6 transition-[transform,opacity] duration-[340ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
-                isConversationProfileVisible ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0",
-              )}
-            >
+            <div className="space-y-6 px-6 py-6">
               <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
                 <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Информация</p>
                 <div className="mt-4 space-y-4">
@@ -2199,116 +2526,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       <p className="mt-1 text-sm text-stone-500">{row.label}</p>
                     </div>
                   ))}
-                </div>
-              </div>
-
-              <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">
-                    Материалы
-                  </p>
-                  <span className="rounded-full border border-black/8 bg-[#fafaf9] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-stone-500">
-                    {mediaStats.reduce((total, item) => total + item.value, 0)}
-                  </span>
-                </div>
-                <div className="mt-4 space-y-2">
-                  {mediaStats.map((item) => (
-                    <ProfileStatRow
-                      key={item.key}
-                      icon={item.icon}
-                      label={item.label}
-                      value={item.value}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_18px_30px_rgba(17,24,39,0.04)]">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">
-                    Управление
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowConversationProfile(false);
-                      setShowConversationMenu(true);
-                    }}
-                    className="text-xs text-stone-500 transition hover:text-black"
-                  >
-                    Открыть меню
-                  </button>
-                </div>
-                <div className="mt-4 space-y-1">
-                  <ConversationMenuRow
-                    icon={BellOffIcon}
-                    label="Выключить уведомления"
-                    onClick={() =>
-                      announceConversationAction(
-                        "Настройки уведомлений добавим следующим шагом.",
-                        { closeMenu: false },
-                      )
-                    }
-                    compact
-                  />
-                  <ConversationMenuRow
-                    icon={WallpaperIcon}
-                    label="Установить обои"
-                    onClick={() =>
-                      announceConversationAction("Выбор обоев добавим следующим шагом.", {
-                        closeMenu: false,
-                      })
-                    }
-                    compact
-                  />
-                  <ConversationMenuRow
-                    icon={CopySlashIcon}
-                    label="Запретить копирование"
-                    onClick={() =>
-                      announceConversationAction(
-                        "Ограничение копирования добавим следующим шагом.",
-                        { closeMenu: false },
-                      )
-                    }
-                    compact
-                  />
-                  <ConversationMenuRow
-                    icon={ExportIcon}
-                    label="Экспорт истории чата"
-                    onClick={() =>
-                      announceConversationAction("Экспорт чата добавим следующим шагом.", {
-                        closeMenu: false,
-                      })
-                    }
-                    compact
-                    showChevron
-                  />
-                  <ConversationMenuRow
-                    icon={BroomIcon}
-                    label="Очистить историю"
-                    onClick={() =>
-                      announceConversationAction("Очистку истории добавим следующим шагом.", {
-                        closeMenu: false,
-                      })
-                    }
-                    compact
-                  />
-                  {isGroupChat ? (
-                    <ConversationMenuRow
-                      icon={UsersIcon}
-                      label="Участники группы"
-                      onClick={openGroupMembersPanel}
-                      compact
-                      showChevron
-                    />
-                  ) : null}
-                  <ConversationMenuRow
-                    icon={TrashIcon}
-                    label={destructiveConversationLabel}
-                    onClick={handleConversationDangerAction}
-                    destructive
-                    compact
-                  />
                 </div>
               </div>
 
@@ -2344,9 +2561,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                               {member.user.displayName}
                             </p>
                             <p className="truncate text-sm text-stone-500">
-                              {member.user.username
-                                ? `${formatGroupRole(member.role)} · #${member.user.username}`
-                                : formatGroupRole(member.role)}
+                              {formatGroupRole(member.role)}
                             </p>
                           </div>
                         </div>
@@ -2374,11 +2589,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       <p className="truncate text-base font-medium text-[#171717]">
                         {conversationProfileUser.displayName}
                       </p>
-                      {conversationProfileHandle ? (
-                        <p className="truncate text-xs font-semibold tracking-[0.16em] text-stone-400">
-                          {conversationProfileHandle}
-                        </p>
-                      ) : null}
                       <p className="truncate text-sm text-stone-500">
                         {conversationProfileUser.email}
                       </p>
@@ -2542,11 +2752,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
       <div
         ref={messageListRef}
         onScroll={updateStickToBottomState}
-        className="scroll-region-y relative z-10 flex-1 min-h-0 overflow-y-auto px-3 py-5 transition-[padding] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)] sm:px-4"
-        style={conversationProfileOffsetStyle}
+        className="scroll-region-y relative z-10 flex-1 min-h-0 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
         data-testid="message-list"
       >
-        <div className="w-full space-y-3">
         {renderItems.map((item) => {
           if (item.type === "date") {
             return (
@@ -2585,7 +2793,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
           const shortTextOnlyBubble =
             inlineMetaBubble && normalizedBody.length <= 8 && !normalizedBody.includes("\n");
           const currentUserId = user?.id ?? null;
-          const bubbleOnRight = usesSplitConversationLayout && isMine;
+          const currentUserReaction =
+            currentUserId
+              ? message.reactions.find((reaction) => reaction.userIds.includes(currentUserId))?.emoji ??
+                null
+              : null;
+
           return (
             <div
               key={item.key}
@@ -2594,48 +2807,75 @@ export function ConversationView({ chatId }: { chatId: string }) {
               data-message-owner={isMine ? "self" : "other"}
               data-message-search-match={isSearchMatch ? "true" : "false"}
               data-message-search-active={isActiveSearchMatch ? "true" : "false"}
-              onContextMenu={(event) => {
-                if (message.isDeleted) {
-                  return;
-                }
-
-                event.preventDefault();
-                openMessageContextMenu(message, event.clientX, event.clientY);
+              onMouseLeave={() => {
+                setRecentlyReactedMessageId((current) =>
+                  current === message.id ? null : current,
+                );
               }}
-              className={clsx("group flex w-full", bubbleOnRight ? "justify-end" : "justify-start")}
+              className={clsx("group flex w-full", isMine ? "justify-end" : "justify-start")}
             >
               <div
                 className={clsx(
                   "relative",
-                  bubbleOnRight
-                    ? "ml-auto max-w-[94%] sm:max-w-[88%] xl:max-w-[80%] 2xl:max-w-[78%]"
-                    : "max-w-[94%] sm:max-w-[88%] xl:max-w-[80%] 2xl:max-w-[78%]",
+                  isMine ? "ml-auto max-w-[85%] sm:max-w-[70%]" : "max-w-[85%] sm:max-w-[70%]",
                 )}
               >
-                <div
-                  className={clsx(
-                    "flex max-w-full flex-col gap-1.5",
-                    bubbleOnRight ? "items-end" : "items-start",
-                  )}
-                >
+                {!message.isDeleted ? (
+                  <div
+                    className={clsx(
+                      "pointer-events-none absolute top-0 z-20 flex min-w-[120px] flex-col gap-1 rounded-[14px] border border-black/10 bg-white/95 p-1 shadow-[0_12px_28px_rgba(17,24,39,0.12)] backdrop-blur-sm opacity-0 transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+                      isMine ? "right-full mr-2" : "left-full ml-2",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleReplyMessage(message)}
+                      data-testid="reply-message-button"
+                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                    >
+                      Ответ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleStartForwardMessage(message)}
+                      data-testid="forward-message-button"
+                      className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                    >
+                      Переслать
+                    </button>
+                    {isMine ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditingMessage(message)}
+                          data-testid="edit-message-button"
+                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                        >
+                          Изменить
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMessage(message)}
+                          data-testid="delete-message-button"
+                          className="rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500 transition hover:border-black/25 hover:text-black"
+                        >
+                          {deleteMessageMutation.isPending ? "..." : "Удалить"}
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className={clsx("flex max-w-full flex-col gap-1.5", isMine ? "items-end" : "items-start")}>
                   <div
                     className={clsx(
                       "w-fit max-w-full shadow-sm transition-[box-shadow]",
                       shortTextOnlyBubble
-                        ? bubbleOnRight
-                          ? "rounded-[18px] rounded-br-[7px] px-3 py-1"
-                          : "rounded-[18px] rounded-bl-[7px] px-3 py-1"
+                        ? "rounded-[13px] px-2.5 py-0.5"
                         : compactBubble
-                          ? bubbleOnRight
-                            ? "rounded-[22px] rounded-br-[8px] px-3 py-1.5"
-                            : "rounded-[22px] rounded-bl-[8px] px-3 py-1.5"
+                          ? "rounded-[17px] px-2.5 py-1"
                           : attachmentOnlyBubble
-                            ? bubbleOnRight
-                              ? "rounded-[24px] rounded-br-[10px] px-3 py-[2px]"
-                              : "rounded-[24px] rounded-bl-[10px] px-3 py-[2px]"
-                            : bubbleOnRight
-                              ? "rounded-[24px] rounded-br-[9px] px-4 py-2.5"
-                              : "rounded-[24px] rounded-bl-[9px] px-4 py-2.5",
+                            ? "rounded-[20px] px-3 py-[2px]"
+                            : "rounded-[22px] px-4 py-2.5",
                       isMine
                         ? "bg-[#111111] text-white"
                         : "border border-black/8 bg-white text-[#171717]",
@@ -2728,86 +2968,74 @@ export function ConversationView({ chatId }: { chatId: string }) {
                         {messageMetaLabel}
                       </p>
                     ) : null}
-                    {message.reactions.length > 0 ? (
-                      <div
-                        className={clsx(
-                          "mt-2 flex max-w-full flex-wrap gap-1",
-                          bubbleOnRight ? "justify-end" : "justify-start",
-                        )}
-                      >
-                        {message.reactions.map((reaction) => {
-                          const reactedByCurrentUser =
-                            currentUserId ? reaction.userIds.includes(currentUserId) : false;
-
-                          return (
-                            <button
-                              key={`${message.id}-${reaction.emoji}`}
-                              type="button"
-                              onClick={() =>
-                                handleToggleMessageReaction(
-                                  message,
-                                  reaction.emoji as (typeof QUICK_REACTIONS)[number],
-                                )
-                              }
-                              className={clsx(
-                                "inline-flex items-center gap-1 rounded-full px-1.5 py-[3px] text-[11px] font-medium transition",
-                                reactedByCurrentUser
-                                  ? isMine
-                                    ? "bg-[#58aeea] text-white"
-                                    : "border border-[#c6def2] bg-[#eef7ff] text-[#1d5f93]"
-                                  : isMine
-                                    ? "bg-white/14 text-white hover:bg-white/18"
-                                    : "border border-black/8 bg-black/[0.04] text-stone-600 hover:border-black/18 hover:text-black",
-                              )}
-                              data-testid="message-reaction-chip"
-                            >
-                              <span className="text-[14px] leading-none">{reaction.emoji}</span>
-                              <span
-                                className={clsx(
-                                  "inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none",
-                                  reactedByCurrentUser
-                                    ? isMine
-                                      ? "bg-white/22 text-white"
-                                      : "bg-[#48a7ea]/16 text-[#1d5f93]"
-                                    : isMine
-                                      ? "bg-white/14 text-white/92"
-                                      : "bg-black/[0.06] text-stone-500",
-                                )}
-                              >
-                                {reaction.count}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : null}
                   </div>
 
+                  {message.reactions.length > 0 ? (
+                    <div className="flex max-w-full flex-wrap gap-1">
+                      {message.reactions.map((reaction) => {
+                        const reactedByCurrentUser =
+                          currentUserId ? reaction.userIds.includes(currentUserId) : false;
+
+                        return (
+                          <button
+                            key={`${message.id}-${reaction.emoji}`}
+                            type="button"
+                            onClick={() =>
+                              handleToggleMessageReaction(
+                                message,
+                                reaction.emoji as (typeof QUICK_REACTIONS)[number],
+                              )
+                            }
+                            className={clsx(
+                              "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
+                              reactedByCurrentUser
+                                ? "border-black bg-black text-white"
+                                : "border-black/10 bg-white text-stone-600 hover:border-black/25 hover:text-black",
+                            )}
+                            data-testid="message-reaction-chip"
+                          >
+                            <span>{reaction.emoji}</span>
+                            <span>{reaction.count}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  {!message.isDeleted && recentlyReactedMessageId !== message.id ? (
+                    <div
+                      className="pointer-events-none flex max-h-0 max-w-full flex-wrap gap-1 overflow-hidden rounded-[14px] border border-black/10 bg-white px-2 py-0 opacity-0 shadow-sm -translate-y-1 transition-all duration-150 ease-out group-hover:pointer-events-auto group-hover:max-h-16 group-hover:translate-y-0 group-hover:py-1.5 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:max-h-16 group-focus-within:translate-y-0 group-focus-within:py-1.5 group-focus-within:opacity-100"
+                      data-testid="message-reaction-picker"
+                    >
+                      {QUICK_REACTIONS.map((emoji) => (
+                        <button
+                          key={`${message.id}-${emoji}-quick-reaction`}
+                          type="button"
+                          onClick={() => handleToggleMessageReaction(message, emoji)}
+                          disabled={toggleReactionMutation.isPending}
+                          className={clsx(
+                            "rounded-full border px-2 py-1 text-sm transition disabled:cursor-not-allowed disabled:opacity-50",
+                            currentUserReaction === emoji
+                              ? "border-black bg-black text-white"
+                              : "border-black/10 bg-white text-stone-700 hover:border-black/25 hover:text-black",
+                          )}
+                          data-testid="quick-reaction-button"
+                          aria-label={`Поставить реакцию ${emoji}`}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
           );
         })}
-        {typingIndicatorLabel ? (
-          <div
-            className="flex justify-start"
-            data-testid="typing-indicator"
-          >
-            <div className="rounded-[16px] border border-black/8 bg-white px-3 py-1.5 text-xs text-stone-500 shadow-sm">
-              {typingIndicatorLabel}
-            </div>
-          </div>
-        ) : null}
         <div ref={messageListEndRef} aria-hidden="true" />
-        </div>
       </div>
 
-      <form
-        onSubmit={handleSubmit}
-        className="relative z-10 flex-none border-t border-black/8 p-4 transition-[padding] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)] sm:p-5"
-        style={conversationProfileOffsetStyle}
-      >
-        <div className="w-full">
+      <form onSubmit={handleSubmit} className="relative z-10 flex-none border-t border-black/8 p-4 sm:p-5">
         <input
           ref={fileInputRef}
           type="file"
@@ -2866,9 +3094,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           >
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-[#171717]">{pendingFile.name}</p>
-              <p className="text-xs text-stone-500">
-                {pendingAttachmentTypeLabel ?? "Файл"} · {formatFileSize(pendingFile.size)} · до {ATTACHMENT_MAX_MB} MB
-              </p>
+              <p className="text-xs text-stone-500">{formatFileSize(pendingFile.size)}</p>
             </div>
             <button
               type="button"
@@ -2945,7 +3171,6 @@ export function ConversationView({ chatId }: { chatId: string }) {
                     setComposerError(null);
                   }
                 }}
-                onBlur={() => setLocalTypingState(false)}
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 maxLength={MESSAGE_MAX_LENGTH}
@@ -3028,101 +3253,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
             </button>
           </div>
         </div>
-        </div>
       </form>
-
-      {contextMenuMessage && messageContextMenuPosition
-        ? createPortal(
-            <div className="fixed inset-0 z-[220]" data-testid="message-context-menu-layer">
-              <button
-                type="button"
-                aria-label="Закрыть контекстное меню"
-                className="absolute inset-0 cursor-default bg-transparent"
-                onClick={closeMessageContextMenu}
-              />
-              <div
-                className="absolute w-[276px] overflow-hidden rounded-[22px] border border-black/10 bg-white text-[#171717] shadow-[0_24px_48px_rgba(17,24,39,0.18)]"
-                style={{
-                  left: messageContextMenuPosition.left,
-                  top: messageContextMenuPosition.top,
-                }}
-                role="menu"
-                aria-label="Действия с сообщением"
-                onClick={(event) => event.stopPropagation()}
-                onContextMenu={(event) => event.preventDefault()}
-              >
-                <div className="flex items-center gap-1.5 border-b border-black/8 bg-white px-3 py-2.5">
-                  {QUICK_REACTIONS.map((emoji) => (
-                    <button
-                      key={emoji}
-                      type="button"
-                      onClick={() => handleToggleMessageReaction(contextMenuMessage, emoji)}
-                      className={clsx(
-                        "flex h-9 min-w-9 items-center justify-center rounded-full border px-2 text-lg transition",
-                        contextMenuCurrentUserReaction === emoji
-                          ? "border-black bg-[#111111] text-white"
-                          : "border-black/10 bg-white text-[#171717] hover:border-black/20 hover:bg-black/[0.04]",
-                      )}
-                      aria-label={`Поставить реакцию ${emoji}`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="space-y-0.5 px-2 py-2">
-                  <MessageContextMenuRow
-                    icon={ReplyArrowIcon}
-                    label="Ответить"
-                    onClick={() => handleReplyMessage(contextMenuMessage)}
-                  />
-                  <MessageContextMenuRow
-                    icon={PinIcon}
-                    label="Закрепить"
-                    onClick={() => handlePinMessageStub(contextMenuMessage)}
-                  />
-                  <MessageContextMenuRow
-                    icon={CopyIcon}
-                    label="Копировать текст"
-                    onClick={() => {
-                      void handleCopyMessageText(contextMenuMessage);
-                    }}
-                    disabled={!contextMenuMessage.body?.trim()}
-                  />
-                  <MessageContextMenuRow
-                    icon={ExportIcon}
-                    label="Переслать"
-                    onClick={() => handleStartForwardMessage(contextMenuMessage)}
-                  />
-                  {contextMenuMessage.senderId === user?.id ? (
-                    <MessageContextMenuRow
-                      icon={EditPencilIcon}
-                      label="Изменить"
-                      onClick={() => handleStartEditingMessage(contextMenuMessage)}
-                    />
-                  ) : null}
-                  <MessageContextMenuRow
-                    icon={TrashIcon}
-                    label="Удалить"
-                    onClick={() => handleDeleteMessage(contextMenuMessage)}
-                    destructive
-                  />
-                  <MessageContextMenuRow
-                    icon={SelectCheckIcon}
-                    label="Выделить"
-                    onClick={() => handleSelectMessageStub(contextMenuMessage)}
-                  />
-                </div>
-
-                <div className="flex items-center gap-2 border-t border-black/8 bg-[#fafaf9] px-3 py-2 text-xs text-stone-500">
-                  <ClockIcon className="h-4 w-4 shrink-0" />
-                  <span className="truncate">{contextMenuTimestampLabel}</span>
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
 
       {forwardingMessage ? (
         <div
@@ -3209,19 +3340,21 @@ export function ConversationView({ chatId }: { chatId: string }) {
         </div>
       ) : null}
 
-      <DeleteMessageDialog
+      <ConfirmDialog
         open={Boolean(confirmingMessage)}
         title="Удалить это сообщение?"
-        description="Выберите, нужно ли удалить сообщение только у вас или у всех участников этого чата."
+        description="Сообщение исчезнет из переписки у участников этого чата."
         isLoading={deleteMessageMutation.isPending}
-        allowDeleteForEveryone={confirmingMessage?.senderId === user?.id}
         onCancel={() => {
           if (!deleteMessageMutation.isPending) {
             setConfirmingMessage(null);
           }
         }}
-        onDeleteForSelf={() => handleDeleteMessageMode("self")}
-        onDeleteForEveryone={() => handleDeleteMessageMode("everyone")}
+        onConfirm={() => {
+          if (confirmingMessage) {
+            deleteMessageMutation.mutate(confirmingMessage.id);
+          }
+        }}
       />
 
       <ConfirmDialog
@@ -3260,159 +3393,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
           leaveGroupMutation.mutate();
         }}
       />
-
-      <ConfirmDialog
-        open={confirmingChatDeletion}
-        title={isGroupChat ? "Удалить группу?" : "Удалить этот чат?"}
-        description={
-          isGroupChat
-            ? `Группа «${conversationTitle}» будет удалена для всех участников.`
-            : `Диалог «${conversationTitle}» будет удален целиком.`
-        }
-        confirmLabel="Удалить"
-        isLoading={deleteChatMutation.isPending}
-        onCancel={() => {
-          if (!deleteChatMutation.isPending) {
-            setConfirmingChatDeletion(false);
-          }
-        }}
-        onConfirm={() => {
-          deleteChatMutation.mutate();
-        }}
-      />
     </section>
-  );
-}
-
-function ConversationMenuRow({
-  icon: Icon,
-  label,
-  onClick,
-  destructive = false,
-  showChevron = false,
-  compact = false,
-}: {
-  icon: IconComponent;
-  label: string;
-  onClick: () => void;
-  destructive?: boolean;
-  showChevron?: boolean;
-  compact?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={clsx(
-        "flex w-full items-center gap-3 rounded-[18px] text-left transition hover:bg-black/[0.035]",
-        compact ? "px-3 py-2.5" : "px-3 py-3",
-      )}
-    >
-      <span
-        className={clsx(
-          "flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] border",
-          destructive
-            ? "border-red-500/15 bg-red-50 text-red-500"
-            : "border-black/8 bg-[#f7f7f5] text-stone-600",
-        )}
-      >
-        <Icon className="h-5 w-5" />
-      </span>
-      <span
-        className={clsx(
-          "min-w-0 flex-1 truncate text-[15px] leading-none",
-          destructive ? "text-red-500" : "text-[#171717]",
-        )}
-      >
-        {label}
-      </span>
-      {showChevron ? (
-        <ChevronRightIcon
-          className={clsx("h-4 w-4 shrink-0", destructive ? "text-red-300" : "text-stone-400")}
-        />
-      ) : null}
-    </button>
-  );
-}
-
-function MessageContextMenuRow({
-  icon: Icon,
-  label,
-  onClick,
-  destructive = false,
-  disabled = false,
-}: {
-  icon: IconComponent;
-  label: string;
-  onClick: () => void;
-  destructive?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={clsx(
-        "flex w-full items-center gap-3 rounded-[14px] px-3 py-2.5 text-left text-[15px] transition disabled:cursor-not-allowed disabled:opacity-45",
-        destructive
-          ? "text-[#d43c33] hover:bg-[#fff1ef]"
-          : "text-[#171717] hover:bg-black/[0.04]",
-      )}
-    >
-      <Icon
-        className={clsx(
-          "h-[18px] w-[18px] shrink-0",
-          destructive ? "text-[#d43c33]" : "text-stone-500",
-        )}
-      />
-      <span className="min-w-0 truncate">{label}</span>
-    </button>
-  );
-}
-
-function ProfileActionTile({
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  icon: IconComponent;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex min-h-[86px] flex-col items-center justify-center gap-2 rounded-[20px] border border-black/8 bg-[#fafaf9] px-3 py-4 text-center text-stone-600 transition hover:border-black/16 hover:bg-white hover:text-black"
-    >
-      <span className="flex h-10 w-10 items-center justify-center rounded-full border border-black/8 bg-white text-[#171717]">
-        <Icon className="h-5 w-5" />
-      </span>
-      <span className="text-xs font-medium tracking-[0.04em]">{label}</span>
-    </button>
-  );
-}
-
-function ProfileStatRow({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: IconComponent;
-  label: string;
-  value: number;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-[18px] border border-black/8 bg-[#fafaf9] px-4 py-3">
-      <div className="flex min-w-0 items-center gap-3">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] border border-black/8 bg-white text-stone-600">
-          <Icon className="h-5 w-5" />
-        </span>
-        <p className="truncate text-sm text-[#171717]">{label}</p>
-      </div>
-      <span className="shrink-0 text-sm font-semibold text-[#171717]">{value}</span>
-    </div>
   );
 }
 
@@ -3429,16 +3410,16 @@ function MessageAttachments({
     <div className={clsx("space-y-2", attachments.length > 0 && "mt-1")}>
       {attachments.map((attachment) => {
         const downloadUrl = buildAttachmentUrl(attachment.downloadPath, accessToken);
-        const kind = getAttachmentKind(attachment);
+        const isAudio = attachment.mimeType.startsWith("audio/");
 
-        if (kind === "image") {
+        if (attachment.isImage) {
           return (
             <a
               key={attachment.id}
               href={downloadUrl}
               target="_blank"
               rel="noreferrer"
-              className="group/image relative block overflow-hidden rounded-[18px] border border-black/10 bg-black/5"
+              className="block overflow-hidden rounded-[18px] border border-black/10 bg-black/5"
               data-testid="message-attachment"
             >
               <img
@@ -3449,10 +3430,8 @@ function MessageAttachments({
               />
               <div
                 className={clsx(
-                  "pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 px-3 py-2 text-xs opacity-0 transition duration-200 group-hover/image:opacity-100 group-focus-visible/image:opacity-100",
-                  isMine
-                    ? "bg-gradient-to-t from-black/70 to-black/20 text-white"
-                    : "bg-gradient-to-t from-black/62 to-black/18 text-white",
+                  "flex items-center justify-between gap-3 px-3 py-2 text-xs",
+                  isMine ? "bg-white/8 text-white/85" : "bg-stone-50 text-stone-600",
                 )}
               >
                 <span className="truncate">{attachment.originalName}</span>
@@ -3462,31 +3441,9 @@ function MessageAttachments({
           );
         }
 
-        if (kind === "audio") {
+        if (isAudio) {
           return (
             <VoiceMessageAttachment
-              key={attachment.id}
-              attachment={attachment}
-              downloadUrl={downloadUrl}
-              isMine={isMine}
-            />
-          );
-        }
-
-        if (kind === "video") {
-          return (
-            <VideoMessageAttachment
-              key={attachment.id}
-              attachment={attachment}
-              downloadUrl={downloadUrl}
-              isMine={isMine}
-            />
-          );
-        }
-
-        if (kind === "pdf") {
-          return (
-            <PdfMessageAttachment
               key={attachment.id}
               attachment={attachment}
               downloadUrl={downloadUrl}
@@ -3512,97 +3469,13 @@ function MessageAttachments({
             <div className="min-w-0">
               <p className="truncate font-semibold">{attachment.originalName}</p>
               <p className={clsx("text-xs", isMine ? "text-white/75" : "text-stone-500")}>
-                {getAttachmentTypeLabel(attachment)} · {formatFileSize(attachment.sizeBytes)}
+                {attachment.mimeType} · {formatFileSize(attachment.sizeBytes)}
               </p>
             </div>
             <span className="shrink-0 text-xs uppercase tracking-[0.16em]">Open</span>
           </a>
         );
       })}
-    </div>
-  );
-}
-
-function VideoMessageAttachment({
-  attachment,
-  downloadUrl,
-  isMine,
-}: {
-  attachment: ChatAttachment;
-  downloadUrl: string;
-  isMine: boolean;
-}) {
-  return (
-    <div
-      className={clsx(
-        "overflow-hidden rounded-[18px] border",
-        isMine ? "border-white/12 bg-black/30 text-white" : "border-black/10 bg-white text-[#171717]",
-      )}
-      data-testid="message-attachment"
-    >
-      <video
-        controls
-        preload="metadata"
-        src={downloadUrl}
-        className="max-h-80 w-full bg-black object-contain"
-      >
-        <a href={downloadUrl} target="_blank" rel="noreferrer">
-          Открыть видео
-        </a>
-      </video>
-      <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
-        <span className="min-w-0 truncate">{attachment.originalName}</span>
-        <span className={clsx("shrink-0", isMine ? "text-white/80" : "text-stone-500")}>
-          {formatFileSize(attachment.sizeBytes)}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function PdfMessageAttachment({
-  attachment,
-  downloadUrl,
-  isMine,
-}: {
-  attachment: ChatAttachment;
-  downloadUrl: string;
-  isMine: boolean;
-}) {
-  return (
-    <div
-      className={clsx(
-        "overflow-hidden rounded-[18px] border",
-        isMine ? "border-white/12 bg-black/30 text-white" : "border-black/10 bg-white text-[#171717]",
-      )}
-      data-testid="message-attachment"
-    >
-      <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{attachment.originalName}</p>
-          <p className={clsx("mt-0.5", isMine ? "text-white/75" : "text-stone-500")}>
-            PDF · {formatFileSize(attachment.sizeBytes)}
-          </p>
-        </div>
-        <a
-          href={downloadUrl}
-          target="_blank"
-          rel="noreferrer"
-          className={clsx(
-            "shrink-0 rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] transition",
-            isMine
-              ? "border-white/25 text-white hover:border-white/45"
-              : "border-black/15 text-stone-600 hover:border-black/35 hover:text-black",
-          )}
-        >
-          Open
-        </a>
-      </div>
-      <iframe
-        src={`${downloadUrl}#toolbar=0&navpanes=0`}
-        title={attachment.originalName}
-        className="h-56 w-full bg-white"
-      />
     </div>
   );
 }
@@ -3855,6 +3728,51 @@ function getReplyPreviewText(
   return getLastMessagePreviewText(message);
 }
 
+function toSessionDescriptionInit(payload: unknown): RTCSessionDescriptionInit | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const maybeDescription = payload as Partial<RTCSessionDescriptionInit>;
+  if (
+    typeof maybeDescription.type !== "string" ||
+    (maybeDescription.type !== "offer" && maybeDescription.type !== "answer") ||
+    typeof maybeDescription.sdp !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    type: maybeDescription.type,
+    sdp: maybeDescription.sdp,
+  };
+}
+
+function toIceCandidateInit(payload: unknown): RTCIceCandidateInit | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const maybeCandidate = payload as Partial<RTCIceCandidateInit>;
+  if (typeof maybeCandidate.candidate !== "string") {
+    return null;
+  }
+
+  return {
+    candidate: maybeCandidate.candidate,
+    sdpMid:
+      typeof maybeCandidate.sdpMid === "string" ? maybeCandidate.sdpMid : null,
+    sdpMLineIndex:
+      typeof maybeCandidate.sdpMLineIndex === "number"
+        ? maybeCandidate.sdpMLineIndex
+        : null,
+    usernameFragment:
+      typeof maybeCandidate.usernameFragment === "string"
+        ? maybeCandidate.usernameFragment
+        : undefined,
+  };
+}
+
 function formatRecordingDuration(seconds: number) {
   const safeSeconds = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
   const minutes = Math.floor(safeSeconds / 60);
@@ -3957,275 +3875,24 @@ function SearchIcon({ className }: { className?: string }) {
   );
 }
 
-function ReplyArrowIcon({ className }: { className?: string }) {
+function PhoneIcon({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.9"
+      strokeWidth="2.2"
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
       aria-hidden="true"
     >
-      <path d="M9 8 4 12l5 4" />
-      <path d="M20 18c0-4.42-3.58-8-8-8H4" />
+      <path d="M22 16.92v2a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 3.18 2 2 0 0 1 4.11 1h2a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.1 8.91a16 16 0 0 0 6 6l1.27-1.26a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
     </svg>
   );
 }
 
-function PinIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="m14.5 4.5 5 5" />
-      <path d="M10 9 19 18" />
-      <path d="m9.5 14.5-4 5" />
-      <path d="M7 6.5 17.5 17" />
-      <path d="m7 6.5 2.5-2.5 7 7L14 13.5" />
-    </svg>
-  );
-}
-
-function CopyIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <rect x="9" y="9" width="10" height="10" rx="2" />
-      <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
-function EditPencilIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M12 20h9" />
-      <path d="m16.5 3.5 4 4L8 20l-5 1 1-5 12.5-12.5Z" />
-    </svg>
-  );
-}
-
-function SelectCheckIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="9" />
-      <path d="m8.5 12.5 2.3 2.3 4.7-5.1" />
-    </svg>
-  );
-}
-
-function ClockIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="8.5" />
-      <path d="M12 7.8v4.7l3.2 1.8" />
-    </svg>
-  );
-}
-
-function BellOffIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M9.22 5.23A6 6 0 0 1 18 10v3.8l1.4 2.3a1 1 0 0 1-.85 1.5H7.6" />
-      <path d="M4.71 4.71 19.29 19.29" />
-      <path d="M5.45 17.6A1 1 0 0 1 4.6 16.1L6 13.8V10a6 6 0 0 1 .38-2.11" />
-      <path d="M10 20a2 2 0 0 0 4 0" />
-    </svg>
-  );
-}
-
-function BellIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M6.8 8.5a5.2 5.2 0 1 1 10.4 0v2.1c0 .9.26 1.78.75 2.53l.95 1.48a1.2 1.2 0 0 1-1.01 1.85H6.07a1.2 1.2 0 0 1-1.01-1.85l.95-1.48c.49-.75.75-1.63.75-2.53V8.5Z" />
-      <path d="M9.75 18.4a2.25 2.25 0 0 0 4.5 0" />
-    </svg>
-  );
-}
-
-function GiftIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <rect x="3.5" y="9" width="17" height="11" rx="2.2" />
-      <path d="M12 9v11" />
-      <path d="M4 9h16" />
-      <path d="M7.9 9c-1.53 0-2.9-.9-2.9-2.35C5 5.43 5.95 4.5 7.3 4.5c2.08 0 3.38 2.3 4.7 4.5H7.9Z" />
-      <path d="M16.1 9c1.53 0 2.9-.9 2.9-2.35 0-1.22-.95-2.15-2.3-2.15-2.08 0-3.38 2.3-4.7 4.5h4.1Z" />
-    </svg>
-  );
-}
-
-function WallpaperIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
-      <path d="m6.5 16 3.5-3.5 2.6 2.6 3.9-4.1 3 3" />
-      <circle cx="9" cy="9" r="1.2" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function CopySlashIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <rect x="9" y="9" width="10" height="10" rx="2" />
-      <path d="M15 5H8a2 2 0 0 0-2 2v7" />
-      <path d="M4.71 4.71 19.29 19.29" />
-    </svg>
-  );
-}
-
-function ExportIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M12 3v10" />
-      <path d="m8.5 9.5 3.5 3.5 3.5-3.5" />
-      <path d="M5 15.5v1.75A2.75 2.75 0 0 0 7.75 20h8.5A2.75 2.75 0 0 0 19 17.25V15.5" />
-    </svg>
-  );
-}
-
-function BroomIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="m14 4 6 6" />
-      <path d="m4 14 6 6" />
-      <path d="m13 5-8 8a2 2 0 0 0 0 2.83L8.17 19a2 2 0 0 0 2.83 0l8-8" />
-      <path d="m2 22 5-5" />
-    </svg>
-  );
-}
-
-function TrashIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M4 7h16" />
-      <path d="M10 3h4" />
-      <path d="M6 7v11a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7" />
-      <path d="M10 11v5" />
-      <path d="M14 11v5" />
-    </svg>
-  );
-}
-
-function ChevronRightIcon({ className }: { className?: string }) {
+function VideoIcon({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -4237,121 +3904,8 @@ function ChevronRightIcon({ className }: { className?: string }) {
       className={className}
       aria-hidden="true"
     >
-      <path d="m9 6 6 6-6 6" />
-    </svg>
-  );
-}
-
-function GalleryIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
-      <circle cx="9" cy="10" r="1.3" fill="currentColor" stroke="none" />
-      <path d="m6.5 17 4-4 2.8 2.8 2.2-2.3 2 2.5" />
-    </svg>
-  );
-}
-
-function VideoIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <rect x="3.5" y="6" width="12.5" height="12" rx="2.5" />
-      <path d="m16 10 4-2.2v8.4L16 14" />
-    </svg>
-  );
-}
-
-function FileStackIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M8 3.5h7l3 3V18a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2Z" />
-      <path d="M15 3.5V7h3" />
-      <path d="M9 12h6" />
-      <path d="M9 15h6" />
-    </svg>
-  );
-}
-
-function AudioBarsIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M5 15v-3" />
-      <path d="M9 18v-9" />
-      <path d="M13 15v-3" />
-      <path d="M17 20V4" />
-      <path d="M21 14v-4" />
-    </svg>
-  );
-}
-
-function LinkChainIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M10 14 8.5 15.5a3 3 0 0 1-4.24-4.24l3-3A3 3 0 0 1 11.5 8" />
-      <path d="M14 10 15.5 8.5a3 3 0 1 1 4.24 4.24l-3 3A3 3 0 0 1 12.5 16" />
-      <path d="m9 15 6-6" />
-    </svg>
-  );
-}
-
-function PhoneIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M21.2 16.6v2a1.8 1.8 0 0 1-1.96 1.8 17.88 17.88 0 0 1-7.78-2.77 17.45 17.45 0 0 1-5.42-5.42A17.88 17.88 0 0 1 3.27 4.43 1.8 1.8 0 0 1 5.06 2.5h1.95a1.8 1.8 0 0 1 1.77 1.49c.13.9.43 1.76.88 2.56a1.8 1.8 0 0 1-.4 2.08L8.1 9.8a14.2 14.2 0 0 0 6.1 6.1l1.17-1.16a1.8 1.8 0 0 1 2.08-.4c.8.45 1.66.75 2.56.88A1.8 1.8 0 0 1 21.2 16.6Z" />
+      <path d="M15 10.5v3a3 3 0 0 1-3 3H6.5a3.5 3.5 0 0 1-3.5-3.5V11a3.5 3.5 0 0 1 3.5-3.5H12a3 3 0 0 1 3 3Z" />
+      <path d="m15 11 6-3v8l-6-3" />
     </svg>
   );
 }

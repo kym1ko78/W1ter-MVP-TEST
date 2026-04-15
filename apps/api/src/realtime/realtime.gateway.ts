@@ -23,6 +23,9 @@ interface AuthenticatedSocket extends Socket {
   };
 }
 
+type CallMode = "audio" | "video";
+type CallSignalType = "offer" | "answer" | "ice-candidate";
+
 @WebSocketGateway({
   cors: {
     origin: true,
@@ -176,6 +179,182 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     return { ok: true };
   }
 
+  @SubscribeMessage("call:start")
+  async startCall(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() body: { chatId?: string; callId?: string; mode?: CallMode },
+  ) {
+    const user = client.data.user;
+    const chatId = body?.chatId;
+    const callId = body?.callId?.trim();
+
+    if (!user || !chatId || !callId) {
+      return { ok: false };
+    }
+
+    if (!(await this.isChatMember(chatId, user.sub))) {
+      return { ok: false };
+    }
+
+    const mode: CallMode = body?.mode === "video" ? "video" : "audio";
+    const memberUserIds = await this.getChatMemberUserIds(chatId);
+
+    this.emitToUsers(
+      memberUserIds,
+      "call:incoming",
+      {
+        chatId,
+        callId,
+        mode,
+        fromUserId: user.sub,
+        createdAt: new Date().toISOString(),
+      },
+      user.sub,
+    );
+
+    return { ok: true };
+  }
+
+  @SubscribeMessage("call:accept")
+  async acceptCall(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() body: { chatId?: string; callId?: string },
+  ) {
+    const user = client.data.user;
+    const chatId = body?.chatId;
+    const callId = body?.callId?.trim();
+
+    if (!user || !chatId || !callId) {
+      return { ok: false };
+    }
+
+    if (!(await this.isChatMember(chatId, user.sub))) {
+      return { ok: false };
+    }
+
+    const memberUserIds = await this.getChatMemberUserIds(chatId);
+    this.emitToUsers(memberUserIds, "call:accepted", {
+      chatId,
+      callId,
+      userId: user.sub,
+      acceptedAt: new Date().toISOString(),
+    });
+
+    return { ok: true };
+  }
+
+  @SubscribeMessage("call:decline")
+  async declineCall(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() body: { chatId?: string; callId?: string; reason?: string },
+  ) {
+    const user = client.data.user;
+    const chatId = body?.chatId;
+    const callId = body?.callId?.trim();
+
+    if (!user || !chatId || !callId) {
+      return { ok: false };
+    }
+
+    if (!(await this.isChatMember(chatId, user.sub))) {
+      return { ok: false };
+    }
+
+    const memberUserIds = await this.getChatMemberUserIds(chatId);
+    this.emitToUsers(memberUserIds, "call:declined", {
+      chatId,
+      callId,
+      userId: user.sub,
+      reason: typeof body?.reason === "string" ? body.reason.slice(0, 120) : null,
+      declinedAt: new Date().toISOString(),
+    });
+
+    return { ok: true };
+  }
+
+  @SubscribeMessage("call:end")
+  async endCall(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() body: { chatId?: string; callId?: string; reason?: string },
+  ) {
+    const user = client.data.user;
+    const chatId = body?.chatId;
+    const callId = body?.callId?.trim();
+
+    if (!user || !chatId || !callId) {
+      return { ok: false };
+    }
+
+    if (!(await this.isChatMember(chatId, user.sub))) {
+      return { ok: false };
+    }
+
+    const memberUserIds = await this.getChatMemberUserIds(chatId);
+    this.emitToUsers(memberUserIds, "call:ended", {
+      chatId,
+      callId,
+      userId: user.sub,
+      reason: typeof body?.reason === "string" ? body.reason.slice(0, 120) : null,
+      endedAt: new Date().toISOString(),
+    });
+
+    return { ok: true };
+  }
+
+  @SubscribeMessage("call:signal")
+  async relayCallSignal(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody()
+    body: {
+      chatId?: string;
+      callId?: string;
+      targetUserId?: string;
+      signalType?: CallSignalType;
+      payload?: unknown;
+    },
+  ) {
+    const user = client.data.user;
+    const chatId = body?.chatId;
+    const callId = body?.callId?.trim();
+
+    if (!user || !chatId || !callId) {
+      return { ok: false };
+    }
+
+    if (!(await this.isChatMember(chatId, user.sub))) {
+      return { ok: false };
+    }
+
+    const signalType: CallSignalType | null =
+      body?.signalType === "offer" ||
+      body?.signalType === "answer" ||
+      body?.signalType === "ice-candidate"
+        ? body.signalType
+        : null;
+
+    if (!signalType) {
+      return { ok: false };
+    }
+
+    const signalPayload = {
+      chatId,
+      callId,
+      fromUserId: user.sub,
+      signalType,
+      payload: body?.payload ?? null,
+      createdAt: new Date().toISOString(),
+    };
+
+    const memberUserIds = await this.getChatMemberUserIds(chatId);
+    if (body?.targetUserId && memberUserIds.includes(body.targetUserId)) {
+      this.server.to(this.getUserRoom(body.targetUserId)).emit("call:signal", signalPayload);
+      return { ok: true };
+    }
+
+    this.emitToUsers(memberUserIds, "call:signal", signalPayload, user.sub);
+    return { ok: true };
+  }
+
   emitMessageNew(chatId: string, payload: unknown) {
     this.server.to(this.getChatRoom(chatId)).emit("message:new", payload);
   }
@@ -218,6 +397,35 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   private getChatRoom(chatId: string) {
     return `chat:${chatId}`;
+  }
+
+  private async getChatMemberUserIds(chatId: string) {
+    const memberships = await this.prisma.chatMember.findMany({
+      where: {
+        chatId,
+      },
+      select: {
+        userId: true,
+      },
+    });
+
+    return memberships.map((membership) => membership.userId);
+  }
+
+  private emitToUsers(
+    userIds: string[],
+    eventName: string,
+    payload: unknown,
+    excludedUserId?: string,
+  ) {
+    const uniqueUserIds = new Set(userIds);
+    for (const userId of uniqueUserIds) {
+      if (excludedUserId && userId === excludedUserId) {
+        continue;
+      }
+
+      this.server.to(this.getUserRoom(userId)).emit(eventName, payload);
+    }
   }
 
   private async isChatMember(chatId: string, userId: string) {
