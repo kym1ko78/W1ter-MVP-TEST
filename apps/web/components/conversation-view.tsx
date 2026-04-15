@@ -2602,14 +2602,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 event.preventDefault();
                 openMessageContextMenu(message, event.clientX, event.clientY);
               }}
-              className={clsx("group flex w-full", bubbleOnRight ? "justify-end" : "justify-start")}
+              className={clsx(
+                "group flex w-full",
+                bubbleOnRight ? "justify-end" : "justify-start",
+              )}
             >
               <div
                 className={clsx(
                   "relative",
                   bubbleOnRight
-                    ? "ml-auto max-w-[94%] sm:max-w-[88%] xl:max-w-[80%] 2xl:max-w-[78%]"
-                    : "max-w-[94%] sm:max-w-[88%] xl:max-w-[80%] 2xl:max-w-[78%]",
+                    ? "ml-auto max-w-[97%] sm:max-w-[93%] xl:max-w-[86%] 2xl:max-w-[84%]"
+                    : "max-w-[97%] sm:max-w-[93%] xl:max-w-[86%] 2xl:max-w-[84%]",
                 )}
               >
                 <div
@@ -2623,8 +2626,8 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       "w-fit max-w-full shadow-sm transition-[box-shadow]",
                       shortTextOnlyBubble
                         ? bubbleOnRight
-                          ? "rounded-[18px] rounded-br-[7px] px-3 py-1"
-                          : "rounded-[18px] rounded-bl-[7px] px-3 py-1"
+                          ? "rounded-[18px] rounded-br-[7px] px-3 py-1.5"
+                          : "rounded-[18px] rounded-bl-[7px] px-3 py-1.5"
                         : compactBubble
                           ? bubbleOnRight
                             ? "rounded-[22px] rounded-br-[8px] px-3 py-1.5"
@@ -2678,7 +2681,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       <div
                         className={clsx(
                           "grid grid-cols-[minmax(0,1fr)_auto] items-end",
-                          shortTextOnlyBubble ? "gap-x-1" : "gap-x-1.5",
+                          shortTextOnlyBubble ? "gap-x-2" : "gap-x-1.5",
                         )}
                       >
                         <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">

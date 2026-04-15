@@ -1197,9 +1197,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="scroll-region-y scroll-region-overlay-right min-h-0 flex-1 overflow-y-auto bg-white">
-          <div className="px-0 py-4">
+          <div className="px-5 py-4">
             {isGroupComposerOpen ? (
-              <div className="px-5">
+              <div>
                 <div className="flex justify-end">
                   <button
                     type="button"
@@ -1318,7 +1318,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                 </div>
               </div>
             ) : (
-              <div>
+              <div className="-mx-5">
                 <Link
                   href="/profile"
                   onClick={() => setIsSidebarMenuOpen(false)}
