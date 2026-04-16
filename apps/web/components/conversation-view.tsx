@@ -8,6 +8,7 @@ import {
   FormEvent,
   KeyboardEvent,
   startTransition,
+  type CSSProperties,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -94,6 +95,22 @@ const CALL_STATUS_MESSAGES: Record<CallSessionStatus, string> = {
   outgoing: "Исходящий вызов",
   connecting: "Соединяем",
   active: "Вызов активен",
+};
+const MESSAGE_DATE_TEXT_STYLE: CSSProperties = {
+  fontSize: "calc(0.75rem * var(--w1ter-message-scale, 1))",
+};
+const MESSAGE_BODY_TEXT_STYLE: CSSProperties = {
+  fontSize: "calc(0.875rem * var(--w1ter-message-scale, 1))",
+  lineHeight: "calc(1.25rem * var(--w1ter-message-scale, 1))",
+};
+const MESSAGE_META_TEXT_STYLE: CSSProperties = {
+  fontSize: "calc(0.6875rem * var(--w1ter-message-scale, 1))",
+};
+const MESSAGE_REACTION_TEXT_STYLE: CSSProperties = {
+  fontSize: "calc(0.6875rem * var(--w1ter-message-scale, 1))",
+};
+const MESSAGE_REACTION_PICKER_TEXT_STYLE: CSSProperties = {
+  fontSize: "calc(0.875rem * var(--w1ter-message-scale, 1))",
 };
 
 type ComposerPayload = {
@@ -3016,7 +3033,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
                 className="flex justify-center py-1"
                 data-testid="message-date-separator"
               >
-                <div className="rounded-full border border-black/8 bg-white/95 px-4 py-1 text-xs font-medium tracking-[0.02em] text-stone-500 shadow-sm">
+                <div
+                  className="rounded-full border border-black/8 bg-white/95 px-4 py-1 font-medium tracking-[0.02em] text-stone-500 shadow-sm"
+                  style={MESSAGE_DATE_TEXT_STYLE}
+                >
                   {item.label}
                 </div>
               </div>
@@ -3174,7 +3194,10 @@ export function ConversationView({ chatId }: { chatId: string }) {
                           shortTextOnlyBubble ? "gap-x-1" : "gap-x-1.5",
                         )}
                       >
-                        <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-5">
+                        <p
+                          className="min-w-0 whitespace-pre-wrap break-words"
+                          style={MESSAGE_BODY_TEXT_STYLE}
+                        >
                           {renderHighlightedMessageBody(
                             message.body,
                             normalizedMessageSearch,
@@ -3183,16 +3206,20 @@ export function ConversationView({ chatId }: { chatId: string }) {
                         </p>
                         <p
                           className={clsx(
-                            "shrink-0 self-end pb-0 text-[11px] leading-none",
+                            "shrink-0 self-end pb-0 leading-none",
                             isMine ? "text-white/62" : "text-stone-400",
                           )}
+                          style={MESSAGE_META_TEXT_STYLE}
                         >
                           {messageMetaLabel}
                         </p>
                       </div>
                     ) : null}
                     {message.body && !inlineMetaBubble ? (
-                      <p className="whitespace-pre-wrap break-words text-sm leading-5">
+                      <p
+                        className="whitespace-pre-wrap break-words"
+                        style={MESSAGE_BODY_TEXT_STYLE}
+                      >
                         {renderHighlightedMessageBody(
                           message.body,
                           normalizedMessageSearch,
@@ -3211,12 +3238,13 @@ export function ConversationView({ chatId }: { chatId: string }) {
                       <p
                         className={clsx(
                           hasText
-                            ? "mt-1 text-right text-[11px] leading-none"
+                            ? "mt-1 text-right leading-none"
                             : attachmentOnlyBubble
-                              ? "mt-0 text-right text-[11px] leading-none"
-                              : "mt-1.5 text-right text-[11px] leading-none",
+                              ? "mt-0 text-right leading-none"
+                              : "mt-1.5 text-right leading-none",
                           isMine ? "text-white/62" : "text-stone-400",
                         )}
+                        style={MESSAGE_META_TEXT_STYLE}
                       >
                         {messageMetaLabel}
                       </p>
@@ -3240,11 +3268,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
                               )
                             }
                             className={clsx(
-                              "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
+                              "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 font-medium transition",
                               reactedByCurrentUser
                                 ? "border-black bg-black text-white"
                                 : "border-black/10 bg-white text-stone-600 hover:border-black/25 hover:text-black",
                             )}
+                            style={MESSAGE_REACTION_TEXT_STYLE}
                             data-testid="message-reaction-chip"
                           >
                             <span>{reaction.emoji}</span>
@@ -3267,11 +3296,12 @@ export function ConversationView({ chatId }: { chatId: string }) {
                           onClick={() => handleToggleMessageReaction(message, emoji)}
                           disabled={toggleReactionMutation.isPending}
                           className={clsx(
-                            "rounded-full border px-2 py-1 text-sm transition disabled:cursor-not-allowed disabled:opacity-50",
+                            "rounded-full border px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
                             currentUserReaction === emoji
                               ? "border-black bg-black text-white"
                               : "border-black/10 bg-white text-stone-700 hover:border-black/25 hover:text-black",
                           )}
+                          style={MESSAGE_REACTION_PICKER_TEXT_STYLE}
                           data-testid="quick-reaction-button"
                           aria-label={`Поставить реакцию ${emoji}`}
                         >

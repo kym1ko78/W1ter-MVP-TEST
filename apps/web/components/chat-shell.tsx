@@ -9,6 +9,7 @@ import clsx from "clsx";
 import Link from "next/link";
 import {
   startTransition,
+  type CSSProperties,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -39,6 +40,15 @@ import type { ChatListItem, ChatMessage, MessagePage, SafeUser } from "../types/
 import { UserAvatar } from "./user-avatar";
 
 const CHAT_PAGE_LOCK_CLASS = "chat-page-locked";
+const CHAT_INTERFACE_SCALE_STORAGE_KEY = "w1ter.chat.interface-scale";
+const CHAT_INTERFACE_SCALE_ENABLED_STORAGE_KEY = "w1ter.chat.interface-scale.enabled";
+const CHAT_INTERFACE_SCALE_MIN = 50;
+const CHAT_INTERFACE_SCALE_MAX = 300;
+const CHAT_INTERFACE_SCALE_STEP = 10;
+
+function clampInterfaceScale(value: number) {
+  return Math.min(CHAT_INTERFACE_SCALE_MAX, Math.max(CHAT_INTERFACE_SCALE_MIN, value));
+}
 
 type ChatDeletedPayload = {
   chatId: string;
@@ -115,6 +125,8 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const [sidebarView, setSidebarView] = useState<SidebarDrawerView>("menu");
   const [sidebarSoonMessage, setSidebarSoonMessage] = useState<string | null>(null);
   const [isSettingsSlidingIn, setIsSettingsSlidingIn] = useState(false);
+  const [interfaceScalePercent, setInterfaceScalePercent] = useState(100);
+  const [isInterfaceScaleEnabled, setIsInterfaceScaleEnabled] = useState(true);
   const [groupTitleDraft, setGroupTitleDraft] = useState("");
   const [groupSearch, setGroupSearch] = useState("");
   const [selectedGroupMembers, setSelectedGroupMembers] = useState<SafeUser[]>([]);
@@ -159,6 +171,14 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   }, [safePathname]);
   const currentChatIdRef = useRef<string | null>(currentChatId);
   const notificationsStorageKey = "w1ter.notifications.enabled";
+  const effectiveInterfaceScalePercent = isInterfaceScaleEnabled ? interfaceScalePercent : 100;
+  const chatMessageScaleStyle = useMemo(
+    () =>
+      ({
+        "--w1ter-message-scale": String(effectiveInterfaceScalePercent / 100),
+      }) as CSSProperties,
+    [effectiveInterfaceScalePercent],
+  );
   const closeSidebarMenu = useCallback(() => {
     if (settingsSlideRafRef.current) {
       window.cancelAnimationFrame(settingsSlideRafRef.current);
@@ -536,11 +556,49 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    const rawScale = window.localStorage.getItem(CHAT_INTERFACE_SCALE_STORAGE_KEY);
+    if (rawScale) {
+      const parsedScale = Number.parseInt(rawScale, 10);
+      if (Number.isFinite(parsedScale)) {
+        setInterfaceScalePercent(clampInterfaceScale(parsedScale));
+      }
+    }
+
+    const rawEnabled = window.localStorage.getItem(CHAT_INTERFACE_SCALE_ENABLED_STORAGE_KEY);
+    if (rawEnabled) {
+      setIsInterfaceScaleEnabled(rawEnabled === "1");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
     window.localStorage.setItem(
       notificationsStorageKey,
       notificationsEnabled ? "1" : "0",
     );
   }, [notificationPermission, notificationsEnabled, notificationsStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(CHAT_INTERFACE_SCALE_STORAGE_KEY, String(interfaceScalePercent));
+  }, [interfaceScalePercent]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(
+      CHAT_INTERFACE_SCALE_ENABLED_STORAGE_KEY,
+      isInterfaceScaleEnabled ? "1" : "0",
+    );
+  }, [isInterfaceScaleEnabled]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -843,6 +901,15 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     setNotificationsEnabled(!notificationsEnabled);
     setSidebarSoonMessage(null);
   };
+
+  const handleInterfaceScaleChange = (nextValue: number) => {
+    setInterfaceScalePercent(clampInterfaceScale(nextValue));
+    setSidebarSoonMessage(null);
+  };
+
+  const handleSetInterfaceScalePreset = (nextValue: number) => {
+    handleInterfaceScaleChange(nextValue);
+  };
   const isSettingsOverlayView = sidebarView === "settings";
 
   const chats = chatsQuery.data ?? [];
@@ -1042,7 +1109,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
             "pointer-events-none absolute inset-0 z-20 transition-opacity duration-300",
             isSidebarMenuOpen
               ? isSettingsOverlayView
-                ? "bg-black/22 opacity-100 backdrop-blur-[1px]"
+                ? "bg-black/34 opacity-100 backdrop-blur-[1.5px]"
                 : "bg-black/18 opacity-100"
               : "bg-black/0 opacity-0",
           )}
@@ -1321,18 +1388,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
             <>
               <div className="border-b border-black/8 px-4 py-3.5">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openSidebarView("menu")}
-                      className="rounded-full border border-black/10 bg-white p-2 text-stone-600 transition hover:border-black/25 hover:text-black"
-                      aria-label="Назад к меню"
-                      title="Назад"
-                    >
-                      <ChevronLeftIcon className="h-4 w-4" />
-                    </button>
-                    <p className="text-base font-semibold tracking-tight text-[#171717]">Настройки</p>
-                  </div>
+                  <p className="text-base font-semibold tracking-tight text-[#171717]">Настройки</p>
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
@@ -1367,17 +1423,30 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
               <div className="scroll-region-y min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 <div className="rounded-[18px] border border-black/8 bg-[#f7f7f5] px-3.5 py-3">
-                  <div className="flex items-center gap-3">
-                    <UserAvatar
-                      user={user}
-                      accessToken={accessToken}
-                      className="h-12 w-12 rounded-[14px]"
-                      fallbackClassName="text-sm"
-                    />
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-[#171717]">{user?.displayName}</p>
-                      <p className="mt-1 truncate text-xs text-stone-500">{user?.email}</p>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <UserAvatar
+                        user={user}
+                        accessToken={accessToken}
+                        className="h-12 w-12 rounded-[14px]"
+                        fallbackClassName="text-sm"
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-[#171717]">
+                          {user?.displayName}
+                        </p>
+                        <p className="mt-1 truncate text-xs text-stone-500">{user?.email}</p>
+                      </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => handleSoonAction("QR-код профиля")}
+                      className="shrink-0 rounded-full border border-black/10 bg-white p-2 text-stone-500 transition hover:border-black/25 hover:text-black"
+                      aria-label="Профиль по QR"
+                      title="Профиль по QR"
+                    >
+                      <QrCodeIcon className="h-4 w-4" />
+                    </button>
                   </div>
                 </div>
 
@@ -1482,6 +1551,133 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                     <LanguageIcon className="h-5 w-5 text-stone-500" />
                     <span className="font-medium">Язык</span>
                     <span className="ml-auto text-xs text-stone-500">Русский</span>
+                  </button>
+                </div>
+
+                <div className="mt-3 rounded-[18px] border border-black/8 bg-white">
+                  <div className="flex items-center gap-3 px-3 py-2.5">
+                    <EyeIcon className="h-5 w-5 text-stone-500" />
+                    <span className="text-sm font-medium text-[#171717]">Масштаб по умолчанию</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsInterfaceScaleEnabled((current) => !current);
+                        setSidebarSoonMessage(null);
+                      }}
+                      className={clsx(
+                        "ml-auto flex h-6 w-10 items-center rounded-full border border-black/10 px-1 transition",
+                        isInterfaceScaleEnabled ? "bg-[#111111]" : "bg-[#ececeb]",
+                      )}
+                      aria-label="Включить масштаб интерфейса"
+                      title="Включить масштаб интерфейса"
+                    >
+                      <span
+                        className={clsx(
+                          "h-4 w-4 rounded-full bg-white transition",
+                          isInterfaceScaleEnabled ? "translate-x-4" : "translate-x-0",
+                        )}
+                      />
+                    </button>
+                  </div>
+                  <div className="border-t border-black/8 px-3 pb-3 pt-2.5">
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={CHAT_INTERFACE_SCALE_MIN}
+                        max={CHAT_INTERFACE_SCALE_MAX}
+                        step={CHAT_INTERFACE_SCALE_STEP}
+                        value={interfaceScalePercent}
+                        disabled={!isInterfaceScaleEnabled}
+                        onChange={(event) =>
+                          handleInterfaceScaleChange(Number.parseInt(event.target.value, 10))
+                        }
+                        className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-black/10 accent-[#111111] disabled:cursor-not-allowed disabled:opacity-40"
+                      />
+                      <span className="w-12 shrink-0 text-right text-sm font-medium text-stone-600">
+                        {effectiveInterfaceScalePercent}%
+                      </span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {[50, 100, 125, 150, 200, 300].map((presetScale) => (
+                        <button
+                          key={`chat-scale-${presetScale}`}
+                          type="button"
+                          disabled={!isInterfaceScaleEnabled}
+                          onClick={() => handleSetInterfaceScalePreset(presetScale)}
+                          className={clsx(
+                            "rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] transition",
+                            interfaceScalePercent === presetScale
+                              ? "border-black bg-[#111111] text-white"
+                              : "border-black/10 bg-white text-stone-600 hover:border-black/25 hover:text-black",
+                            !isInterfaceScaleEnabled ? "cursor-not-allowed opacity-40" : "",
+                          )}
+                        >
+                          {presetScale}%
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 space-y-1 rounded-[18px] border border-black/8 bg-white p-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleSoonAction("Telegram Premium")}
+                    className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
+                  >
+                    <SparklesIcon className="h-5 w-5 text-stone-500" />
+                    <span className="font-medium">Telegram Premium</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSoonAction("Мои звезды")}
+                    className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
+                  >
+                    <StarIcon className="h-5 w-5 text-stone-500" />
+                    <span className="font-medium">Мои звезды</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSoonAction("Telegram Business")}
+                    className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
+                  >
+                    <BusinessIcon className="h-5 w-5 text-stone-500" />
+                    <span className="font-medium">Telegram Business</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSoonAction("Отправить подарок")}
+                    className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
+                  >
+                    <GiftIcon className="h-5 w-5 text-stone-500" />
+                    <span className="font-medium">Отправить подарок</span>
+                  </button>
+                </div>
+
+                <div className="mt-3 space-y-1 rounded-[18px] border border-black/8 bg-white p-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleSoonAction("Telegram FAQ")}
+                    className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
+                  >
+                    <HelpIcon className="h-5 w-5 text-stone-500" />
+                    <span className="font-medium">Telegram FAQ</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSoonAction("Telegram Features")}
+                    className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
+                  >
+                    <IdeaIcon className="h-5 w-5 text-stone-500" />
+                    <span className="font-medium">Telegram Features</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSoonAction("Задать вопрос")}
+                    className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
+                  >
+                    <QuestionIcon className="h-5 w-5 text-stone-500" />
+                    <span className="font-medium">Ask a Question</span>
                   </button>
                 </div>
               </div>
@@ -1905,7 +2101,9 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
           </div>
         </aside>
 
-        <section className="min-h-0 min-w-0">{children}</section>
+        <section className="min-h-0 min-w-0" style={chatMessageScaleStyle}>
+          {children}
+        </section>
       </div>
 
         <ConfirmDialog
@@ -2345,6 +2543,180 @@ function LanguageIcon({ className }: { className?: string }) {
       <path d="M14 10h6" />
       <path d="m17 7 4 10" />
       <path d="m13 17 4-10" />
+    </svg>
+  );
+}
+
+function QrCodeIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M4 4h6v6H4z" />
+      <path d="M14 4h6v6h-6z" />
+      <path d="M4 14h6v6H4z" />
+      <path d="M14 14h2" />
+      <path d="M18 14h2v2" />
+      <path d="M14 18h2v2h-2z" />
+      <path d="M18 18h2v2h-2z" />
+    </svg>
+  );
+}
+
+function EyeIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function SparklesIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m12 3 1.7 4.3L18 9l-4.3 1.7L12 15l-1.7-4.3L6 9l4.3-1.7Z" />
+      <path d="m18.5 14.5.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9Z" />
+      <path d="m5.5 14.5.7 1.6 1.6.7-1.6.7-.7 1.6-.7-1.6-1.6-.7 1.6-.7Z" />
+    </svg>
+  );
+}
+
+function StarIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m12 3.8 2.4 4.9 5.4.8-3.9 3.8.9 5.3-4.8-2.6-4.8 2.6.9-5.3-3.9-3.8 5.4-.8Z" />
+    </svg>
+  );
+}
+
+function BusinessIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M3 8.5h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-10Z" />
+      <path d="M9 8.5V6.8A1.8 1.8 0 0 1 10.8 5h2.4A1.8 1.8 0 0 1 15 6.8v1.7" />
+      <path d="M3 12h18" />
+    </svg>
+  );
+}
+
+function GiftIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M20 8v12a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 20V8" />
+      <path d="M3 8h18v4H3z" />
+      <path d="M12 8v13.5" />
+      <path d="M12 8s-2.8-1.2-3.5-2.5A2 2 0 0 1 12 3.6" />
+      <path d="M12 8s2.8-1.2 3.5-2.5A2 2 0 0 0 12 3.6" />
+    </svg>
+  );
+}
+
+function HelpIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.5 9a2.5 2.5 0 1 1 4 2c-.8.6-1.5 1-1.5 2.2" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
+function IdeaIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M9 18h6" />
+      <path d="M10 21h4" />
+      <path d="M12 3a6 6 0 0 0-3.8 10.6c.7.6 1.2 1.4 1.2 2.4V18h5.2v-2c0-1 .5-1.8 1.2-2.4A6 6 0 0 0 12 3Z" />
+    </svg>
+  );
+}
+
+function QuestionIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5h-1.2L6 22l1.2-3.2A8.5 8.5 0 1 1 21 11.5Z" />
+      <path d="M10.3 9.1a2.1 2.1 0 1 1 3.4 1.6c-.7.6-1.2 1-1.2 2" />
+      <path d="M12.5 15.8h.01" />
     </svg>
   );
 }
