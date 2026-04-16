@@ -1622,11 +1622,11 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                 <div className="mt-3 space-y-1 rounded-[18px] border border-black/8 bg-white p-1.5">
                   <button
                     type="button"
-                    onClick={() => handleSoonAction("Telegram Premium")}
+                    onClick={() => handleSoonAction("W1ter Premium")}
                     className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
                   >
                     <SparklesIcon className="h-5 w-5 text-stone-500" />
-                    <span className="font-medium">Telegram Premium</span>
+                    <span className="font-medium">W1ter Premium</span>
                   </button>
                   <button
                     type="button"
@@ -1638,11 +1638,11 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleSoonAction("Telegram Business")}
+                    onClick={() => handleSoonAction("W1ter Business")}
                     className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
                   >
                     <BusinessIcon className="h-5 w-5 text-stone-500" />
-                    <span className="font-medium">Telegram Business</span>
+                    <span className="font-medium">W1ter Business</span>
                   </button>
                   <button
                     type="button"
@@ -1657,19 +1657,19 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                 <div className="mt-3 space-y-1 rounded-[18px] border border-black/8 bg-white p-1.5">
                   <button
                     type="button"
-                    onClick={() => handleSoonAction("Telegram FAQ")}
+                    onClick={() => handleSoonAction("Вопросы о W1ter")}
                     className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
                   >
                     <HelpIcon className="h-5 w-5 text-stone-500" />
-                    <span className="font-medium">Telegram FAQ</span>
+                    <span className="font-medium">Вопросы о W1ter</span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleSoonAction("Telegram Features")}
+                    onClick={() => handleSoonAction("Возможности W1ter")}
                     className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
                   >
                     <IdeaIcon className="h-5 w-5 text-stone-500" />
-                    <span className="font-medium">Telegram Features</span>
+                    <span className="font-medium">Возможности W1ter</span>
                   </button>
                   <button
                     type="button"
@@ -1677,7 +1677,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                     className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
                   >
                     <QuestionIcon className="h-5 w-5 text-stone-500" />
-                    <span className="font-medium">Ask a Question</span>
+                    <span className="font-medium">Задать вопрос</span>
                   </button>
                 </div>
               </div>
