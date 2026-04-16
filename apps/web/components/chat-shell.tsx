@@ -885,6 +885,23 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       memberIds: selectedGroupMemberIds,
     });
   };
+  const connectionStatusCopy = isOffline
+    ? "Оффлайн. Соединение восстановится автоматически."
+    : realtimeConnectionState === "connected"
+      ? "Realtime подключен."
+      : realtimeConnectionState === "connecting"
+        ? "Подключаемся к realtime..."
+        : "Связь потеряна. Статусы могут запаздывать.";
+  const notificationStatusCopy =
+    notificationPermission === "unsupported"
+      ? "Браузер не поддерживает web-notifications."
+      : notificationPermission === "denied"
+        ? "Уведомления заблокированы в браузере."
+        : notificationPermission === "granted"
+          ? notificationsEnabled
+            ? "Уведомления о новых сообщениях включены."
+            : "Уведомления выключены."
+          : "Разрешение на уведомления еще не выдано.";
 
   useEffect(() => {
     const socket = socketRef.current;
@@ -1097,8 +1114,62 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
         <div className="scroll-region-y scroll-region-overlay-right min-h-0 flex-1 overflow-y-auto bg-white">
           <div className="px-5 py-4">
+            <div className="rounded-[22px] border border-black/8 bg-[#fafaf9] px-4 py-4 shadow-[0_12px_24px_rgba(17,24,39,0.04)]">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-stone-400">Realtime</p>
+                <span
+                  className={clsx(
+                    "rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em]",
+                    isOffline
+                      ? "border-black/12 bg-white text-stone-500"
+                      : realtimeConnectionState === "connected"
+                        ? "border-black/12 bg-[#111111] text-white"
+                        : "border-black/12 bg-white text-stone-500",
+                  )}
+                >
+                  {isOffline
+                    ? "offline"
+                    : realtimeConnectionState === "connected"
+                      ? "online"
+                      : realtimeConnectionState}
+                </span>
+              </div>
+              <p className="mt-2 text-xs text-stone-500">{connectionStatusCopy}</p>
+              <p className="mt-3 text-[11px] uppercase tracking-[0.2em] text-stone-400">
+                Notifications
+              </p>
+              <p className="mt-2 text-xs text-stone-500">{notificationStatusCopy}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {notificationPermission === "default" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void requestNotificationPermission();
+                    }}
+                    className="rounded-full border border-black/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black"
+                  >
+                    Включить
+                  </button>
+                ) : null}
+                {notificationPermission === "granted" ? (
+                  <button
+                    type="button"
+                    onClick={() => setNotificationsEnabled(!notificationsEnabled)}
+                    className="rounded-full border border-black/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-stone-600 transition hover:border-black/25 hover:text-black"
+                  >
+                    {notificationsEnabled ? "Отключить" : "Включить"}
+                  </button>
+                ) : null}
+                {notificationPermission === "denied" ? (
+                  <span className="rounded-full border border-black/10 px-3 py-1 text-[10px] uppercase tracking-[0.12em] text-stone-500">
+                    Разрешите в настройках браузера
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
             {isGroupComposerOpen ? (
-              <div>
+              <div className="mt-4">
                 <div className="flex justify-end">
                   <button
                     type="button"
@@ -1217,7 +1288,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
                 </div>
               </div>
             ) : (
-              <div className="-mx-5">
+              <div className="-mx-5 mt-4">
                 <Link
                   href="/profile"
                   onClick={() => setIsSidebarMenuOpen(false)}

@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import { readJson, useAuth } from "../lib/auth-context";
 import {
@@ -60,7 +61,7 @@ import type {
   MessagePage,
   SafeUser,
 } from "../types/api";
-import { ConfirmDialog } from "./confirm-dialog";
+import { ConfirmDialog, DeleteMessageDialog } from "./confirm-dialog";
 import { UserAvatar } from "./user-avatar";
 
 const MESSAGE_MAX_LENGTH = 4000;
@@ -93,6 +94,9 @@ const VOICE_RECORDER_MIME_TYPE = "audio/webm";
 const VOICE_RECORDING_FILE_NAME = "voice-message.webm";
 const SCROLL_BOTTOM_THRESHOLD = 180;
 const PROFILE_PANEL_TRANSITION_MS = 280;
+const MESSAGE_CONTEXT_MENU_WIDTH = 276;
+const MESSAGE_CONTEXT_MENU_MIN_HEIGHT = 360;
+const MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN = 12;
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🔥", "😮", "😢"] as const;
 const CALL_ICE_SERVERS: RTCIceServer[] = [
   {
@@ -113,6 +117,19 @@ type ComposerPayload = {
 };
 
 type RecordingState = "idle" | "recording" | "stopping";
+
+type DeleteMessageMode = "self" | "everyone";
+
+type DeleteMessagePayload = {
+  messageId: string;
+  mode: DeleteMessageMode;
+};
+
+type MessageContextMenuState = {
+  message: ChatMessage;
+  x: number;
+  y: number;
+};
 
 type EditMessagePayload = {
   messageId: string;
@@ -186,6 +203,9 @@ export function ConversationView({ chatId }: { chatId: string }) {
   const [showMessageSearch, setShowMessageSearch] = useState(false);
   const [showConversationMenu, setShowConversationMenu] = useState(false);
   const [showConversationProfile, setShowConversationProfile] = useState(false);
+  const [messageContextMenu, setMessageContextMenu] = useState<MessageContextMenuState | null>(
+    null,
+  );
   const [isConversationProfileMounted, setIsConversationProfileMounted] = useState(false);
   const [isConversationProfileVisible, setIsConversationProfileVisible] = useState(false);
   const [headerStatusMessage, setHeaderStatusMessage] = useState<string | null>(null);
@@ -468,10 +488,14 @@ export function ConversationView({ chatId }: { chatId: string }) {
   });
 
   const deleteMessageMutation = useMutation({
-    mutationFn: async (messageId: string) =>
+    mutationFn: async ({ messageId, mode }: DeleteMessagePayload) =>
       readJson<ChatMessage>(
         await authorizedFetch(`/chats/${chatId}/messages/${messageId}`, {
           method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ mode }),
         }),
       ),
     onSuccess: (message) => {
@@ -839,6 +863,33 @@ export function ConversationView({ chatId }: { chatId: string }) {
   }, [showConversationMenu, showConversationProfile]);
 
   useEffect(() => {
+    if (!messageContextMenu) {
+      return;
+    }
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMessageContextMenu(null);
+      }
+    };
+
+    const handleResize = () => {
+      setMessageContextMenu(null);
+    };
+
+    const listElement = messageListRef.current;
+    listElement?.addEventListener("scroll", handleResize, { passive: true });
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      listElement?.removeEventListener("scroll", handleResize);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [messageContextMenu]);
+
+  useEffect(() => {
     if (!activeSearchMessage) {
       return;
     }
@@ -1018,6 +1069,17 @@ export function ConversationView({ chatId }: { chatId: string }) {
         },
       ];
   const visibleGroupMembers = groupMembersQuery.data?.members ?? [];
+  const contextMenuMessage = messageContextMenu?.message ?? null;
+  const contextMenuTimestampLabel = contextMenuMessage
+    ? `${formatConversationDateLabel(contextMenuMessage.createdAt).toLocaleLowerCase()} в ${formatTime(
+        contextMenuMessage.createdAt,
+      )}`
+    : null;
+  const contextMenuCurrentUserReaction =
+    contextMenuMessage && user?.id
+      ? contextMenuMessage.reactions.find((reaction) => reaction.userIds.includes(user.id))?.emoji ??
+        null
+      : null;
 
   const clearCallSessionLocally = useCallback(
     (statusMessage?: string | null) => {
@@ -1925,8 +1987,30 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setMessageContextMenu(null);
     setConfirmingMessage(message);
   };
+
+  const handleDeleteMessageMode = (mode: DeleteMessageMode) => {
+    if (!confirmingMessage) {
+      return;
+    }
+
+    deleteMessageMutation.mutate({
+      messageId: confirmingMessage.id,
+      mode,
+    });
+  };
+
+  const openMessageContextMenu = useCallback((message: ChatMessage, x: number, y: number) => {
+    setShowConversationMenu(false);
+    setShowConversationProfile(false);
+    setMessageContextMenu({ message, x, y });
+  }, []);
+
+  const closeMessageContextMenu = useCallback(() => {
+    setMessageContextMenu(null);
+  }, []);
 
   const handleReplyMessage = (message: ChatMessage) => {
     if (recordingState !== "idle" || isComposerSubmitPending) {
@@ -1938,6 +2022,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setMessageContextMenu(null);
     setComposerError(null);
     setEditingMessage(null);
     setReplyingToMessage(message);
@@ -1957,6 +2042,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setMessageContextMenu(null);
     setComposerError(null);
     setReplyingToMessage(null);
     setEditingMessage(message);
@@ -1979,6 +2065,7 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setMessageContextMenu(null);
     setComposerError(null);
     setForwardPanelError(null);
     setForwardSearch("");
@@ -2004,11 +2091,47 @@ export function ConversationView({ chatId }: { chatId: string }) {
       return;
     }
 
+    setMessageContextMenu(null);
     toggleReactionMutation.mutate({
       messageId: message.id,
       emoji,
     });
   };
+
+  const handleCopyMessageText = useCallback(async (message: ChatMessage) => {
+    const text = message.body?.trim();
+
+    if (!text) {
+      setHeaderStatusMessage("В этом сообщении нет текста для копирования.");
+      setMessageContextMenu(null);
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setHeaderStatusMessage("Текст сообщения скопирован.");
+    } catch {
+      setHeaderStatusMessage("Не удалось скопировать текст сообщения.");
+    } finally {
+      setMessageContextMenu(null);
+    }
+  }, []);
+
+  const handlePinMessageStub = useCallback((message: ChatMessage) => {
+    setFocusedMessageId(message.id);
+    setHeaderStatusMessage("Закрепление сообщений добавим следующим шагом.");
+    setMessageContextMenu(null);
+  }, []);
+
+  const handleSelectMessageStub = useCallback(
+    (message: ChatMessage) => {
+      setFocusedMessageId(message.id);
+      focusMessageById(message.id, "smooth");
+      setHeaderStatusMessage("Режим выделения добавим следующим шагом.");
+      setMessageContextMenu(null);
+    },
+    [focusMessageById],
+  );
 
   const cancelComposerContext = () => {
     if (editingMessage) {
@@ -2112,6 +2235,31 @@ export function ConversationView({ chatId }: { chatId: string }) {
     },
     [isDesktopLayout, leftSidebarWidth, rightPanelWidth, setRightPanelWidth],
   );
+  const messageContextMenuPosition = useMemo(() => {
+    if (!messageContextMenu || typeof window === "undefined") {
+      return null;
+    }
+
+    const maxLeft = Math.max(
+      MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
+      window.innerWidth - MESSAGE_CONTEXT_MENU_WIDTH - MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
+    );
+    const maxTop = Math.max(
+      MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
+      window.innerHeight - MESSAGE_CONTEXT_MENU_MIN_HEIGHT - MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN,
+    );
+
+    return {
+      left: Math.min(
+        Math.max(messageContextMenu.x, MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN),
+        maxLeft,
+      ),
+      top: Math.min(
+        Math.max(messageContextMenu.y, MESSAGE_CONTEXT_MENU_VIEWPORT_MARGIN),
+        maxTop,
+      ),
+    };
+  }, [messageContextMenu]);
   const callPartnerName = otherUser?.displayName ?? conversationTitle;
   const hasCallSession = Boolean(callSession);
   const isIncomingCall = callSession?.status === "incoming";
@@ -2924,6 +3072,14 @@ export function ConversationView({ chatId }: { chatId: string }) {
               data-message-owner={isMine ? "self" : "other"}
               data-message-search-match={isSearchMatch ? "true" : "false"}
               data-message-search-active={isActiveSearchMatch ? "true" : "false"}
+              onContextMenu={(event) => {
+                if (message.isDeleted) {
+                  return;
+                }
+
+                event.preventDefault();
+                openMessageContextMenu(message, event.clientX, event.clientY);
+              }}
               onMouseLeave={() => {
                 setRecentlyReactedMessageId((current) =>
                   current === message.id ? null : current,
@@ -3484,22 +3640,113 @@ export function ConversationView({ chatId }: { chatId: string }) {
         </div>
       ) : null}
 
-      <ConfirmDialog
+      <DeleteMessageDialog
         open={Boolean(confirmingMessage)}
         title="Удалить это сообщение?"
-        description="Сообщение исчезнет из переписки у участников этого чата."
+        description="Выберите, нужно ли удалить сообщение только у вас или у всех участников этого чата."
         isLoading={deleteMessageMutation.isPending}
+        allowDeleteForEveryone={confirmingMessage?.senderId === user?.id}
         onCancel={() => {
           if (!deleteMessageMutation.isPending) {
             setConfirmingMessage(null);
           }
         }}
-        onConfirm={() => {
-          if (confirmingMessage) {
-            deleteMessageMutation.mutate(confirmingMessage.id);
-          }
-        }}
+        onDeleteForSelf={() => handleDeleteMessageMode("self")}
+        onDeleteForEveryone={() => handleDeleteMessageMode("everyone")}
       />
+
+      {contextMenuMessage && messageContextMenuPosition
+        ? createPortal(
+            <div className="fixed inset-0 z-[220]" data-testid="message-context-menu-layer">
+              <button
+                type="button"
+                aria-label="Закрыть контекстное меню"
+                className="absolute inset-0 cursor-default bg-transparent"
+                onClick={closeMessageContextMenu}
+              />
+              <div
+                className="absolute w-[276px] overflow-hidden rounded-[22px] border border-black/10 bg-white text-[#171717] shadow-[0_24px_48px_rgba(17,24,39,0.18)]"
+                style={{
+                  left: messageContextMenuPosition.left,
+                  top: messageContextMenuPosition.top,
+                }}
+                role="menu"
+                aria-label="Действия с сообщением"
+                onClick={(event) => event.stopPropagation()}
+                onContextMenu={(event) => event.preventDefault()}
+              >
+                <div className="flex items-center gap-1.5 border-b border-black/8 bg-white px-3 py-2.5">
+                  {QUICK_REACTIONS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => handleToggleMessageReaction(contextMenuMessage, emoji)}
+                      className={clsx(
+                        "flex h-9 min-w-9 items-center justify-center rounded-full border px-2 text-lg transition",
+                        contextMenuCurrentUserReaction === emoji
+                          ? "border-black bg-[#111111] text-white"
+                          : "border-black/10 bg-white text-[#171717] hover:border-black/20 hover:bg-black/[0.04]",
+                      )}
+                      aria-label={`Поставить реакцию ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="space-y-0.5 px-2 py-2">
+                  <MessageContextMenuRow
+                    icon={ReplyArrowIcon}
+                    label="Ответить"
+                    onClick={() => handleReplyMessage(contextMenuMessage)}
+                  />
+                  <MessageContextMenuRow
+                    icon={PinIcon}
+                    label="Закрепить"
+                    onClick={() => handlePinMessageStub(contextMenuMessage)}
+                  />
+                  <MessageContextMenuRow
+                    icon={CopyIcon}
+                    label="Копировать текст"
+                    onClick={() => {
+                      void handleCopyMessageText(contextMenuMessage);
+                    }}
+                    disabled={!contextMenuMessage.body?.trim()}
+                  />
+                  <MessageContextMenuRow
+                    icon={ExportIcon}
+                    label="Переслать"
+                    onClick={() => handleStartForwardMessage(contextMenuMessage)}
+                  />
+                  {contextMenuMessage.senderId === user?.id ? (
+                    <MessageContextMenuRow
+                      icon={EditPencilIcon}
+                      label="Изменить"
+                      onClick={() => handleStartEditingMessage(contextMenuMessage)}
+                    />
+                  ) : null}
+                  <MessageContextMenuRow
+                    icon={TrashIcon}
+                    label="Удалить"
+                    onClick={() => handleDeleteMessage(contextMenuMessage)}
+                    destructive
+                  />
+                  <MessageContextMenuRow
+                    icon={SelectCheckIcon}
+                    label="Выделить"
+                    onClick={() => handleSelectMessageStub(contextMenuMessage)}
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 border-t border-black/8 bg-[#fafaf9] px-3 py-2 text-xs text-stone-500">
+                  <ClockIcon className="h-4 w-4 shrink-0" />
+                  <span className="truncate">{contextMenuTimestampLabel}</span>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
 
       <ConfirmDialog
         open={Boolean(confirmingMemberRemoval)}
@@ -4087,6 +4334,117 @@ function PanelRightIcon({ className }: { className?: string }) {
   );
 }
 
+function ReplyArrowIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M9 8 4 12l5 4" />
+      <path d="M20 18c0-4.42-3.58-8-8-8H4" />
+    </svg>
+  );
+}
+
+function PinIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m14.5 4.5 5 5" />
+      <path d="M10 9 19 18" />
+      <path d="m9.5 14.5-4 5" />
+      <path d="M7 6.5 17.5 17" />
+      <path d="m7 6.5 2.5-2.5 7 7L14 13.5" />
+    </svg>
+  );
+}
+
+function CopyIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="10" height="10" rx="2" />
+      <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function EditPencilIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M12 20h9" />
+      <path d="m16.5 3.5 4 4L8 20l-5 1 1-5 12.5-12.5Z" />
+    </svg>
+  );
+}
+
+function SelectCheckIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12.5 2.3 2.3 4.7-5.1" />
+    </svg>
+  );
+}
+
+function ClockIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.8v4.7l3.2 1.8" />
+    </svg>
+  );
+}
+
 function UsersIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -4126,6 +4484,40 @@ function ProfileActionTile({
         <Icon className="h-5 w-5" />
       </span>
       <span className="text-xs font-medium tracking-[0.04em]">{label}</span>
+    </button>
+  );
+}
+
+function MessageContextMenuRow({
+  icon: Icon,
+  label,
+  onClick,
+  destructive = false,
+  disabled = false,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+  destructive?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={clsx(
+        "flex w-full items-center gap-3 rounded-[14px] px-3 py-2.5 text-left text-[15px] transition disabled:cursor-not-allowed disabled:opacity-45",
+        destructive ? "text-[#d43c33] hover:bg-[#fff1ef]" : "text-[#171717] hover:bg-black/[0.04]",
+      )}
+    >
+      <Icon
+        className={clsx(
+          "h-[18px] w-[18px] shrink-0",
+          destructive ? "text-[#d43c33]" : "text-stone-500",
+        )}
+      />
+      <span className="min-w-0 truncate">{label}</span>
     </button>
   );
 }
@@ -4186,6 +4578,25 @@ function ChatBubbleIcon({ className }: { className?: string }) {
   );
 }
 
+function ExportIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M12 3v10" />
+      <path d="m8.5 9.5 3.5 3.5 3.5-3.5" />
+      <path d="M5 15.5v1.75A2.75 2.75 0 0 0 7.75 20h8.5A2.75 2.75 0 0 0 19 17.25V15.5" />
+    </svg>
+  );
+}
+
 function CloseIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -4200,6 +4611,27 @@ function CloseIcon({ className }: { className?: string }) {
     >
       <path d="m18 6-12 12" />
       <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function TrashIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M4 7h16" />
+      <path d="M10 3h4" />
+      <path d="M6 7v11a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7" />
+      <path d="M10 11v5" />
+      <path d="M14 11v5" />
     </svg>
   );
 }
