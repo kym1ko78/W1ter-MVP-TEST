@@ -109,10 +109,12 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const socketRef = useRef<Socket | null>(null);
   const sidebarMenuRef = useRef<HTMLDivElement | null>(null);
   const sidebarMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const settingsSlideRafRef = useRef<number | null>(null);
   const { accessToken, authorizedFetch, isAuthenticated, isLoading, logout, user } = useAuth();
   const [isSidebarMenuOpen, setIsSidebarMenuOpen] = useState(false);
   const [sidebarView, setSidebarView] = useState<SidebarDrawerView>("menu");
   const [sidebarSoonMessage, setSidebarSoonMessage] = useState<string | null>(null);
+  const [isSettingsSlidingIn, setIsSettingsSlidingIn] = useState(false);
   const [groupTitleDraft, setGroupTitleDraft] = useState("");
   const [groupSearch, setGroupSearch] = useState("");
   const [selectedGroupMembers, setSelectedGroupMembers] = useState<SafeUser[]>([]);
@@ -158,9 +160,15 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
   const currentChatIdRef = useRef<string | null>(currentChatId);
   const notificationsStorageKey = "w1ter.notifications.enabled";
   const closeSidebarMenu = useCallback(() => {
+    if (settingsSlideRafRef.current) {
+      window.cancelAnimationFrame(settingsSlideRafRef.current);
+      settingsSlideRafRef.current = null;
+    }
+
     setIsSidebarMenuOpen(false);
     setSidebarView("menu");
     setSidebarSoonMessage(null);
+    setIsSettingsSlidingIn(false);
   }, []);
 
   const applyPresenceChange = useCallback((payload: PresenceChangedPayload) => {
@@ -684,6 +692,16 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     closeSidebarMenu();
   }, [closeSidebarMenu, safePathname]);
 
+  useEffect(
+    () => () => {
+      if (settingsSlideRafRef.current) {
+        window.cancelAnimationFrame(settingsSlideRafRef.current);
+        settingsSlideRafRef.current = null;
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!isSidebarMenuOpen) {
       return;
@@ -768,12 +786,31 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
     setSidebarView("menu");
     setSidebarSoonMessage(null);
+    setIsSettingsSlidingIn(false);
     setIsSidebarMenuOpen(true);
   };
 
   const openSidebarView = (view: SidebarDrawerView) => {
     setSidebarView(view);
     setSidebarSoonMessage(null);
+  };
+
+  const openSettingsOverlay = () => {
+    setSidebarView("settings");
+    setSidebarSoonMessage(null);
+    setIsSidebarMenuOpen(true);
+    setIsSettingsSlidingIn(true);
+
+    if (settingsSlideRafRef.current) {
+      window.cancelAnimationFrame(settingsSlideRafRef.current);
+    }
+
+    settingsSlideRafRef.current = window.requestAnimationFrame(() => {
+      settingsSlideRafRef.current = window.requestAnimationFrame(() => {
+        setIsSettingsSlidingIn(false);
+        settingsSlideRafRef.current = null;
+      });
+    });
   };
 
   const handleSoonAction = (label: string) => {
@@ -1019,9 +1056,12 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
             isSettingsOverlayView
               ? "top-4 bottom-4 w-[min(92vw,420px)] -translate-x-1/2 rounded-[24px] border border-black/10"
               : "inset-y-0 left-0 w-[min(92vw,360px)] border-r border-black/8",
+            isSettingsOverlayView && isSettingsSlidingIn ? "transition-none" : "",
             isSidebarMenuOpen
               ? isSettingsOverlayView
-                ? "left-1/2 opacity-100"
+                ? isSettingsSlidingIn
+                  ? "left-[75%] opacity-100"
+                  : "left-1/2 opacity-100"
                 : "translate-x-0 opacity-100"
               : isSettingsOverlayView
                 ? "pointer-events-none left-[75%] opacity-0"
@@ -1123,7 +1163,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
 
                   <button
                     type="button"
-                    onClick={() => openSidebarView("settings")}
+                    onClick={openSettingsOverlay}
                     className="flex w-full items-center gap-3 rounded-[14px] px-3 py-2.5 text-left text-sm text-[#171717] transition hover:bg-[#f7f7f5]"
                   >
                     <SettingsIcon className="h-5 w-5 text-stone-500" />
