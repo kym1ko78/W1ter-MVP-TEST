@@ -806,6 +806,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     setNotificationsEnabled(!notificationsEnabled);
     setSidebarSoonMessage(null);
   };
+  const isSettingsOverlayView = sidebarView === "settings";
 
   const chats = chatsQuery.data ?? [];
   const activeChats = useMemo(
@@ -1001,8 +1002,12 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       <main className="chat-scene grain relative h-[100dvh] overflow-hidden" data-testid="chat-shell">
         <div
           className={clsx(
-            "pointer-events-none absolute inset-0 z-20 bg-black/18 transition-opacity duration-300",
-            isSidebarMenuOpen ? "opacity-100" : "opacity-0",
+            "pointer-events-none absolute inset-0 z-20 transition-opacity duration-300",
+            isSidebarMenuOpen
+              ? isSettingsOverlayView
+                ? "bg-black/22 opacity-100 backdrop-blur-[1px]"
+                : "bg-black/18 opacity-100"
+              : "bg-black/0 opacity-0",
           )}
           aria-hidden="true"
         />
@@ -1010,8 +1015,17 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
         <div
           ref={sidebarMenuRef}
           className={clsx(
-            "pointer-events-auto absolute inset-y-0 left-0 z-30 flex w-[min(92vw,360px)] max-w-full flex-col border-r border-black/8 bg-white shadow-[0_28px_60px_rgba(17,24,39,0.12)] transition-transform duration-300 ease-out",
-            isSidebarMenuOpen ? "translate-x-0" : "-translate-x-[104%]",
+            "pointer-events-auto absolute z-30 flex max-w-full flex-col bg-white shadow-[0_28px_60px_rgba(17,24,39,0.12)] transition-all duration-300 ease-out",
+            isSettingsOverlayView
+              ? "left-1/2 top-4 bottom-4 w-[min(92vw,420px)] -translate-x-1/2 rounded-[24px] border border-black/10"
+              : "inset-y-0 left-0 w-[min(92vw,360px)] border-r border-black/8",
+            isSidebarMenuOpen
+              ? isSettingsOverlayView
+                ? "translate-y-0 opacity-100"
+                : "translate-x-0 opacity-100"
+              : isSettingsOverlayView
+                ? "pointer-events-none translate-y-3 opacity-0"
+                : "-translate-x-[104%] opacity-100",
           )}
           data-testid="chat-sidebar-drawer"
         >
