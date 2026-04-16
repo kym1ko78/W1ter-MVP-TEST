@@ -1017,14 +1017,14 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
           className={clsx(
             "pointer-events-auto absolute z-30 flex max-w-full flex-col bg-white shadow-[0_28px_60px_rgba(17,24,39,0.12)] transition-all duration-300 ease-out",
             isSettingsOverlayView
-              ? "left-1/2 top-4 bottom-4 w-[min(92vw,420px)] -translate-x-1/2 rounded-[24px] border border-black/10"
+              ? "top-4 bottom-4 w-[min(92vw,420px)] -translate-x-1/2 rounded-[24px] border border-black/10"
               : "inset-y-0 left-0 w-[min(92vw,360px)] border-r border-black/8",
             isSidebarMenuOpen
               ? isSettingsOverlayView
-                ? "translate-y-0 opacity-100"
+                ? "left-1/2 opacity-100"
                 : "translate-x-0 opacity-100"
               : isSettingsOverlayView
-                ? "pointer-events-none translate-y-3 opacity-0"
+                ? "pointer-events-none left-[75%] opacity-0"
                 : "-translate-x-[104%] opacity-100",
           )}
           data-testid="chat-sidebar-drawer"
