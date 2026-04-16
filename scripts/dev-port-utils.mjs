@@ -3,6 +3,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const TRANSIENT_RETRY_DELAY_MS = 750;
+const TRANSIENT_RETRY_ATTEMPTS = 2;
 
 const CHECK_EXPECTATIONS = {
   FREE: "free",
@@ -59,6 +61,10 @@ async function canConnect(host, port) {
     socket.once("timeout", () => finish(false));
     socket.once("error", () => finish(false));
   });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function isPortOccupied(port) {
@@ -163,42 +169,49 @@ function isCheckPassing(result) {
 }
 
 export async function inspectPort(port) {
-  const occupied = await isPortOccupied(port);
+  for (let attempt = 0; attempt <= TRANSIENT_RETRY_ATTEMPTS; attempt += 1) {
+    const occupied = await isPortOccupied(port);
 
-  if (!occupied) {
-    return [];
-  }
+    if (!occupied) {
+      return [];
+    }
 
-  try {
-    if (process.platform === "win32") {
-      const listeners = await getWindowsListeners();
-      const matches = listeners.filter((listener) => listener.port === port);
+    try {
+      if (process.platform === "win32") {
+        const listeners = await getWindowsListeners();
+        const matches = listeners.filter((listener) => listener.port === port);
 
-      if (matches.length === 0) {
-        return fallbackListener(port);
+        if (matches.length > 0) {
+          return Promise.all(
+            matches.map(async (listener) => ({
+              ...listener,
+              processName: await getWindowsProcessName(listener.pid),
+            })),
+          );
+        }
+      } else {
+        const listeners = await getUnixListeners(port);
+
+        if (listeners.length > 0) {
+          return listeners.map((listener) => ({
+            ...listener,
+            processName: null,
+          }));
+        }
       }
-
-      return Promise.all(
-        matches.map(async (listener) => ({
-          ...listener,
-          processName: await getWindowsProcessName(listener.pid),
-        })),
-      );
+    } catch {
+      // Retry below before we report a synthetic listener.
     }
 
-    const listeners = await getUnixListeners(port);
-
-    if (listeners.length === 0) {
-      return fallbackListener(port);
+    if (attempt < TRANSIENT_RETRY_ATTEMPTS) {
+      await sleep(TRANSIENT_RETRY_DELAY_MS);
+      continue;
     }
 
-    return listeners.map((listener) => ({
-      ...listener,
-      processName: null,
-    }));
-  } catch {
     return fallbackListener(port);
   }
+
+  return fallbackListener(port);
 }
 
 export async function inspectDevPorts(checks = DEFAULT_CHECKS) {
